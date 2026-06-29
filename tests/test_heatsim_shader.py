@@ -34,6 +34,7 @@ def test_enter_restore_round_trip(executable):
         # Record original state.
         "orig_mat_name = cube.material_slots[0].material.name;"
         "orig_light_hide = light.hide_render;"
+        "orig_light_hide_vp = light.hide_viewport;"
         "scene = bpy.context.scene;"
         "orig_world = scene.world;"
         # Round-trip.
@@ -42,8 +43,9 @@ def test_enter_restore_round_trip(executable):
         # Verify materials restored.
         "restored_name = cube.material_slots[0].material.name if cube.material_slots[0].material else None;"
         "assert restored_name == orig_mat_name, f'material: expected {orig_mat_name!r}, got {restored_name!r}';"
-        # Verify light visibility restored.
+        # Verify light visibility restored (enter_thermal_scene mutates both flags).
         "assert light.hide_render == orig_light_hide, f'light hide_render changed';"
+        "assert light.hide_viewport == orig_light_hide_vp, f'light hide_viewport changed';"
         # Verify world restored.
         "assert scene.world is orig_world, f'world not restored: {scene.world!r} vs {orig_world!r}';"
         "print('ROUND_TRIP_OK')"

@@ -1600,8 +1600,20 @@ class BlenderService(rpyc.Service):
             laplacian_backend=laplacian_backend,
             device=device,
         )
+        # Pass the FULL global material defaults: post-I1 ``resolve_material`` reads
+        # these as the fallback for any per-object property that was not explicitly
+        # set (e.g. emissivity), so a partial dict would KeyError on unset meshes.
         adapter.write_frame_attributes(
-            self.scene, history, -1, {"initial_temperature_K": initial_temperature_K}
+            self.scene,
+            history,
+            -1,
+            {
+                "initial_temperature_K": initial_temperature_K,
+                "thermal_diffusivity_mm2_s": thermal_diffusivity_mm2_s,
+                "density_kg_m3": density_kg_m3,
+                "specific_heat_J_kgK": specific_heat_J_kgK,
+                "emissivity": emissivity,
+            },
         )
         thermal_shader.stamp_default_temperatures(self.scene, default_K=initial_temperature_K)
         thermal_shader.setup_temperature_aov(self.scene, self.view_layer)

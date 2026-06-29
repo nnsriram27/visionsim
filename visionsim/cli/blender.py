@@ -105,7 +105,7 @@ def heatsim_solve(
     Primes the scene's heat simulation cache so that a subsequent
     ``vsim blender.render-animation`` call with ``config.include_thermal = True``
     can skip the expensive solve step. Opens the blend-file in a single background
-    Blender instance, runs the FEM solve via ``client.heatsim_solve``, and
+    Blender instance, runs the FEM solve via ``clients.heatsim_solve``, and
     optionally saves the modified blend-file to disk.
 
     Args:

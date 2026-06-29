@@ -32,7 +32,7 @@ if _BPY_AVAILABLE:
         initial_temperature_K: FloatProperty(  # type: ignore[assignment]
             name="Initial Temp (K)",
             description="Initial temperature for this object (used if no per-vertex attribute override is provided)",
-            default=295.372,
+            default=295.0,  # match ThermalConfig.initial_temperature_K (config.py)
             min=0.0,
         )
 

@@ -12,7 +12,10 @@ Output directories
 ``temperature/``
     Per-pixel surface temperature in **Kelvin**, saved as a single-channel
     ``OPEN_EXR`` file.  This is a Cycles value AOV (``HeatSim_To``) that is
-    co-rendered with the RGB pass; it adds no extra render samples.
+    co-rendered with the RGB pass; it adds no extra render samples.  Meshes that
+    did not participate in the FEM solve (no per-vertex ``sim_temperature``)
+    report their per-object ``heatsim_default_temperature`` fallback - the same
+    value the gray-body radiance shader uses - so the two passes stay consistent.
 
 ``thermal_radiance/``
     Gray-body emission image produced by a **second Blender render** that

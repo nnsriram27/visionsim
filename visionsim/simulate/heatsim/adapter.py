@@ -74,27 +74,52 @@ def gather_meshes(scene: Any) -> list:
     return out
 
 
+def _is_set(mat: Any, attr: str) -> bool:
+    """True iff *attr* was explicitly set on the per-object PropertyGroup *mat*.
+
+    ``obj.heat_sim_material`` is a ``PointerProperty`` registered on every object,
+    so ``mat`` is never ``None`` and a ``FloatProperty`` always returns its group
+    default - the global ``defaults`` (``--config.thermal.*``) would otherwise be
+    unreachable.  Blender's ``bpy_struct.is_property_set`` distinguishes an
+    explicitly-authored value from the registered default, restoring the locked
+    "per-object overrides, globals as fallback" contract.  Non-Blender fakes that
+    expose ``is_property_set`` are honoured too; anything else is treated as unset.
+    """
+    if mat is None:
+        return False
+    checker = getattr(mat, "is_property_set", None)
+    if checker is None:
+        return False
+    try:
+        return bool(checker(attr))
+    except Exception:  # pragma: no cover - defensive
+        return False
+
+
 def resolve_material(obj: Any, defaults: dict) -> dict:
     """Resolve per-object thermal parameters.
 
-    Priority: ``obj.heat_sim_material`` (the per-object PropertyGroup, if present)
-    then the ``defaults`` dict. SI units throughout (``thermal_diffusivity`` in
-    mm^2/s, ``density`` in kg/m^3, ``specific_heat`` in J/(kg.K)).
+    Priority: an *explicitly set* per-object value on ``obj.heat_sim_material``
+    (detected via :func:`_is_set`), else the global ``defaults`` dict.  Because the
+    PropertyGroup is registered on every object, only ``is_property_set`` can tell a
+    user-authored override from the registered group default; without that gate the
+    global ``--config.thermal.*`` knobs would be silently inert.  SI units throughout
+    (``thermal_diffusivity`` in mm^2/s, ``density`` in kg/m^3, ``specific_heat`` in
+    J/(kg.K)).
     """
     mat = getattr(obj, "heat_sim_material", None)
 
     def _pick(attr: str, key: str) -> float:
-        if mat is not None:
-            val = getattr(mat, attr, None)
-            if val is not None:
-                return float(val)
+        if _is_set(mat, attr):
+            return float(getattr(mat, attr))
         return float(defaults[key])
 
     role = "FEM_PARTICIPANT"
     dirichlet_T = 0.0
-    if mat is not None:
-        role = str(getattr(mat, "thermal_role", "FEM_PARTICIPANT") or "FEM_PARTICIPANT").upper()
-        dirichlet_T = float(getattr(mat, "dirichlet_temperature_K", 0.0) or 0.0)
+    if _is_set(mat, "thermal_role"):
+        role = str(getattr(mat, "thermal_role") or "FEM_PARTICIPANT").upper()
+    if _is_set(mat, "dirichlet_temperature_K"):
+        dirichlet_T = float(getattr(mat, "dirichlet_temperature_K") or 0.0)
 
     return {
         "initial_temperature_K": _pick("initial_temperature_K", "initial_temperature_K"),
@@ -526,7 +551,6 @@ def solve_scene(scene: Any, *, defaults: dict, solver_cfg: dict, cache_root: Pat
     cached = cache.read_temperatures(cache_root, key)
     if cached is not None:
         _log.debug("[heatsim.adapter] cache hit: %s", key)
-        print(f"[heatsim.adapter] cache hit: {key}")
         return cached
 
     if not sim_objects:
