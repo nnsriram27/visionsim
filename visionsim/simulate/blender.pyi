@@ -1454,6 +1454,69 @@ class BlenderClient:
         """
 
     @type_check_only
+    def prepare_thermal(
+        self,
+        radiance: bool = True,
+        preview: bool = True,
+        initial_temperature_K: float = 295.0,
+        thermal_diffusivity_mm2_s: float = 0.17,
+        density_kg_m3: float = 1330.0,
+        specific_heat_J_kgK: float = 880.0,
+        emissivity: float = 0.9,
+        irradiance_scale: float = 100.0,
+        sim_time_s: float = 1.0,
+        timestep_s: float = 0.05,
+        domain: Literal["POINTS", "MESH"] = "POINTS",
+        laplacian_backend: Literal["ROBUST", "IGL"] = "ROBUST",
+        device: Literal["cuda", "cpu"] = "cuda",
+        radiance_scale: float = 1.0,
+        exr_codec: EXR_CODECS = "DWAA",
+        bit_depth: Literal[16, 32] = 32,
+    ) -> None: ...
+
+    @type_check_only
+    def include_thermal(
+        self,
+        radiance: bool = True,
+        preview: bool = True,
+        initial_temperature_K: float = 295.0,
+        thermal_diffusivity_mm2_s: float = 0.17,
+        density_kg_m3: float = 1330.0,
+        specific_heat_J_kgK: float = 880.0,
+        emissivity: float = 0.9,
+        irradiance_scale: float = 100.0,
+        sim_time_s: float = 1.0,
+        timestep_s: float = 0.05,
+        domain: Literal["POINTS", "MESH"] = "POINTS",
+        laplacian_backend: Literal["ROBUST", "IGL"] = "ROBUST",
+        device: Literal["cuda", "cpu"] = "cuda",
+        radiance_scale: float = 1.0,
+        exr_codec: EXR_CODECS = "DWAA",
+        bit_depth: Literal[16, 32] = 32,
+    ) -> None: ...
+
+    @type_check_only
+    def heatsim_solve(
+        self,
+        radiance: bool = True,
+        preview: bool = True,
+        initial_temperature_K: float = 295.0,
+        thermal_diffusivity_mm2_s: float = 0.17,
+        density_kg_m3: float = 1330.0,
+        specific_heat_J_kgK: float = 880.0,
+        emissivity: float = 0.9,
+        irradiance_scale: float = 100.0,
+        sim_time_s: float = 1.0,
+        timestep_s: float = 0.05,
+        domain: Literal["POINTS", "MESH"] = "POINTS",
+        laplacian_backend: Literal["ROBUST", "IGL"] = "ROBUST",
+        device: Literal["cuda", "cpu"] = "cuda",
+        radiance_scale: float = 1.0,
+        exr_codec: EXR_CODECS = "DWAA",
+        bit_depth: Literal[16, 32] = 32,
+    ) -> None: ...
+
+    @type_check_only
     def load_addons(self, *addons: str) -> None:
         """Load blender addons by name (case-insensitive).
 
@@ -2286,6 +2349,69 @@ class BlenderClients(tuple):
         .. [1] `VGGT: Visual Geometry Grounded Transformer <https://arxiv.org/abs/2503.11651>`_
         .. [2] `DUSt3R: Geometric 3D Vision Made Easy with Unconstrained Image Collections <https://arxiv.org/abs/2312.14132>`_
         """
+
+    @type_check_only
+    def prepare_thermal(
+        self,
+        radiance: bool = True,
+        preview: bool = True,
+        initial_temperature_K: float = 295.0,
+        thermal_diffusivity_mm2_s: float = 0.17,
+        density_kg_m3: float = 1330.0,
+        specific_heat_J_kgK: float = 880.0,
+        emissivity: float = 0.9,
+        irradiance_scale: float = 100.0,
+        sim_time_s: float = 1.0,
+        timestep_s: float = 0.05,
+        domain: Literal["POINTS", "MESH"] = "POINTS",
+        laplacian_backend: Literal["ROBUST", "IGL"] = "ROBUST",
+        device: Literal["cuda", "cpu"] = "cuda",
+        radiance_scale: float = 1.0,
+        exr_codec: EXR_CODECS = "DWAA",
+        bit_depth: Literal[16, 32] = 32,
+    ) -> None: ...
+
+    @type_check_only
+    def include_thermal(
+        self,
+        radiance: bool = True,
+        preview: bool = True,
+        initial_temperature_K: float = 295.0,
+        thermal_diffusivity_mm2_s: float = 0.17,
+        density_kg_m3: float = 1330.0,
+        specific_heat_J_kgK: float = 880.0,
+        emissivity: float = 0.9,
+        irradiance_scale: float = 100.0,
+        sim_time_s: float = 1.0,
+        timestep_s: float = 0.05,
+        domain: Literal["POINTS", "MESH"] = "POINTS",
+        laplacian_backend: Literal["ROBUST", "IGL"] = "ROBUST",
+        device: Literal["cuda", "cpu"] = "cuda",
+        radiance_scale: float = 1.0,
+        exr_codec: EXR_CODECS = "DWAA",
+        bit_depth: Literal[16, 32] = 32,
+    ) -> None: ...
+
+    @type_check_only
+    def heatsim_solve(
+        self,
+        radiance: bool = True,
+        preview: bool = True,
+        initial_temperature_K: float = 295.0,
+        thermal_diffusivity_mm2_s: float = 0.17,
+        density_kg_m3: float = 1330.0,
+        specific_heat_J_kgK: float = 880.0,
+        emissivity: float = 0.9,
+        irradiance_scale: float = 100.0,
+        sim_time_s: float = 1.0,
+        timestep_s: float = 0.05,
+        domain: Literal["POINTS", "MESH"] = "POINTS",
+        laplacian_backend: Literal["ROBUST", "IGL"] = "ROBUST",
+        device: Literal["cuda", "cpu"] = "cuda",
+        radiance_scale: float = 1.0,
+        exr_codec: EXR_CODECS = "DWAA",
+        bit_depth: Literal[16, 32] = 32,
+    ) -> None: ...
 
     @type_check_only
     def load_addons(self, *addons: str) -> None:
