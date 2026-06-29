@@ -2199,47 +2199,56 @@ class BlenderService(rpyc.Service):
                 # main render does not write an incorrect (RGB-material) radiance file.
                 # The "composites" entry uses `object` as a placeholder (no real .mute),
                 # so we skip it; composites are suppressed in the second pass by write_still=False.
+                # `_orig_mute` is bound before the guard so the finally always restores cleanly,
+                # and a single outer try/finally covers BOTH render passes: if the main render
+                # raises, thermal_radiance.mute is still restored (otherwise it would stay muted
+                # permanently across subsequent frames, silently dropping radiance output).
                 _thermal_armed = getattr(self, "_thermal_radiance", None)
-                if _thermal_armed:
-                    _orig_mute: dict[str, bool] = {}
-                    for _sp, _entry in self._outputs.items():
-                        if _sp != "composites":
-                            _orig_mute[_sp] = _entry[0].mute
-                    self._outputs["thermal_radiance"][0].mute = True
+                _orig_mute: dict[str, bool] = {}
+                _thermal_state = None
+                try:
+                    if _thermal_armed:
+                        from visionsim.simulate.heatsim import thermal_shader
 
-                # If `write_still` is false, depth/normals/etc can be written but composites will be skipped
-                bpy.ops.render.render(animation=False, write_still="composites" in self._outputs)
+                        for _sp, _entry in self._outputs.items():
+                            if _sp != "composites":
+                                _orig_mute[_sp] = _entry[0].mute
+                        self._outputs["thermal_radiance"][0].mute = True
 
-                # Thermal radiance second render pass: swap to gray-body materials and re-render
-                # so the `thermal_radiance` output node captures the emitted thermal-camera radiance
-                # for this frame. The node path reuses the same per-frame indexing as the main loop.
-                if _thermal_armed:
-                    from visionsim.simulate.heatsim import thermal_shader
+                    # If `write_still` is false, depth/normals/etc can be written but composites will be skipped
+                    bpy.ops.render.render(animation=False, write_still="composites" in self._outputs)
 
-                    node, slot, *_ = self._outputs["thermal_radiance"]
-                    if bpy.app.version >= (5, 0, 0):
-                        node.directory = str(self.root_path / "thermal_radiance" / folder_index)
-                    else:
-                        node.base_path = str(self.root_path / "thermal_radiance" / folder_index)
-                    slot.name = str(Path(slot.name).with_stem(frame_index).name)
+                    # Thermal radiance second render pass: swap to gray-body materials and re-render
+                    # so the `thermal_radiance` output node captures the emitted thermal-camera radiance
+                    # for this frame. The node path reuses the same per-frame indexing as the main loop.
+                    if _thermal_armed:
+                        node, slot, *_ = self._outputs["thermal_radiance"]
+                        if bpy.app.version >= (5, 0, 0):
+                            node.directory = str(self.root_path / "thermal_radiance" / folder_index)
+                        else:
+                            node.base_path = str(self.root_path / "thermal_radiance" / folder_index)
+                        slot.name = str(Path(slot.name).with_stem(frame_index).name)
 
-                    # Mute every real output-file node except thermal_radiance so only
-                    # the gray-body radiance EXR is written during this pass.
-                    for _sp, _entry in self._outputs.items():
-                        if _sp == "composites":
-                            continue
-                        _entry[0].mute = _sp != "thermal_radiance"
+                        # Mute every real output-file node except thermal_radiance so only
+                        # the gray-body radiance EXR is written during this pass.
+                        for _sp, _entry in self._outputs.items():
+                            if _sp == "composites":
+                                continue
+                            _entry[0].mute = _sp != "thermal_radiance"
 
-                    state = thermal_shader.enter_thermal_scene(
-                        self.scene, radiance_scale=self._thermal_radiance["radiance_scale"]
-                    )
-                    try:
+                        _thermal_state = thermal_shader.enter_thermal_scene(
+                            self.scene, radiance_scale=self._thermal_radiance["radiance_scale"]
+                        )
                         bpy.ops.render.render(animation=False, write_still=False)
-                    finally:
-                        thermal_shader.restore_scene(self.scene, state)
-                        # Restore all node mute states to their pre-render originals
-                        for _sp, _was_muted in _orig_mute.items():
-                            self._outputs[_sp][0].mute = _was_muted
+                finally:
+                    # Restore the thermal scene (if entered) and all node mute states to their
+                    # pre-render originals, regardless of which render pass (if any) raised.
+                    if _thermal_state is not None:
+                        from visionsim.simulate.heatsim import thermal_shader
+
+                        thermal_shader.restore_scene(self.scene, _thermal_state)
+                    for _sp, _was_muted in _orig_mute.items():
+                        self._outputs[_sp][0].mute = _was_muted
 
         # Before Blender 5.0 file output nodes ALWAYS appended the frame number
         # to the filename making our path incorrect, here we rename the file.
