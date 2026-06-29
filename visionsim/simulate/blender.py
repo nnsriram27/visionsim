@@ -457,6 +457,7 @@ class BlenderService(rpyc.Service):
         self._warned_no_outputs: bool = False
         self._outputs: dict[str, Any] = {}
         self._camera: bpy.types.Camera | None = None
+        self._thermal_radiance: dict[str, Any] | None = None
 
     def _clear_cached_properties(self) -> None:
         # Based on: https://stackoverflow.com/a/71579485
@@ -499,6 +500,7 @@ class BlenderService(rpyc.Service):
         self._warned_no_outputs = False
         self._outputs = {}
         self._camera = None
+        self._thermal_radiance = None
 
     def register_output_type(
         self,
@@ -743,6 +745,14 @@ class BlenderService(rpyc.Service):
         self.blend_file: Path = Path(str(blend_file)).resolve()
         bpy.ops.wm.open_mainfile(filepath=str(blend_file), **kwargs)
         self.log.info(f"Successfully loaded {blend_file}")
+
+        # Register the heatsim per-object thermal material properties so that
+        # ``obj.heat_sim_material`` and ``obj.heat_simulation_enabled`` are available
+        # on any loaded blend. Guarded so repeated initializations don't re-register.
+        from visionsim.simulate.heatsim import register as heatsim_register
+
+        if not hasattr(bpy.types.Object, "heat_sim_material"):
+            heatsim_register()
 
         # Init various variables to track state
         self._use_animation: bool = True
@@ -1469,6 +1479,262 @@ class BlenderService(rpyc.Service):
         )
 
     @require_initialized_service
+    def exposed_prepare_thermal(
+        self,
+        initial_temperature_K: float = 295.0,
+        thermal_diffusivity_mm2_s: float = 0.17,
+        density_kg_m3: float = 1330.0,
+        specific_heat_J_kgK: float = 880.0,
+        emissivity: float = 0.9,
+        irradiance_scale: float = 100.0,
+        sim_time_s: float = 1.0,
+        timestep_s: float = 0.05,
+        domain: Literal["POINTS", "MESH"] = "POINTS",
+        laplacian_backend: Literal["ROBUST", "IGL"] = "ROBUST",
+        device: Literal["cuda", "cpu"] = "cuda",
+    ) -> None:
+        """Solve the scene's heat-transfer simulation and prepare it for thermal rendering.
+
+        Runs the (cache-aware) FEM solve, writes the final solved per-vertex
+        ``sim_temperature`` attribute onto every mesh, stamps a default temperature on any
+        unsolved mesh, and registers the ``temperature`` value AOV on the original materials.
+
+        Note:
+            This must be called before :meth:`include_thermal <visionsim.simulate.blender.BlenderService.exposed_include_thermal>`,
+            since the AOV is registered on the original materials and exposes the ``temperature`` render-layer
+            output socket that ``include_thermal`` wires into the compositor. M1 is a static solve, so the final
+            timestep (``timestep=-1``) is written to every frame.
+
+        Args:
+            initial_temperature_K (float, optional): Default initial temperature, in Kelvin, for meshes without a
+                per-object value. Defaults to 295.0.
+            thermal_diffusivity_mm2_s (float, optional): Default thermal diffusivity in ``mm^2/s``. Defaults to 0.17.
+            density_kg_m3 (float, optional): Default material density in ``kg/m^3``. Defaults to 1330.0.
+            specific_heat_J_kgK (float, optional): Default specific heat in ``J/kg*K``. Defaults to 880.0.
+            emissivity (float, optional): Default surface emissivity in ``[0, 1]``. Defaults to 0.9.
+            irradiance_scale (float, optional): Scale factor applied to the computed irradiance (heating input).
+                Defaults to 100.0.
+            sim_time_s (float, optional): Total simulated time, in seconds, for the static scene solve. Defaults to 1.0.
+            timestep_s (float, optional): Solver timestep in seconds. Defaults to 0.05.
+            domain (str, optional): FEM domain, either ``"POINTS"`` (surface point cloud, recommended) or ``"MESH"``.
+                Defaults to ``"POINTS"``.
+            laplacian_backend (str, optional): Laplacian backend, either ``"ROBUST"`` or ``"IGL"``. Defaults to ``"ROBUST"``.
+            device (str, optional): Torch device for the solve, either ``"cuda"`` or ``"cpu"``; falls back to ``"cpu"``
+                if cuda is unavailable. Defaults to ``"cuda"``.
+        """
+        from visionsim.simulate.heatsim import adapter, thermal_shader
+
+        defaults = {
+            "initial_temperature_K": initial_temperature_K,
+            "thermal_diffusivity_mm2_s": thermal_diffusivity_mm2_s,
+            "density_kg_m3": density_kg_m3,
+            "specific_heat_J_kgK": specific_heat_J_kgK,
+            "emissivity": emissivity,
+            "irradiance_scale": irradiance_scale,
+        }
+        solver_cfg = {
+            "sim_time_s": sim_time_s,
+            "timestep_s": timestep_s,
+            "domain": domain,
+            "laplacian_backend": laplacian_backend,
+            "device": device,
+        }
+        blend_path = Path(bpy.data.filepath)
+        cache_root = Path(str(blend_path) + ".heatsim")
+
+        history = adapter.solve_scene(self.scene, defaults=defaults, solver_cfg=solver_cfg, cache_root=cache_root)
+        adapter.write_frame_attributes(self.scene, history, -1, defaults)
+        thermal_shader.stamp_default_temperatures(self.scene, default_K=initial_temperature_K)
+        thermal_shader.setup_temperature_aov(self.scene, self.view_layer)
+
+    @require_initialized_service
+    def exposed_heatsim_solve(
+        self,
+        initial_temperature_K: float = 295.0,
+        thermal_diffusivity_mm2_s: float = 0.17,
+        density_kg_m3: float = 1330.0,
+        specific_heat_J_kgK: float = 880.0,
+        emissivity: float = 0.9,
+        irradiance_scale: float = 100.0,
+        sim_time_s: float = 1.0,
+        timestep_s: float = 0.05,
+        domain: Literal["POINTS", "MESH"] = "POINTS",
+        laplacian_backend: Literal["ROBUST", "IGL"] = "ROBUST",
+        device: Literal["cuda", "cpu"] = "cuda",
+    ) -> None:
+        """Solve and cache the scene's heat-transfer simulation without preparing it for rendering.
+
+        This is the solve-and-cache half of
+        :meth:`prepare_thermal <visionsim.simulate.blender.BlenderService.exposed_prepare_thermal>`: it runs the
+        cache-aware FEM solve so the result is written to disk, but does not write the ``sim_temperature`` attribute,
+        stamp default temperatures, or register the ``temperature`` AOV. It exists for the optional standalone
+        solve command, letting an expensive solve be primed ahead of rendering.
+
+        Args:
+            initial_temperature_K (float, optional): Default initial temperature, in Kelvin, for meshes without a
+                per-object value. Defaults to 295.0.
+            thermal_diffusivity_mm2_s (float, optional): Default thermal diffusivity in ``mm^2/s``. Defaults to 0.17.
+            density_kg_m3 (float, optional): Default material density in ``kg/m^3``. Defaults to 1330.0.
+            specific_heat_J_kgK (float, optional): Default specific heat in ``J/kg*K``. Defaults to 880.0.
+            emissivity (float, optional): Default surface emissivity in ``[0, 1]``. Defaults to 0.9.
+            irradiance_scale (float, optional): Scale factor applied to the computed irradiance (heating input).
+                Defaults to 100.0.
+            sim_time_s (float, optional): Total simulated time, in seconds, for the static scene solve. Defaults to 1.0.
+            timestep_s (float, optional): Solver timestep in seconds. Defaults to 0.05.
+            domain (str, optional): FEM domain, either ``"POINTS"`` (surface point cloud, recommended) or ``"MESH"``.
+                Defaults to ``"POINTS"``.
+            laplacian_backend (str, optional): Laplacian backend, either ``"ROBUST"`` or ``"IGL"``. Defaults to ``"ROBUST"``.
+            device (str, optional): Torch device for the solve, either ``"cuda"`` or ``"cpu"``; falls back to ``"cpu"``
+                if cuda is unavailable. Defaults to ``"cuda"``.
+        """
+        from visionsim.simulate.heatsim import adapter
+
+        defaults = {
+            "initial_temperature_K": initial_temperature_K,
+            "thermal_diffusivity_mm2_s": thermal_diffusivity_mm2_s,
+            "density_kg_m3": density_kg_m3,
+            "specific_heat_J_kgK": specific_heat_J_kgK,
+            "emissivity": emissivity,
+            "irradiance_scale": irradiance_scale,
+        }
+        solver_cfg = {
+            "sim_time_s": sim_time_s,
+            "timestep_s": timestep_s,
+            "domain": domain,
+            "laplacian_backend": laplacian_backend,
+            "device": device,
+        }
+        blend_path = Path(bpy.data.filepath)
+        cache_root = Path(str(blend_path) + ".heatsim")
+
+        adapter.solve_scene(self.scene, defaults=defaults, solver_cfg=solver_cfg, cache_root=cache_root)
+
+    @require_initialized_service
+    def exposed_include_thermal(
+        self,
+        radiance: bool = True,
+        preview: bool = True,
+        initial_temperature_K: float = 295.0,
+        thermal_diffusivity_mm2_s: float = 0.17,
+        density_kg_m3: float = 1330.0,
+        specific_heat_J_kgK: float = 880.0,
+        emissivity: float = 0.9,
+        irradiance_scale: float = 100.0,
+        sim_time_s: float = 1.0,
+        timestep_s: float = 0.05,
+        domain: Literal["POINTS", "MESH"] = "POINTS",
+        laplacian_backend: Literal["ROBUST", "IGL"] = "ROBUST",
+        device: Literal["cuda", "cpu"] = "cuda",
+        radiance_scale: float = 1.0,
+        exr_codec: EXR_CODECS = "DWAA",
+        bit_depth: Literal[16, 32] = 32,
+    ) -> None:
+        """Sets up Blender compositor to include thermal outputs for rendered images.
+
+        Wires the per-vertex temperature map (in Kelvin) from the ``temperature`` AOV registered by
+        :meth:`prepare_thermal <visionsim.simulate.blender.BlenderService.exposed_prepare_thermal>` into the
+        compositor, optionally adds a turbo-colormap preview, and optionally arms a second gray-body render pass
+        that produces a thermal-camera radiance image (emitted at render time by
+        :meth:`render_current_frame <visionsim.simulate.blender.BlenderService.exposed_render_current_frame>`).
+
+        Note:
+            This must be called after ``prepare_thermal``, which registers the ``temperature`` AOV and exposes the
+            matching render-layer output socket. The solver and material parameters
+            (``initial_temperature_K`` through ``device``) are accepted only to mirror ``ThermalConfig`` and are
+            consumed by ``prepare_thermal``; ``include_thermal`` itself ignores them.
+
+        Args:
+            radiance (bool, optional): If true, arm the gray-body thermal-camera radiance image as a second render
+                pass and register its per-frame output. Defaults to True.
+            preview (bool, optional): If true, also save a turbo-colormap PNG preview of the temperature map.
+                Defaults to True.
+            initial_temperature_K (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
+                ignored here. Default initial temperature, in Kelvin, for meshes without a per-object value.
+                Defaults to 295.0.
+            thermal_diffusivity_mm2_s (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal``
+                and ignored here. Default thermal diffusivity in ``mm^2/s``. Defaults to 0.17.
+            density_kg_m3 (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
+                here. Default material density in ``kg/m^3``. Defaults to 1330.0.
+            specific_heat_J_kgK (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
+                ignored here. Default specific heat in ``J/kg*K``. Defaults to 880.0.
+            emissivity (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
+                here. Default surface emissivity in ``[0, 1]``. Defaults to 0.9.
+            irradiance_scale (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
+                ignored here. Scale factor applied to the computed irradiance. Defaults to 100.0.
+            sim_time_s (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
+                here. Total simulated time in seconds. Defaults to 1.0.
+            timestep_s (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
+                here. Solver timestep in seconds. Defaults to 0.05.
+            domain (str, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored here.
+                FEM domain, either ``"POINTS"`` or ``"MESH"``. Defaults to ``"POINTS"``.
+            laplacian_backend (str, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
+                ignored here. Laplacian backend, either ``"ROBUST"`` or ``"IGL"``. Defaults to ``"ROBUST"``.
+            device (str, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored here.
+                Torch device, either ``"cuda"`` or ``"cpu"``. Defaults to ``"cuda"``.
+            radiance_scale (float, optional): Gray-body emission magnitude knob for the ``thermal_radiance`` render.
+                Defaults to 1.0.
+            exr_codec (str, optional): Codec used to compress the temperature and radiance EXR files. Options vary
+                depending on the version of Blender, with the following being broadly available:
+                ('NONE', 'PXR24', 'ZIP', 'PIZ', 'RLE', 'ZIPS', 'DWAA', 'DWAB'). Defaults to ``"DWAA"``.
+            bit_depth (int, optional): Bit depth per channel for the temperature and radiance EXRs, either 16 or 32.
+                Defaults to 32.
+        """
+        # Temperature ground-truth output (Kelvin), driven by the "temperature" AOV
+        # registered by prepare_thermal via setup_temperature_aov.
+        self._include_output(
+            "temperature",
+            self.render_layers.outputs["temperature"],
+            label="Temperature Output",
+            file_format="OPEN_EXR",
+            color_mode="BW",
+            exr_codec=exr_codec,
+            bit_depth=bit_depth,
+            c=1,
+        )
+
+        if preview:
+            from visionsim.simulate.nodes import thermal_preview_node_group
+
+            group = self.tree.nodes.new("CompositorNodeGroup")
+            group.label = "Thermal Preview"
+            group.node_tree = thermal_preview_node_group()
+            self.tree.links.new(self.render_layers.outputs["temperature"], group.inputs["Temperature"])
+            self._include_output(
+                "previews/temperature",
+                group.outputs["Image"],
+                label="Preview Temperature Output",
+                preview=True,
+                color_mode="RGB",
+                c=3,
+            )
+
+        if radiance:
+            # Arm the second render pass; the actual gray-body render is emitted by
+            # exposed_render_current_frame, which re-points this node and re-renders.
+            self._thermal_radiance = {
+                "radiance_scale": radiance_scale,
+                "exr_codec": exr_codec,
+                "bit_depth": bit_depth,
+            }
+
+            node, (socket,), (slot,) = file_output_node(
+                self.tree,
+                self.root_path / "thermal_radiance" / "0000",
+                label="Thermal Radiance Output",
+                color_mode="RGB",
+            )
+            node.format.color_management = "OVERRIDE"
+            node.format.linear_colorspace_settings.name = "Non-Color"
+            node.format.file_format = "OPEN_EXR"
+            node.format.color_mode = "RGB"
+            node.format.exr_codec = exr_codec
+            node.format.color_depth = str(bit_depth)
+            slot.name = str(Path(slot.name).with_suffix(FORMATS["OPEN_EXR"]))
+
+            self.tree.links.new(self.render_layers.outputs["Image"], socket)
+            self.register_output_type("thermal_radiance", node, slot, c=3)
+
+    @require_initialized_service
     def exposed_load_addons(self, *addons: str) -> None:
         """Load blender addons by name (case-insensitive).
 
@@ -1897,6 +2163,27 @@ class BlenderService(rpyc.Service):
             if not allow_skips or any(not Path(self.root_path / p).exists() for p in paths.values()):
                 # If `write_still` is false, depth/normals/etc can be written but composites will be skipped
                 bpy.ops.render.render(animation=False, write_still="composites" in self._outputs)
+
+                # Thermal radiance second render pass: swap to gray-body materials and re-render
+                # so the `thermal_radiance` output node captures the emitted thermal-camera radiance
+                # for this frame. The node path reuses the same per-frame indexing as the main loop.
+                if getattr(self, "_thermal_radiance", None):
+                    from visionsim.simulate.heatsim import thermal_shader
+
+                    node, slot, *_ = self._outputs["thermal_radiance"]
+                    if bpy.app.version >= (5, 0, 0):
+                        node.directory = str(self.root_path / "thermal_radiance" / folder_index)
+                    else:
+                        node.base_path = str(self.root_path / "thermal_radiance" / folder_index)
+                    slot.name = str(Path(slot.name).with_stem(frame_index).name)
+
+                    state = thermal_shader.enter_thermal_scene(
+                        self.scene, radiance_scale=self._thermal_radiance["radiance_scale"]
+                    )
+                    try:
+                        bpy.ops.render.render(animation=False, write_still=False)
+                    finally:
+                        thermal_shader.restore_scene(self.scene, state)
 
         # Before Blender 5.0 file output nodes ALWAYS appended the frame number
         # to the filename making our path incorrect, here we rename the file.
