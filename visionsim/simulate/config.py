@@ -154,6 +154,49 @@ class PointsConfig:
 
 
 @dataclass
+class ThermalConfig:
+    # --- outputs ---
+    radiance: bool = True
+    """If true, also render the gray-body thermal-camera radiance image (second render pass)"""
+    preview: bool = True
+    """Also save a turbo-colormap PNG preview of the temperature map"""
+    # --- per-object override hook (else globals below) ---
+    # overrides: dict[str, ...]  # (M2: per-object params by object name; M1 uses globals + obj.heat_sim_material)
+    # --- global material defaults (used where no per-object value is set) ---
+    initial_temperature_K: float = 295.0
+    """Default initial temperature for meshes without a per-object value"""
+    thermal_diffusivity_mm2_s: float = 0.17
+    """Default thermal diffusivity (mm^2/s)"""
+    density_kg_m3: float = 1330.0
+    """Default material density (kg/m^3)"""
+    specific_heat_J_kgK: float = 880.0
+    """Default specific heat (J/kg*K)"""
+    emissivity: float = 0.9
+    """Default surface emissivity in [0, 1]"""
+    # --- solver ---
+    irradiance_scale: float = 100.0
+    """Scale factor applied to computed irradiance (heating input)"""
+    sim_time_s: float = 1.0
+    """Total simulated time in seconds (static scene mode)"""
+    timestep_s: float = 0.05
+    """Solver timestep in seconds"""
+    domain: Literal["POINTS", "MESH"] = "POINTS"
+    """FEM domain: surface point cloud (recommended) or mesh"""
+    laplacian_backend: Literal["ROBUST", "IGL"] = "ROBUST"
+    """Laplacian backend"""
+    device: Literal["cuda", "cpu"] = "cuda"
+    """Torch device for the solve; falls back to cpu if cuda is unavailable"""
+    # --- radiance render ---
+    radiance_scale: float = 1.0
+    """Gray-body emission magnitude knob for the thermal_radiance render"""
+    # --- file formats (mirror DepthsConfig) ---
+    exr_codec: EXR_CODECS = "DWAA"
+    """Encoding used to compress EXRs"""
+    bit_depth: Literal[16, 32] = 32
+    """Bit depth for temperature/radiance EXRs"""
+
+
+@dataclass
 class RenderConfig:
     executable: Path | None = None
     """Path to blender executable"""
@@ -203,6 +246,10 @@ class RenderConfig:
     """If true, enable world-space point map outputs"""
     points: PointsConfig = field(default_factory=PointsConfig)
     """Point maps configuration options"""
+    include_thermal: bool = False
+    """If true, enable thermal outputs (temperature map + thermal-camera radiance)"""
+    thermal: ThermalConfig = field(default_factory=ThermalConfig)
+    """Thermal modality configuration options"""
     include_all: bool = False
     """If true, enable all ground truth outputs"""
     previews: bool = True
@@ -259,6 +306,7 @@ class RenderConfig:
             self.include_diffuse_pass = True
             self.include_specular_pass = True
             self.include_points = True
+            self.include_thermal = True
 
         self.depths.preview &= self.previews
         self.normals.preview &= self.previews
@@ -266,3 +314,4 @@ class RenderConfig:
         self.segmentations.preview &= self.previews
         self.materials.preview &= self.previews
         self.points.preview &= self.previews
+        self.thermal.preview &= self.previews
