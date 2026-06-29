@@ -1478,6 +1478,53 @@ class BlenderService(rpyc.Service):
             c=3,
         )
 
+    def _thermal_solve(
+        self,
+        *,
+        initial_temperature_K: float,
+        thermal_diffusivity_mm2_s: float,
+        density_kg_m3: float,
+        specific_heat_J_kgK: float,
+        emissivity: float,
+        irradiance_scale: float,
+        sim_time_s: float,
+        timestep_s: float,
+        domain: Literal["POINTS", "MESH"],
+        laplacian_backend: Literal["ROBUST", "IGL"],
+        device: Literal["cuda", "cpu"],
+    ) -> dict:
+        """Shared FEM-solve core used by :meth:`exposed_prepare_thermal` and
+        :meth:`exposed_heatsim_solve`.
+
+        Builds the ``defaults`` and ``solver_cfg`` dicts, derives ``cache_root``
+        from the always-set :attr:`blend_file` path (avoids ``bpy.data.filepath``
+        which is empty for an unsaved scene), and delegates to
+        ``adapter.solve_scene``.  Both callers produce identical cache keys
+        because they share this single code path.
+
+        Returns:
+            dict: Per-object temperature history as returned by ``adapter.solve_scene``.
+        """
+        from visionsim.simulate.heatsim import adapter
+
+        defaults = {
+            "initial_temperature_K": initial_temperature_K,
+            "thermal_diffusivity_mm2_s": thermal_diffusivity_mm2_s,
+            "density_kg_m3": density_kg_m3,
+            "specific_heat_J_kgK": specific_heat_J_kgK,
+            "emissivity": emissivity,
+            "irradiance_scale": irradiance_scale,
+        }
+        solver_cfg = {
+            "sim_time_s": sim_time_s,
+            "timestep_s": timestep_s,
+            "domain": domain,
+            "laplacian_backend": laplacian_backend,
+            "device": device,
+        }
+        cache_root = Path(str(self.blend_file) + ".heatsim")
+        return adapter.solve_scene(self.scene, defaults=defaults, solver_cfg=solver_cfg, cache_root=cache_root)
+
     @require_initialized_service
     def exposed_prepare_thermal(
         self,
@@ -1524,26 +1571,22 @@ class BlenderService(rpyc.Service):
         """
         from visionsim.simulate.heatsim import adapter, thermal_shader
 
-        defaults = {
-            "initial_temperature_K": initial_temperature_K,
-            "thermal_diffusivity_mm2_s": thermal_diffusivity_mm2_s,
-            "density_kg_m3": density_kg_m3,
-            "specific_heat_J_kgK": specific_heat_J_kgK,
-            "emissivity": emissivity,
-            "irradiance_scale": irradiance_scale,
-        }
-        solver_cfg = {
-            "sim_time_s": sim_time_s,
-            "timestep_s": timestep_s,
-            "domain": domain,
-            "laplacian_backend": laplacian_backend,
-            "device": device,
-        }
-        blend_path = Path(bpy.data.filepath)
-        cache_root = Path(str(blend_path) + ".heatsim")
-
-        history = adapter.solve_scene(self.scene, defaults=defaults, solver_cfg=solver_cfg, cache_root=cache_root)
-        adapter.write_frame_attributes(self.scene, history, -1, defaults)
+        history = self._thermal_solve(
+            initial_temperature_K=initial_temperature_K,
+            thermal_diffusivity_mm2_s=thermal_diffusivity_mm2_s,
+            density_kg_m3=density_kg_m3,
+            specific_heat_J_kgK=specific_heat_J_kgK,
+            emissivity=emissivity,
+            irradiance_scale=irradiance_scale,
+            sim_time_s=sim_time_s,
+            timestep_s=timestep_s,
+            domain=domain,
+            laplacian_backend=laplacian_backend,
+            device=device,
+        )
+        adapter.write_frame_attributes(
+            self.scene, history, -1, {"initial_temperature_K": initial_temperature_K}
+        )
         thermal_shader.stamp_default_temperatures(self.scene, default_K=initial_temperature_K)
         thermal_shader.setup_temperature_aov(self.scene, self.view_layer)
 
@@ -1587,27 +1630,19 @@ class BlenderService(rpyc.Service):
             device (str, optional): Torch device for the solve, either ``"cuda"`` or ``"cpu"``; falls back to ``"cpu"``
                 if cuda is unavailable. Defaults to ``"cuda"``.
         """
-        from visionsim.simulate.heatsim import adapter
-
-        defaults = {
-            "initial_temperature_K": initial_temperature_K,
-            "thermal_diffusivity_mm2_s": thermal_diffusivity_mm2_s,
-            "density_kg_m3": density_kg_m3,
-            "specific_heat_J_kgK": specific_heat_J_kgK,
-            "emissivity": emissivity,
-            "irradiance_scale": irradiance_scale,
-        }
-        solver_cfg = {
-            "sim_time_s": sim_time_s,
-            "timestep_s": timestep_s,
-            "domain": domain,
-            "laplacian_backend": laplacian_backend,
-            "device": device,
-        }
-        blend_path = Path(bpy.data.filepath)
-        cache_root = Path(str(blend_path) + ".heatsim")
-
-        adapter.solve_scene(self.scene, defaults=defaults, solver_cfg=solver_cfg, cache_root=cache_root)
+        self._thermal_solve(
+            initial_temperature_K=initial_temperature_K,
+            thermal_diffusivity_mm2_s=thermal_diffusivity_mm2_s,
+            density_kg_m3=density_kg_m3,
+            specific_heat_J_kgK=specific_heat_J_kgK,
+            emissivity=emissivity,
+            irradiance_scale=irradiance_scale,
+            sim_time_s=sim_time_s,
+            timestep_s=timestep_s,
+            domain=domain,
+            laplacian_backend=laplacian_backend,
+            device=device,
+        )
 
     @require_initialized_service
     def exposed_include_thermal(
@@ -1709,14 +1744,6 @@ class BlenderService(rpyc.Service):
             )
 
         if radiance:
-            # Arm the second render pass; the actual gray-body render is emitted by
-            # exposed_render_current_frame, which re-points this node and re-renders.
-            self._thermal_radiance = {
-                "radiance_scale": radiance_scale,
-                "exr_codec": exr_codec,
-                "bit_depth": bit_depth,
-            }
-
             node, (socket,), (slot,) = file_output_node(
                 self.tree,
                 self.root_path / "thermal_radiance" / "0000",
@@ -1733,6 +1760,13 @@ class BlenderService(rpyc.Service):
 
             self.tree.links.new(self.render_layers.outputs["Image"], socket)
             self.register_output_type("thermal_radiance", node, slot, c=3)
+            # Arm the second render pass only after registration succeeds, so a raise
+            # mid-setup cannot leave the flag truthy with _outputs["thermal_radiance"] missing.
+            self._thermal_radiance = {
+                "radiance_scale": radiance_scale,
+                "exr_codec": exr_codec,
+                "bit_depth": bit_depth,
+            }
 
     @require_initialized_service
     def exposed_load_addons(self, *addons: str) -> None:
@@ -2161,13 +2195,25 @@ class BlenderService(rpyc.Service):
         if not dry_run:
             # Render frame(s), skip the render iff all files exist and `allow_skips`
             if not allow_skips or any(not Path(self.root_path / p).exists() for p in paths.values()):
+                # Snapshot original node mute states and pre-mute thermal_radiance so the
+                # main render does not write an incorrect (RGB-material) radiance file.
+                # The "composites" entry uses `object` as a placeholder (no real .mute),
+                # so we skip it; composites are suppressed in the second pass by write_still=False.
+                _thermal_armed = getattr(self, "_thermal_radiance", None)
+                if _thermal_armed:
+                    _orig_mute: dict[str, bool] = {}
+                    for _sp, _entry in self._outputs.items():
+                        if _sp != "composites":
+                            _orig_mute[_sp] = _entry[0].mute
+                    self._outputs["thermal_radiance"][0].mute = True
+
                 # If `write_still` is false, depth/normals/etc can be written but composites will be skipped
                 bpy.ops.render.render(animation=False, write_still="composites" in self._outputs)
 
                 # Thermal radiance second render pass: swap to gray-body materials and re-render
                 # so the `thermal_radiance` output node captures the emitted thermal-camera radiance
                 # for this frame. The node path reuses the same per-frame indexing as the main loop.
-                if getattr(self, "_thermal_radiance", None):
+                if _thermal_armed:
                     from visionsim.simulate.heatsim import thermal_shader
 
                     node, slot, *_ = self._outputs["thermal_radiance"]
@@ -2177,6 +2223,13 @@ class BlenderService(rpyc.Service):
                         node.base_path = str(self.root_path / "thermal_radiance" / folder_index)
                     slot.name = str(Path(slot.name).with_stem(frame_index).name)
 
+                    # Mute every real output-file node except thermal_radiance so only
+                    # the gray-body radiance EXR is written during this pass.
+                    for _sp, _entry in self._outputs.items():
+                        if _sp == "composites":
+                            continue
+                        _entry[0].mute = _sp != "thermal_radiance"
+
                     state = thermal_shader.enter_thermal_scene(
                         self.scene, radiance_scale=self._thermal_radiance["radiance_scale"]
                     )
@@ -2184,6 +2237,9 @@ class BlenderService(rpyc.Service):
                         bpy.ops.render.render(animation=False, write_still=False)
                     finally:
                         thermal_shader.restore_scene(self.scene, state)
+                        # Restore all node mute states to their pre-render originals
+                        for _sp, _was_muted in _orig_mute.items():
+                            self._outputs[_sp][0].mute = _was_muted
 
         # Before Blender 5.0 file output nodes ALWAYS appended the frame number
         # to the filename making our path incorrect, here we rename the file.
