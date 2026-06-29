@@ -54,6 +54,11 @@ if __name__ == "__main__":
         base_cmd + ["ensurepip"],
         base_cmd + ["pip", "install", "-U", "pip"],
         base_cmd + ["pip", "install", "rpyc", "peewee", "typing-extensions"],
+        # cu124 matches NVIDIA driver >=520 / CUDA 12.x (adjust the index URL for other drivers,
+        # e.g. cu118 for older cards; scipy/robust_laplacian are not on the PyTorch index so they
+        # are installed separately via plain PyPI below).
+        base_cmd + ["pip", "install", "torch", "--index-url", "https://download.pytorch.org/whl/cu124"],
+        base_cmd + ["pip", "install", "scipy", "robust_laplacian"],
         base_cmd
         + ["pip", "install", "--no-warn-script-location", "--force-reinstall", "--no-dependencies", "--verbose"]
         + module_spec,
