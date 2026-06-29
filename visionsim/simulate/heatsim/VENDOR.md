@@ -15,6 +15,7 @@ Source commit: `543ee81` (`543ee814488742eb6147e2296d0d29ce385f97d2`)
 | `visionsim/simulate/heatsim/sh9_sky.py` | `addon/lib/sh9_sky.py` | See below |
 | `visionsim/simulate/heatsim/sky_visibility.py` | `addon/lib/sky_visibility.py` | See below |
 | `visionsim/simulate/heatsim/bvh_backend.py` | `addon/lib/bvh_backend.py` | See below |
+| `visionsim/simulate/heatsim/temperature_io.py` | `addon/lib/temperature_io.py` | See below |
 
 ## Lint / type-check exclusions
 
@@ -77,11 +78,17 @@ Source commit: `543ee81` (`543ee814488742eb6147e2296d0d29ce385f97d2`)
 2. No intra-package imports to rewrite (embreex and mathutils are external).
 3. **Logger added**: `import logging`, `_log = logging.getLogger("rich")`; single `print(...)` → `_log.debug(...)`.
 
+### temperature_io.py (from temperature_io.py)
+
+1. **Provenance header** added as first line: `# Vendored from heat-sim-blender:addon/lib/temperature_io.py @ 543ee81`
+2. No import rewrites required (file has no intra-package local imports; only stdlib, `bpy`, `numpy`).
+3. **Logger added**: `import logging`, `_log = logging.getLogger("rich")`; all unconditional `print(...)` → `_log.debug(...)`.
+
 ## NEEDS_CONTEXT runtime dependencies
 
 `irradiance_kernel.py` and `sky_visibility.py` contain lazy function-scoped imports of two addon modules NOT in the vendor set:
 
-- `temperature_io` — disk caching of albedo and sky-visibility data. Used in `compute_per_vertex_irradiance()` and `get_or_bake_for_objects()`. Needs to be vendored in a future task or provided via the host addon.
+- `temperature_io` — disk caching of albedo and sky-visibility data. Used in `compute_per_vertex_irradiance()` and `get_or_bake_for_objects()`. **Vendored** (this task).
 - `irradiance` — Cycles albedo bake. Used in `_bake_vertex_albedo_via_cycles()`. Explicitly called out as acceptable ("Their albedo step may call Cycles once") in the task brief — this is intentional design.
 
 Both are lazy imports (inside functions, not at module top-level) so they do not prevent the modules from being imported; they only fail at runtime when those specific code paths are exercised.
