@@ -1528,6 +1528,8 @@ class BlenderService(rpyc.Service):
     @require_initialized_service
     def exposed_prepare_thermal(
         self,
+        radiance: bool = True,
+        preview: bool = True,
         initial_temperature_K: float = 295.0,
         thermal_diffusivity_mm2_s: float = 0.17,
         density_kg_m3: float = 1330.0,
@@ -1539,6 +1541,9 @@ class BlenderService(rpyc.Service):
         domain: Literal["POINTS", "MESH"] = "POINTS",
         laplacian_backend: Literal["ROBUST", "IGL"] = "ROBUST",
         device: Literal["cuda", "cpu"] = "cuda",
+        radiance_scale: float = 1.0,
+        exr_codec: EXR_CODECS = "DWAA",
+        bit_depth: Literal[16, 32] = 32,
     ) -> None:
         """Solve the scene's heat-transfer simulation and prepare it for thermal rendering.
 
@@ -1550,9 +1555,14 @@ class BlenderService(rpyc.Service):
             This must be called before :meth:`include_thermal <visionsim.simulate.blender.BlenderService.exposed_include_thermal>`,
             since the AOV is registered on the original materials and exposes the ``temperature`` render-layer
             output socket that ``include_thermal`` wires into the compositor. M1 is a static solve, so the final
-            timestep (``timestep=-1``) is written to every frame.
+            timestep (``timestep=-1``) is written to every frame. The full ``ThermalConfig`` field set is accepted so
+            a single ``**asdict(config.thermal)`` dispatch can drive this method; the output-only fields are ignored.
 
         Args:
+            radiance (bool, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
+                by ``include_thermal`` / the radiance render). Defaults to True.
+            preview (bool, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
+                by ``include_thermal`` / the radiance render). Defaults to True.
             initial_temperature_K (float, optional): Default initial temperature, in Kelvin, for meshes without a
                 per-object value. Defaults to 295.0.
             thermal_diffusivity_mm2_s (float, optional): Default thermal diffusivity in ``mm^2/s``. Defaults to 0.17.
@@ -1568,6 +1578,12 @@ class BlenderService(rpyc.Service):
             laplacian_backend (str, optional): Laplacian backend, either ``"ROBUST"`` or ``"IGL"``. Defaults to ``"ROBUST"``.
             device (str, optional): Torch device for the solve, either ``"cuda"`` or ``"cpu"``; falls back to ``"cpu"``
                 if cuda is unavailable. Defaults to ``"cuda"``.
+            radiance_scale (float, optional): Accepted for uniform thermal-config dispatch; not used by this method
+                (consumed by ``include_thermal`` / the radiance render). Defaults to 1.0.
+            exr_codec (str, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
+                by ``include_thermal`` / the radiance render). Defaults to ``"DWAA"``.
+            bit_depth (int, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
+                by ``include_thermal`` / the radiance render). Defaults to 32.
         """
         from visionsim.simulate.heatsim import adapter, thermal_shader
 
@@ -1593,6 +1609,8 @@ class BlenderService(rpyc.Service):
     @require_initialized_service
     def exposed_heatsim_solve(
         self,
+        radiance: bool = True,
+        preview: bool = True,
         initial_temperature_K: float = 295.0,
         thermal_diffusivity_mm2_s: float = 0.17,
         density_kg_m3: float = 1330.0,
@@ -1604,6 +1622,9 @@ class BlenderService(rpyc.Service):
         domain: Literal["POINTS", "MESH"] = "POINTS",
         laplacian_backend: Literal["ROBUST", "IGL"] = "ROBUST",
         device: Literal["cuda", "cpu"] = "cuda",
+        radiance_scale: float = 1.0,
+        exr_codec: EXR_CODECS = "DWAA",
+        bit_depth: Literal[16, 32] = 32,
     ) -> None:
         """Solve and cache the scene's heat-transfer simulation without preparing it for rendering.
 
@@ -1611,9 +1632,15 @@ class BlenderService(rpyc.Service):
         :meth:`prepare_thermal <visionsim.simulate.blender.BlenderService.exposed_prepare_thermal>`: it runs the
         cache-aware FEM solve so the result is written to disk, but does not write the ``sim_temperature`` attribute,
         stamp default temperatures, or register the ``temperature`` AOV. It exists for the optional standalone
-        solve command, letting an expensive solve be primed ahead of rendering.
+        solve command, letting an expensive solve be primed ahead of rendering. The full ``ThermalConfig`` field set
+        is accepted so a single ``**asdict(config.thermal)`` dispatch can drive this method; the output-only fields
+        are ignored.
 
         Args:
+            radiance (bool, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
+                by ``include_thermal`` / the radiance render). Defaults to True.
+            preview (bool, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
+                by ``include_thermal`` / the radiance render). Defaults to True.
             initial_temperature_K (float, optional): Default initial temperature, in Kelvin, for meshes without a
                 per-object value. Defaults to 295.0.
             thermal_diffusivity_mm2_s (float, optional): Default thermal diffusivity in ``mm^2/s``. Defaults to 0.17.
@@ -1629,6 +1656,12 @@ class BlenderService(rpyc.Service):
             laplacian_backend (str, optional): Laplacian backend, either ``"ROBUST"`` or ``"IGL"``. Defaults to ``"ROBUST"``.
             device (str, optional): Torch device for the solve, either ``"cuda"`` or ``"cpu"``; falls back to ``"cpu"``
                 if cuda is unavailable. Defaults to ``"cuda"``.
+            radiance_scale (float, optional): Accepted for uniform thermal-config dispatch; not used by this method
+                (consumed by ``include_thermal`` / the radiance render). Defaults to 1.0.
+            exr_codec (str, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
+                by ``include_thermal`` / the radiance render). Defaults to ``"DWAA"``.
+            bit_depth (int, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
+                by ``include_thermal`` / the radiance render). Defaults to 32.
         """
         self._thermal_solve(
             initial_temperature_K=initial_temperature_K,
