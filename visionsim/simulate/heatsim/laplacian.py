@@ -64,6 +64,10 @@ def point_cloud_laplacian_and_mass(
         )
 
     points = np.asarray(points, dtype=np.float64)
+    # Clamp n_neighbors to len(points)-1 (defensive, matches the scipy fallback
+    # in solver.py: prevents robust_laplacian "k+1 is greater than number of
+    # points" crash on small point clouds; no-op on real dense meshes).
+    n_neighbors = max(1, min(int(n_neighbors), len(points) - 1))
     L, M = robust_laplacian.point_cloud_laplacian(
         points, mollify_factor=mollify_factor, n_neighbors=int(n_neighbors)
     )

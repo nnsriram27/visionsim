@@ -41,6 +41,7 @@ Source commit: `543ee81` (`543ee814488742eb6147e2296d0d29ce385f97d2`)
 1. **Provenance header** added as first line: `# Vendored from heat-sim-blender:addon/lib/robust_laplacian_backend.py @ 543ee81`
 2. No import rewrites required (file has no local imports).
 3. No print statements to route.
+4. **Clamp `n_neighbors` to `len(points)-1`** in `point_cloud_laplacian_and_mass` (defensive, matches scipy fallback; prevents robust_laplacian crash on small point clouds).
 
 ### constants.py (from constants.py)
 

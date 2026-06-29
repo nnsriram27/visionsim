@@ -38,6 +38,9 @@ from visionsim.simulate.schema import _MODELS, _Data
         # "specular/light",
         "points",
         "previews/points",
+        "temperature",
+        "previews/temperature",
+        "thermal_radiance",
     ],
 )
 def test_render_layout(cube_dataset, gt_type):
@@ -72,6 +75,8 @@ def test_render_layout(cube_dataset, gt_type):
         ("specular/indirect", ["RGB"]),
         # ("specular/light", ["RGB"]),
         ("points", ["RGB"]),
+        ("temperature", ["V"]),
+        ("thermal_radiance", ["RGB"]),
     ],
 )
 def test_groundtruth_exrs(cube_dataset, subdir, channels):
@@ -108,6 +113,8 @@ def test_groundtruth_exrs(cube_dataset, subdir, channels):
         ("specular/indirect", (50, 50, 3), False),
         # ("specular/light", (50, 50, 3)),
         ("points", (50, 50, 3), False),
+        ("temperature", (50, 50, 1), True),
+        ("thermal_radiance", (50, 50, 3), False),
     ],
 )
 def test_load_exrs(cube_dataset, subdir, shape, auto_collapse):
@@ -190,13 +197,14 @@ def test_render_thermal(tmp_path_factory, executable):
         client.move_keyframes(scale=1 / 5)
         client.set_animation_range(10, 10 + N)
         client.include_frames()
-        # CPU solve for determinism. MESH domain: the reused cube fixture has a
-        # single 8-vertex Cube (the Grid objects are filtered/empty), and POINTS'
-        # robust_laplacian requires more points than its default 30 neighbours
-        # (it raises "k+1 is greater than number of points" on 8 verts). The cube's
-        # 8 verts are all face-referenced, so MESH has no orphan-vertex issue and
-        # exercises the same solve -> temperature-AOV -> radiance render pipeline.
-        client.prepare_thermal(device="cpu", domain="MESH")
+        # CPU solve for determinism. POINTS is the default/recommended domain, so
+        # the gate covers it. The reused cube fixture has a single 8-vertex Cube;
+        # robust_laplacian's point-cloud Laplacian defaults to 30 neighbours, which
+        # would raise "k+1 is greater than number of points" on 8 verts, but the
+        # laplacian backend now clamps n_neighbors to len(points)-1 (-> 7 here), so
+        # the solve runs. An 8-point solve is physically degenerate, but this gate
+        # only checks the solve -> temperature-AOV -> radiance render plumbing.
+        client.prepare_thermal(device="cpu", domain="POINTS")
         client.include_thermal(radiance=True, preview=True)
         client.render_animation()
 
@@ -225,9 +233,9 @@ def test_render_thermal(tmp_path_factory, executable):
     # than assuming (50, 50, 1) vs (50, 50, 3). The output is registered as a
     # 3-channel RGB EXR, so load with auto_collapse=False to read its true shape.
     assert rad.exists()
+    assert (rad / "transforms.db").exists()
+    Metadata.load(rad / "transforms.db")  # round-trips without error
     rad_exrs = sorted(rad.glob("**/*.exr"))
     assert len(rad_exrs) == N
     rad_shape = Dataset.load_data(rad_exrs[0], auto_collapse=False).shape
-    print(f"thermal_radiance EXR actual shape (auto_collapse=False): {rad_shape}")
-    print(f"thermal_radiance EXR default-load shape: {Dataset.load_data(rad_exrs[0]).shape}")
     assert rad_shape == (50, 50, 3)
