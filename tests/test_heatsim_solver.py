@@ -6,7 +6,6 @@ import numpy as np
 
 from visionsim.simulate.heatsim.solver import HeatSimFEM
 
-
 # ---------------------------------------------------------------------------
 # Minimal surrogate objects for gen_params / sim_params
 # ---------------------------------------------------------------------------
