@@ -25,6 +25,7 @@ irradiance modules are imported lazily inside :func:`solve_scene`.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from pathlib import Path
 from types import SimpleNamespace
@@ -372,7 +373,9 @@ def _augment_interior_points(
 
 
 def _stable_seed(name: str) -> int:
-    return abs(hash(name)) % (2**31)
+    # Use a cryptographic hash so the seed is stable across processes regardless
+    # of PYTHONHASHSEED (Python's built-in hash() is randomised per process).
+    return int(hashlib.sha256(name.encode()).hexdigest(), 16) % (2**31)
 
 
 def _sample_interior(verts: np.ndarray, faces: np.ndarray, target: int, seed: int) -> np.ndarray:
@@ -456,6 +459,10 @@ def _run_solver(combined: SimpleNamespace, solver_cfg: dict, defaults: dict) -> 
         verts_np=combined.verts.copy(),
         faces_np=None if is_points else combined.faces.copy(),
         boundary_faces_np=None if is_points else combined.faces.copy(),
+        # NOTE: boundary_verts_mask_override is honoured by the solver in POINTS
+        # mode only.  In MESH mode the boundary is derived from face topology and
+        # the per-vertex override is silently ignored — Dirichlet sources are not
+        # correctly excluded in MESH mode (known follow-up).
         boundary_verts_mask_override=combined.boundary_mask,
         u0=combined.t0,
         irradiance_map=combined.irradiance,
@@ -470,6 +477,18 @@ def _run_solver(combined: SimpleNamespace, solver_cfg: dict, defaults: dict) -> 
 def _split_history(history: np.ndarray, combined: SimpleNamespace) -> dict:
     """Trim interior points and split ``(T, N_total)`` into per-object ``(T, N)``."""
     u = history
+    # Guard: in MESH mode the solver compresses the vertex array to only
+    # face-referenced vertices, so the column count can be LESS than
+    # surface_count.  Slicing per-object offsets into a shorter array would
+    # silently return wrong temperatures.  Raise loudly instead.
+    if u.ndim == 2 and u.shape[1] < combined.surface_count:
+        raise RuntimeError(
+            f"_split_history: solver returned {u.shape[1]} columns but combined "
+            f"geometry has {combined.surface_count} surface vertices.  This happens "
+            f"in MESH mode when the mesh contains orphan/unreferenced vertices that "
+            f"the solver drops.  Use POINTS domain (the supported M1 path) or ensure "
+            f"every vertex is referenced by at least one face."
+        )
     if combined.surface_count > 0 and u.ndim == 2 and u.shape[1] > combined.surface_count:
         u = u[:, : combined.surface_count]
     out: dict = {}
