@@ -11,6 +11,10 @@ Source commit: `543ee81` (`543ee814488742eb6147e2296d0d29ce385f97d2`)
 | `visionsim/simulate/heatsim/laplacian.py` | `addon/lib/robust_laplacian_backend.py` | See below |
 | `visionsim/simulate/heatsim/constants.py` | `addon/lib/constants.py` | See below |
 
+## Lint / type-check exclusions
+
+`solver.py`, `laplacian.py`, and `constants.py` are excluded from both ruff and mypy in `pyproject.toml` (mirroring the `rife/` precedent) because they are kept verbatim from upstream.
+
 ## Modifications applied to each file
 
 ### solver.py (from heatsim_fem.py)

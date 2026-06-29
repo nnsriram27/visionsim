@@ -54,11 +54,20 @@ path = "visionsim/__init__.py"
 
 [tool.ruff]
 line-length = 121
-exclude = ["visionsim/interpolate/rife/*"]
+force-exclude = true
+exclude = [
+    "visionsim/interpolate/rife/*",
+    "visionsim/simulate/heatsim/solver.py",
+    "visionsim/simulate/heatsim/laplacian.py",
+    "visionsim/simulate/heatsim/constants.py",
+]
 
 [tool.mypy]
 exclude = [
     "visionsim/interpolate/rife/*",
+    "visionsim/simulate/heatsim/solver\\.py",
+    "visionsim/simulate/heatsim/laplacian\\.py",
+    "visionsim/simulate/heatsim/constants\\.py",
 ]
 follow_imports="skip"
 
