@@ -45,6 +45,9 @@ def executable(pytestconfig):
 def cube_dataset(tmp_path_factory, executable) -> Path:
     # Note: If this fails and you're using flatpak, it might be because
     #   the application doesn't have read/write access to /tmp!
+    # Note: This fixture also renders the thermal modality (prepare_thermal +
+    #   include_thermal), so a regression in the thermal pipeline will surface
+    #   across all cube_dataset-based tests, not only the thermal-specific ones.
     tmpdir = tmp_path_factory.mktemp("renders")
     log_dir = tmp_path_factory.mktemp("logs")
     scene = Path(__file__).parent / "test_files" / "scenes" / "cube.blend"
