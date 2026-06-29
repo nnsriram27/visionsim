@@ -60,6 +60,11 @@ exclude = [
     "visionsim/simulate/heatsim/solver.py",
     "visionsim/simulate/heatsim/laplacian.py",
     "visionsim/simulate/heatsim/constants.py",
+    "visionsim/simulate/heatsim/irradiance_kernel.py",
+    "visionsim/simulate/heatsim/light_models.py",
+    "visionsim/simulate/heatsim/sh9_sky.py",
+    "visionsim/simulate/heatsim/sky_visibility.py",
+    "visionsim/simulate/heatsim/bvh_backend.py",
 ]
 
 [tool.mypy]
@@ -68,6 +73,12 @@ exclude = [
     "visionsim/simulate/heatsim/solver\\.py",
     "visionsim/simulate/heatsim/laplacian\\.py",
     "visionsim/simulate/heatsim/constants\\.py",
+    "visionsim/simulate/heatsim/irradiance_kernel\\.py",
+    "visionsim/simulate/heatsim/light_models\\.py",
+    "visionsim/simulate/heatsim/sh9_sky\\.py",
+    "visionsim/simulate/heatsim/sky_visibility\\.py",
+    "visionsim/simulate/heatsim/bvh_backend\\.py",
+    "visionsim/simulate/heatsim/properties\\.py",
 ]
 follow_imports="skip"
 
