@@ -215,6 +215,9 @@ class BlenderService(rpyc.Service):
     _outputs: dict[str, Any]
     _camera: bpy.types.Camera | None
     _thermal_radiance: dict[str, Any] | None
+    _thermal_animated_history: dict[str, Any] | None
+    _thermal_animated_frames: list[int] | None
+    _thermal_animated_defaults: dict[str, Any] | None
 
     def __init__(self) -> None:
         """Initialize render service.
@@ -286,6 +289,7 @@ class BlenderService(rpyc.Service):
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: int = 32,
         preview: bool = False,
+        preview_view_transform: str | None = None,
         c: int | None = None,
         denoise: bool = False,
     ) -> None:
@@ -300,6 +304,9 @@ class BlenderService(rpyc.Service):
             exr_codec (str, optional): EXR codec to use. Defaults to "DWAA".
             bit_depth (int, optional): Bit depth to use. Defaults to 32.
             preview (bool, optional): If true, output node will be configured for preview. Defaults to False.
+            preview_view_transform (str, optional): When set on a preview output, overrides the preview
+                default "Raw" view transform (e.g. "Standard" to sRGB-encode a colormapped image).
+                Ignored for non-preview outputs. Defaults to None (leave the preview default "Raw").
             c (int, optional): Number of channels for registration. Defaults to None (inferred from color_mode).
             denoise (bool, optional): If true, insert a denoise compositor node before the file output.
                 This enables the Cycles denoising data view layer passes (albedo and normal) and connects
@@ -693,6 +700,34 @@ class BlenderService(rpyc.Service):
         .. [2] `DUSt3R: Geometric 3D Vision Made Easy with Unconstrained Image Collections <https://arxiv.org/abs/2312.14132>`_
         """
 
+    def _thermal_config(
+        self,
+        *,
+        initial_temperature_K: float,
+        thermal_diffusivity_mm2_s: float,
+        density_kg_m3: float,
+        specific_heat_J_kgK: float,
+        emissivity: float,
+        irradiance_scale: float,
+        sim_time_s: float,
+        timestep_s: float,
+        domain: Literal["POINTS", "MESH"],
+        laplacian_backend: Literal["ROBUST", "IGL"],
+        device: Literal["cuda", "cpu"],
+    ) -> tuple[dict, dict, Path]:
+        """Shared ``defaults``/``solver_cfg``/``cache_root`` builder for every thermal-solve
+        entry point.
+
+        Factored out of :meth:`_thermal_solve` (M2) so the static solve
+        (``adapter.solve_scene``) and the animated solve (``adapter.solve_scene_animated``,
+        called from :meth:`exposed_prepare_thermal`'s animated branch) compute byte-identical
+        ``defaults``/``solver_cfg`` -- including the blend-authored ``irradiance_scale``
+        override -- and therefore share the same cache-key convention.
+
+        Returns:
+            tuple[dict, dict, Path]: ``(defaults, solver_cfg, cache_root)``.
+        """
+
     def _thermal_solve(
         self,
         *,
@@ -711,15 +746,16 @@ class BlenderService(rpyc.Service):
         """Shared FEM-solve core used by :meth:`exposed_prepare_thermal` and
         :meth:`exposed_heatsim_solve`.
 
-        Builds the ``defaults`` and ``solver_cfg`` dicts, derives ``cache_root``
-        from the always-set :attr:`blend_file` path (avoids ``bpy.data.filepath``
-        which is empty for an unsaved scene), and delegates to
+        Builds the ``defaults`` and ``solver_cfg`` dicts (via :meth:`_thermal_config`),
+        derives ``cache_root`` from the always-set :attr:`blend_file` path (avoids
+        ``bpy.data.filepath`` which is empty for an unsaved scene), and delegates to
         ``adapter.solve_scene``.  Both callers produce identical cache keys
         because they share this single code path.
 
         Returns:
             dict: Per-object temperature history as returned by ``adapter.solve_scene``.
         """
+    _thermal_temp_range: Incomplete
 
     @require_initialized_service
     def exposed_prepare_thermal(
@@ -740,19 +776,29 @@ class BlenderService(rpyc.Service):
         radiance_scale: float = 1.0,
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[16, 32] = 32,
+        animated: bool = False,
+        substeps_per_frame: int = 4,
+        frame_start: int | None = None,
+        frame_end: int | None = None,
+        every_n_frames: int = 1,
     ) -> None:
         """Solve the scene's heat-transfer simulation and prepare it for thermal rendering.
 
-        Runs the (cache-aware) FEM solve, writes the final solved per-vertex
-        ``sim_temperature`` attribute onto every mesh, stamps a default temperature on any
-        unsolved mesh, and registers the ``temperature`` value AOV on the original materials.
+        Runs the (cache-aware) FEM solve, writes the solved per-vertex ``sim_temperature``
+        attribute onto every mesh, stamps a default temperature on any unsolved mesh, and
+        registers the ``temperature`` value AOV on the original materials.
 
         Note:
             This must be called before :meth:`include_thermal <visionsim.simulate.blender.BlenderService.exposed_include_thermal>`,
             since the AOV is registered on the original materials and exposes the ``temperature`` render-layer
             output socket that ``include_thermal`` wires into the compositor. M1 is a static solve, so the final
-            timestep (``timestep=-1``) is written to every frame. The full ``ThermalConfig`` field set is accepted so
-            a single ``**asdict(config.thermal)`` dispatch can drive this method; the output-only fields are ignored.
+            timestep (``timestep=-1``) is written to every frame. When ``animated`` is true (M2, ``domain="POINTS"``
+            only), a per-frame transient solve is run instead (``adapter.solve_scene_animated``): the per-object
+            frame history is stashed on the service and the first solved frame's field is written immediately so the
+            initial render is correct; subsequent frames are written by :meth:`exposed_render_frame`'s per-frame
+            hook. Requesting ``animated`` with ``domain="MESH"`` logs a warning and falls back to the static solve.
+            The full ``ThermalConfig`` field set is accepted so a single ``**asdict(config.thermal)`` dispatch can
+            drive this method; the output-only fields are ignored.
 
         Args:
             radiance (bool, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
@@ -780,6 +826,30 @@ class BlenderService(rpyc.Service):
                 by ``include_thermal`` / the radiance render). Defaults to ``"DWAA"``.
             bit_depth (int, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
                 by ``include_thermal`` / the radiance render). Defaults to 32.
+            animated (bool, optional): Solve heat transfer per-frame as geometry animates (transient), instead of the
+                static M1 solve. Requires ``domain="POINTS"``. Defaults to False.
+            substeps_per_frame (int, optional): Solver substeps per Blender frame in animated mode. Defaults to 4.
+            frame_start (int | None, optional): First frame of the animated solve; defaults to the scene's
+                ``frame_start`` when None. Defaults to None.
+            frame_end (int | None, optional): Last frame of the animated solve; defaults to the scene's
+                ``frame_end`` when None. Defaults to None.
+            every_n_frames (int, optional): Solve every Nth frame in animated mode (cost control); skipped frames
+                hold the last solved field. Defaults to 1.
+        """
+
+    def _thermal_write_frame(self, frame_number: int) -> None:
+        """Write the animated (M2) thermal field for the render frame nearest a solved timestep.
+
+        Called once from :meth:`exposed_prepare_thermal`'s animated branch (frame 0, right
+        after the animated solve) and per-frame from :meth:`exposed_render_frame`. Looks up
+        the latest solved frame at or before ``frame_number`` (``every_n_frames`` may hold the
+        field across skipped frames), builds a single-row ``{obj: (1, n_verts)}`` history
+        slice for that frame, and delegates to ``adapter.write_frame_attributes``. Objects
+        absent from the animated history (e.g. ``DIRICHLET_SOURCE`` fluids with changing
+        topology) fall through to the reservoir-temperature fallback there.
+
+        Args:
+            frame_number (int): The (Blender) frame currently being written/rendered.
         """
 
     @require_initialized_service
@@ -801,6 +871,11 @@ class BlenderService(rpyc.Service):
         radiance_scale: float = 1.0,
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[16, 32] = 32,
+        animated: bool = False,
+        substeps_per_frame: int = 4,
+        frame_start: int | None = None,
+        frame_end: int | None = None,
+        every_n_frames: int = 1,
     ) -> None:
         """Solve and cache the scene's heat-transfer simulation without preparing it for rendering.
 
@@ -811,6 +886,11 @@ class BlenderService(rpyc.Service):
         solve command, letting an expensive solve be primed ahead of rendering. The full ``ThermalConfig`` field set
         is accepted so a single ``**asdict(config.thermal)`` dispatch can drive this method; the output-only fields
         are ignored.
+
+        Note:
+            The ``animated``/``substeps_per_frame``/``frame_start``/``frame_end``/``every_n_frames`` fields (M2) are
+            accepted only to mirror ``ThermalConfig``; this standalone cache-priming path always runs the static M1
+            solve regardless of ``animated``.
 
         Args:
             radiance (bool, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
@@ -838,6 +918,16 @@ class BlenderService(rpyc.Service):
                 by ``include_thermal`` / the radiance render). Defaults to ``"DWAA"``.
             bit_depth (int, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
                 by ``include_thermal`` / the radiance render). Defaults to 32.
+            animated (bool, optional): Accepted for uniform thermal-config dispatch; not used by this method (see
+                Note above). Defaults to False.
+            substeps_per_frame (int, optional): Accepted for uniform thermal-config dispatch; not used by this method.
+                Defaults to 4.
+            frame_start (int | None, optional): Accepted for uniform thermal-config dispatch; not used by this method.
+                Defaults to None.
+            frame_end (int | None, optional): Accepted for uniform thermal-config dispatch; not used by this method.
+                Defaults to None.
+            every_n_frames (int, optional): Accepted for uniform thermal-config dispatch; not used by this method.
+                Defaults to 1.
         """
 
     @require_initialized_service
@@ -859,25 +949,33 @@ class BlenderService(rpyc.Service):
         radiance_scale: float = 1.0,
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[16, 32] = 32,
+        animated: bool = False,
+        substeps_per_frame: int = 4,
+        frame_start: int | None = None,
+        frame_end: int | None = None,
+        every_n_frames: int = 1,
     ) -> None:
         """Sets up Blender compositor to include thermal outputs for rendered images.
 
         Wires the per-vertex temperature map (in Kelvin) from the ``temperature`` AOV registered by
         :meth:`prepare_thermal <visionsim.simulate.blender.BlenderService.exposed_prepare_thermal>` into the
-        compositor, optionally adds a turbo-colormap preview, and optionally arms a second gray-body render pass
+        compositor, optionally adds an inferno-colormap preview, and optionally arms a second gray-body render pass
         that produces a thermal-camera radiance image (emitted at render time by
         :meth:`render_current_frame <visionsim.simulate.blender.BlenderService.exposed_render_current_frame>`).
 
         Note:
             This must be called after ``prepare_thermal``, which registers the ``temperature`` AOV and exposes the
             matching render-layer output socket. The solver and material parameters
-            (``initial_temperature_K`` through ``device``) are accepted only to mirror ``ThermalConfig`` and are
-            consumed by ``prepare_thermal``; ``include_thermal`` itself ignores them.
+            (``initial_temperature_K`` through ``device``, and the ``animated``/``substeps_per_frame``/
+            ``frame_start``/``frame_end``/``every_n_frames`` M2 fields) are accepted only to mirror
+            ``ThermalConfig`` and are consumed by ``prepare_thermal``; ``include_thermal`` itself ignores them.
+            For animated scenes, the per-frame field update happens later, in
+            :meth:`render_frame <visionsim.simulate.blender.BlenderService.exposed_render_frame>`.
 
         Args:
             radiance (bool, optional): If true, arm the gray-body thermal-camera radiance image as a second render
                 pass and register its per-frame output. Defaults to True.
-            preview (bool, optional): If true, also save a turbo-colormap PNG preview of the temperature map.
+            preview (bool, optional): If true, also save an inferno-colormap PNG preview of the temperature map.
                 Defaults to True.
             initial_temperature_K (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
                 ignored here. Default initial temperature, in Kelvin, for meshes without a per-object value.
@@ -909,6 +1007,16 @@ class BlenderService(rpyc.Service):
                 ('NONE', 'PXR24', 'ZIP', 'PIZ', 'RLE', 'ZIPS', 'DWAA', 'DWAB'). Defaults to ``"DWAA"``.
             bit_depth (int, optional): Bit depth per channel for the temperature and radiance EXRs, either 16 or 32.
                 Defaults to 32.
+            animated (bool, optional): Mirrors ``ThermalConfig`` (M2); consumed by ``prepare_thermal`` and ignored
+                here. Defaults to False.
+            substeps_per_frame (int, optional): Mirrors ``ThermalConfig`` (M2); consumed by ``prepare_thermal`` and
+                ignored here. Defaults to 4.
+            frame_start (int | None, optional): Mirrors ``ThermalConfig`` (M2); consumed by ``prepare_thermal`` and
+                ignored here. Defaults to None.
+            frame_end (int | None, optional): Mirrors ``ThermalConfig`` (M2); consumed by ``prepare_thermal`` and
+                ignored here. Defaults to None.
+            every_n_frames (int, optional): Mirrors ``ThermalConfig`` (M2); consumed by ``prepare_thermal`` and
+                ignored here. Defaults to 1.
         """
 
     @require_initialized_service
@@ -1125,6 +1233,13 @@ class BlenderService(rpyc.Service):
 
         Warning:
             Calling this has the side-effect of changing the current frame.
+
+        Note:
+            If :meth:`prepare_thermal <exposed_prepare_thermal>` ran an animated (M2) solve,
+            this writes that frame's solved thermal field (via ``_thermal_write_frame``)
+            before rendering, so both the temperature AOV and the gray-body radiance pass
+            reflect the current frame -- Cycles reads ``sim_temperature`` live, so no
+            compositor changes are needed.
 
         Args:
             frame_number (int): frame to render
@@ -1691,19 +1806,29 @@ class BlenderClient:
         radiance_scale: float = 1.0,
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[16, 32] = 32,
+        animated: bool = False,
+        substeps_per_frame: int = 4,
+        frame_start: int | None = None,
+        frame_end: int | None = None,
+        every_n_frames: int = 1,
     ) -> None:
         """Solve the scene's heat-transfer simulation and prepare it for thermal rendering.
 
-        Runs the (cache-aware) FEM solve, writes the final solved per-vertex
-        ``sim_temperature`` attribute onto every mesh, stamps a default temperature on any
-        unsolved mesh, and registers the ``temperature`` value AOV on the original materials.
+        Runs the (cache-aware) FEM solve, writes the solved per-vertex ``sim_temperature``
+        attribute onto every mesh, stamps a default temperature on any unsolved mesh, and
+        registers the ``temperature`` value AOV on the original materials.
 
         Note:
             This must be called before :meth:`include_thermal <visionsim.simulate.blender.BlenderService.exposed_include_thermal>`,
             since the AOV is registered on the original materials and exposes the ``temperature`` render-layer
             output socket that ``include_thermal`` wires into the compositor. M1 is a static solve, so the final
-            timestep (``timestep=-1``) is written to every frame. The full ``ThermalConfig`` field set is accepted so
-            a single ``**asdict(config.thermal)`` dispatch can drive this method; the output-only fields are ignored.
+            timestep (``timestep=-1``) is written to every frame. When ``animated`` is true (M2, ``domain="POINTS"``
+            only), a per-frame transient solve is run instead (``adapter.solve_scene_animated``): the per-object
+            frame history is stashed on the service and the first solved frame's field is written immediately so the
+            initial render is correct; subsequent frames are written by :meth:`exposed_render_frame`'s per-frame
+            hook. Requesting ``animated`` with ``domain="MESH"`` logs a warning and falls back to the static solve.
+            The full ``ThermalConfig`` field set is accepted so a single ``**asdict(config.thermal)`` dispatch can
+            drive this method; the output-only fields are ignored.
 
         Args:
             radiance (bool, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
@@ -1731,6 +1856,15 @@ class BlenderClient:
                 by ``include_thermal`` / the radiance render). Defaults to ``"DWAA"``.
             bit_depth (int, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
                 by ``include_thermal`` / the radiance render). Defaults to 32.
+            animated (bool, optional): Solve heat transfer per-frame as geometry animates (transient), instead of the
+                static M1 solve. Requires ``domain="POINTS"``. Defaults to False.
+            substeps_per_frame (int, optional): Solver substeps per Blender frame in animated mode. Defaults to 4.
+            frame_start (int | None, optional): First frame of the animated solve; defaults to the scene's
+                ``frame_start`` when None. Defaults to None.
+            frame_end (int | None, optional): Last frame of the animated solve; defaults to the scene's
+                ``frame_end`` when None. Defaults to None.
+            every_n_frames (int, optional): Solve every Nth frame in animated mode (cost control); skipped frames
+                hold the last solved field. Defaults to 1.
         """
 
     @type_check_only
@@ -1752,6 +1886,11 @@ class BlenderClient:
         radiance_scale: float = 1.0,
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[16, 32] = 32,
+        animated: bool = False,
+        substeps_per_frame: int = 4,
+        frame_start: int | None = None,
+        frame_end: int | None = None,
+        every_n_frames: int = 1,
     ) -> None:
         """Solve and cache the scene's heat-transfer simulation without preparing it for rendering.
 
@@ -1762,6 +1901,11 @@ class BlenderClient:
         solve command, letting an expensive solve be primed ahead of rendering. The full ``ThermalConfig`` field set
         is accepted so a single ``**asdict(config.thermal)`` dispatch can drive this method; the output-only fields
         are ignored.
+
+        Note:
+            The ``animated``/``substeps_per_frame``/``frame_start``/``frame_end``/``every_n_frames`` fields (M2) are
+            accepted only to mirror ``ThermalConfig``; this standalone cache-priming path always runs the static M1
+            solve regardless of ``animated``.
 
         Args:
             radiance (bool, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
@@ -1789,6 +1933,16 @@ class BlenderClient:
                 by ``include_thermal`` / the radiance render). Defaults to ``"DWAA"``.
             bit_depth (int, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
                 by ``include_thermal`` / the radiance render). Defaults to 32.
+            animated (bool, optional): Accepted for uniform thermal-config dispatch; not used by this method (see
+                Note above). Defaults to False.
+            substeps_per_frame (int, optional): Accepted for uniform thermal-config dispatch; not used by this method.
+                Defaults to 4.
+            frame_start (int | None, optional): Accepted for uniform thermal-config dispatch; not used by this method.
+                Defaults to None.
+            frame_end (int | None, optional): Accepted for uniform thermal-config dispatch; not used by this method.
+                Defaults to None.
+            every_n_frames (int, optional): Accepted for uniform thermal-config dispatch; not used by this method.
+                Defaults to 1.
         """
 
     @type_check_only
@@ -1810,25 +1964,33 @@ class BlenderClient:
         radiance_scale: float = 1.0,
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[16, 32] = 32,
+        animated: bool = False,
+        substeps_per_frame: int = 4,
+        frame_start: int | None = None,
+        frame_end: int | None = None,
+        every_n_frames: int = 1,
     ) -> None:
         """Sets up Blender compositor to include thermal outputs for rendered images.
 
         Wires the per-vertex temperature map (in Kelvin) from the ``temperature`` AOV registered by
         :meth:`prepare_thermal <visionsim.simulate.blender.BlenderService.exposed_prepare_thermal>` into the
-        compositor, optionally adds a turbo-colormap preview, and optionally arms a second gray-body render pass
+        compositor, optionally adds an inferno-colormap preview, and optionally arms a second gray-body render pass
         that produces a thermal-camera radiance image (emitted at render time by
         :meth:`render_current_frame <visionsim.simulate.blender.BlenderService.exposed_render_current_frame>`).
 
         Note:
             This must be called after ``prepare_thermal``, which registers the ``temperature`` AOV and exposes the
             matching render-layer output socket. The solver and material parameters
-            (``initial_temperature_K`` through ``device``) are accepted only to mirror ``ThermalConfig`` and are
-            consumed by ``prepare_thermal``; ``include_thermal`` itself ignores them.
+            (``initial_temperature_K`` through ``device``, and the ``animated``/``substeps_per_frame``/
+            ``frame_start``/``frame_end``/``every_n_frames`` M2 fields) are accepted only to mirror
+            ``ThermalConfig`` and are consumed by ``prepare_thermal``; ``include_thermal`` itself ignores them.
+            For animated scenes, the per-frame field update happens later, in
+            :meth:`render_frame <visionsim.simulate.blender.BlenderService.exposed_render_frame>`.
 
         Args:
             radiance (bool, optional): If true, arm the gray-body thermal-camera radiance image as a second render
                 pass and register its per-frame output. Defaults to True.
-            preview (bool, optional): If true, also save a turbo-colormap PNG preview of the temperature map.
+            preview (bool, optional): If true, also save an inferno-colormap PNG preview of the temperature map.
                 Defaults to True.
             initial_temperature_K (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
                 ignored here. Default initial temperature, in Kelvin, for meshes without a per-object value.
@@ -1860,6 +2022,16 @@ class BlenderClient:
                 ('NONE', 'PXR24', 'ZIP', 'PIZ', 'RLE', 'ZIPS', 'DWAA', 'DWAB'). Defaults to ``"DWAA"``.
             bit_depth (int, optional): Bit depth per channel for the temperature and radiance EXRs, either 16 or 32.
                 Defaults to 32.
+            animated (bool, optional): Mirrors ``ThermalConfig`` (M2); consumed by ``prepare_thermal`` and ignored
+                here. Defaults to False.
+            substeps_per_frame (int, optional): Mirrors ``ThermalConfig`` (M2); consumed by ``prepare_thermal`` and
+                ignored here. Defaults to 4.
+            frame_start (int | None, optional): Mirrors ``ThermalConfig`` (M2); consumed by ``prepare_thermal`` and
+                ignored here. Defaults to None.
+            frame_end (int | None, optional): Mirrors ``ThermalConfig`` (M2); consumed by ``prepare_thermal`` and
+                ignored here. Defaults to None.
+            every_n_frames (int, optional): Mirrors ``ThermalConfig`` (M2); consumed by ``prepare_thermal`` and
+                ignored here. Defaults to 1.
         """
 
     @type_check_only
@@ -2071,6 +2243,13 @@ class BlenderClient:
 
         Warning:
             Calling this has the side-effect of changing the current frame.
+
+        Note:
+            If :meth:`prepare_thermal <exposed_prepare_thermal>` ran an animated (M2) solve,
+            this writes that frame's solved thermal field (via ``_thermal_write_frame``)
+            before rendering, so both the temperature AOV and the gray-body radiance pass
+            reflect the current frame -- Cycles reads ``sim_temperature`` live, so no
+            compositor changes are needed.
 
         Args:
             frame_number (int): frame to render
@@ -2715,19 +2894,29 @@ class BlenderClients(tuple):
         radiance_scale: float = 1.0,
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[16, 32] = 32,
+        animated: bool = False,
+        substeps_per_frame: int = 4,
+        frame_start: int | None = None,
+        frame_end: int | None = None,
+        every_n_frames: int = 1,
     ) -> None:
         """Solve the scene's heat-transfer simulation and prepare it for thermal rendering.
 
-        Runs the (cache-aware) FEM solve, writes the final solved per-vertex
-        ``sim_temperature`` attribute onto every mesh, stamps a default temperature on any
-        unsolved mesh, and registers the ``temperature`` value AOV on the original materials.
+        Runs the (cache-aware) FEM solve, writes the solved per-vertex ``sim_temperature``
+        attribute onto every mesh, stamps a default temperature on any unsolved mesh, and
+        registers the ``temperature`` value AOV on the original materials.
 
         Note:
             This must be called before :meth:`include_thermal <visionsim.simulate.blender.BlenderService.exposed_include_thermal>`,
             since the AOV is registered on the original materials and exposes the ``temperature`` render-layer
             output socket that ``include_thermal`` wires into the compositor. M1 is a static solve, so the final
-            timestep (``timestep=-1``) is written to every frame. The full ``ThermalConfig`` field set is accepted so
-            a single ``**asdict(config.thermal)`` dispatch can drive this method; the output-only fields are ignored.
+            timestep (``timestep=-1``) is written to every frame. When ``animated`` is true (M2, ``domain="POINTS"``
+            only), a per-frame transient solve is run instead (``adapter.solve_scene_animated``): the per-object
+            frame history is stashed on the service and the first solved frame's field is written immediately so the
+            initial render is correct; subsequent frames are written by :meth:`exposed_render_frame`'s per-frame
+            hook. Requesting ``animated`` with ``domain="MESH"`` logs a warning and falls back to the static solve.
+            The full ``ThermalConfig`` field set is accepted so a single ``**asdict(config.thermal)`` dispatch can
+            drive this method; the output-only fields are ignored.
 
         Args:
             radiance (bool, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
@@ -2755,6 +2944,15 @@ class BlenderClients(tuple):
                 by ``include_thermal`` / the radiance render). Defaults to ``"DWAA"``.
             bit_depth (int, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
                 by ``include_thermal`` / the radiance render). Defaults to 32.
+            animated (bool, optional): Solve heat transfer per-frame as geometry animates (transient), instead of the
+                static M1 solve. Requires ``domain="POINTS"``. Defaults to False.
+            substeps_per_frame (int, optional): Solver substeps per Blender frame in animated mode. Defaults to 4.
+            frame_start (int | None, optional): First frame of the animated solve; defaults to the scene's
+                ``frame_start`` when None. Defaults to None.
+            frame_end (int | None, optional): Last frame of the animated solve; defaults to the scene's
+                ``frame_end`` when None. Defaults to None.
+            every_n_frames (int, optional): Solve every Nth frame in animated mode (cost control); skipped frames
+                hold the last solved field. Defaults to 1.
         """
 
     @type_check_only
@@ -2776,6 +2974,11 @@ class BlenderClients(tuple):
         radiance_scale: float = 1.0,
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[16, 32] = 32,
+        animated: bool = False,
+        substeps_per_frame: int = 4,
+        frame_start: int | None = None,
+        frame_end: int | None = None,
+        every_n_frames: int = 1,
     ) -> None:
         """Solve and cache the scene's heat-transfer simulation without preparing it for rendering.
 
@@ -2786,6 +2989,11 @@ class BlenderClients(tuple):
         solve command, letting an expensive solve be primed ahead of rendering. The full ``ThermalConfig`` field set
         is accepted so a single ``**asdict(config.thermal)`` dispatch can drive this method; the output-only fields
         are ignored.
+
+        Note:
+            The ``animated``/``substeps_per_frame``/``frame_start``/``frame_end``/``every_n_frames`` fields (M2) are
+            accepted only to mirror ``ThermalConfig``; this standalone cache-priming path always runs the static M1
+            solve regardless of ``animated``.
 
         Args:
             radiance (bool, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
@@ -2813,6 +3021,16 @@ class BlenderClients(tuple):
                 by ``include_thermal`` / the radiance render). Defaults to ``"DWAA"``.
             bit_depth (int, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
                 by ``include_thermal`` / the radiance render). Defaults to 32.
+            animated (bool, optional): Accepted for uniform thermal-config dispatch; not used by this method (see
+                Note above). Defaults to False.
+            substeps_per_frame (int, optional): Accepted for uniform thermal-config dispatch; not used by this method.
+                Defaults to 4.
+            frame_start (int | None, optional): Accepted for uniform thermal-config dispatch; not used by this method.
+                Defaults to None.
+            frame_end (int | None, optional): Accepted for uniform thermal-config dispatch; not used by this method.
+                Defaults to None.
+            every_n_frames (int, optional): Accepted for uniform thermal-config dispatch; not used by this method.
+                Defaults to 1.
         """
 
     @type_check_only
@@ -2834,25 +3052,33 @@ class BlenderClients(tuple):
         radiance_scale: float = 1.0,
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[16, 32] = 32,
+        animated: bool = False,
+        substeps_per_frame: int = 4,
+        frame_start: int | None = None,
+        frame_end: int | None = None,
+        every_n_frames: int = 1,
     ) -> None:
         """Sets up Blender compositor to include thermal outputs for rendered images.
 
         Wires the per-vertex temperature map (in Kelvin) from the ``temperature`` AOV registered by
         :meth:`prepare_thermal <visionsim.simulate.blender.BlenderService.exposed_prepare_thermal>` into the
-        compositor, optionally adds a turbo-colormap preview, and optionally arms a second gray-body render pass
+        compositor, optionally adds an inferno-colormap preview, and optionally arms a second gray-body render pass
         that produces a thermal-camera radiance image (emitted at render time by
         :meth:`render_current_frame <visionsim.simulate.blender.BlenderService.exposed_render_current_frame>`).
 
         Note:
             This must be called after ``prepare_thermal``, which registers the ``temperature`` AOV and exposes the
             matching render-layer output socket. The solver and material parameters
-            (``initial_temperature_K`` through ``device``) are accepted only to mirror ``ThermalConfig`` and are
-            consumed by ``prepare_thermal``; ``include_thermal`` itself ignores them.
+            (``initial_temperature_K`` through ``device``, and the ``animated``/``substeps_per_frame``/
+            ``frame_start``/``frame_end``/``every_n_frames`` M2 fields) are accepted only to mirror
+            ``ThermalConfig`` and are consumed by ``prepare_thermal``; ``include_thermal`` itself ignores them.
+            For animated scenes, the per-frame field update happens later, in
+            :meth:`render_frame <visionsim.simulate.blender.BlenderService.exposed_render_frame>`.
 
         Args:
             radiance (bool, optional): If true, arm the gray-body thermal-camera radiance image as a second render
                 pass and register its per-frame output. Defaults to True.
-            preview (bool, optional): If true, also save a turbo-colormap PNG preview of the temperature map.
+            preview (bool, optional): If true, also save an inferno-colormap PNG preview of the temperature map.
                 Defaults to True.
             initial_temperature_K (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
                 ignored here. Default initial temperature, in Kelvin, for meshes without a per-object value.
@@ -2884,6 +3110,16 @@ class BlenderClients(tuple):
                 ('NONE', 'PXR24', 'ZIP', 'PIZ', 'RLE', 'ZIPS', 'DWAA', 'DWAB'). Defaults to ``"DWAA"``.
             bit_depth (int, optional): Bit depth per channel for the temperature and radiance EXRs, either 16 or 32.
                 Defaults to 32.
+            animated (bool, optional): Mirrors ``ThermalConfig`` (M2); consumed by ``prepare_thermal`` and ignored
+                here. Defaults to False.
+            substeps_per_frame (int, optional): Mirrors ``ThermalConfig`` (M2); consumed by ``prepare_thermal`` and
+                ignored here. Defaults to 4.
+            frame_start (int | None, optional): Mirrors ``ThermalConfig`` (M2); consumed by ``prepare_thermal`` and
+                ignored here. Defaults to None.
+            frame_end (int | None, optional): Mirrors ``ThermalConfig`` (M2); consumed by ``prepare_thermal`` and
+                ignored here. Defaults to None.
+            every_n_frames (int, optional): Mirrors ``ThermalConfig`` (M2); consumed by ``prepare_thermal`` and
+                ignored here. Defaults to 1.
         """
 
     @type_check_only
@@ -3095,6 +3331,13 @@ class BlenderClients(tuple):
 
         Warning:
             Calling this has the side-effect of changing the current frame.
+
+        Note:
+            If :meth:`prepare_thermal <exposed_prepare_thermal>` ran an animated (M2) solve,
+            this writes that frame's solved thermal field (via ``_thermal_write_frame``)
+            before rendering, so both the temperature AOV and the gray-body radiance pass
+            reflect the current frame -- Cycles reads ``sim_temperature`` live, so no
+            compositor changes are needed.
 
         Args:
             frame_number (int): frame to render
