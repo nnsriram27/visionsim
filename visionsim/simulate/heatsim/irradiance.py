@@ -21,6 +21,7 @@ import bpy
 import numpy as np
 
 from .constants import ALBEDO_LAYER_NAME, BAKE_UV_LAYER_NAME
+from .uv_utils import snapshot_uv_states, restore_uv_states
 
 
 @dataclass
@@ -467,8 +468,6 @@ def bake_albedo_map(scene, obj, texture_size: int) -> Optional[BakedFluxMap]:
     """
     Bake visible diffuse albedo (COLOR pass) for a single object.
     """
-    from .adapter import snapshot_uv_states, restore_uv_states
-
     if obj.type != "MESH":
         return None
 

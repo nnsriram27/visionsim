@@ -32,7 +32,7 @@ baked = irradiance.bake_albedo_map(bpy.context.scene, obj, 128)
 assert baked is not None, 'bake_albedo_map returned None'
 px = baked.pixels
 assert px.ndim == 3 and px.shape[2] == 3, f'bad pixel shape {px.shape}'
-assert float(px.std()) > 1e-3, f'expected spatial variation, got std={px.std()}'
+assert float(px.std()) > 0.1, f'expected high-contrast checker variation (std>0.1), got std={px.std()}'
 mean = float(px.mean())
 assert 0.0 <= mean <= 1.0, f'albedo mean out of range: {mean}'
 print('ALBEDO_BAKE_OK', px.shape, round(mean, 3), round(float(px.std()), 3))

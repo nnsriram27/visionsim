@@ -29,7 +29,7 @@ import hashlib
 import logging
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Iterable, List, Optional, Tuple
+from typing import Any, Optional
 
 import numpy as np
 
@@ -48,115 +48,6 @@ _log = logging.getLogger("rich")
 _M_TO_MM = 1000.0
 _KGM3_TO_KGMM3 = 1.0e9  # divide: kg/m^3 -> kg/mm^3  (1000**3)
 _WM2_TO_WMM2 = 1.0e6    # divide: W/m^2 -> W/mm^2     (1000**2)
-
-
-# ---------------------------------------------------------------------------
-# UV state snapshot/restore
-#
-# Ported verbatim from heat-sim-blender's ``addon/lib/uv_utils.py`` (only the
-# functions ``irradiance.bake_albedo_map`` needs: ``snapshot_uv_states`` /
-# ``restore_uv_states`` and their ``get_uv_state`` / ``set_uv_state`` /
-# ``_set_active_uv`` / ``_set_render_uv`` dependencies).
-#
-# Not part of the original hand-written adapter.py port - added as a
-# transitive dependency for the albedo bake port (task-1 of the thermal
-# parity plan). ``irradiance.bake_albedo_map`` imports these two names
-# lazily via ``from .adapter import snapshot_uv_states, restore_uv_states``
-# to avoid an import cycle; they live here (rather than in a new
-# ``uv_utils.py``) because they never touch ``bpy.ops``/``bpy.context`` at
-# runtime (only ``obj``/``obj.data``/``mesh.uv_layers`` passed in by the
-# caller), so they are host-importable like the rest of this file without
-# needing the defensive ``bpy`` import guard above.
-# ---------------------------------------------------------------------------
-
-UVState = Tuple[Optional[str], Optional[str]]  # (active_uv_name, active_render_uv_name)
-UVSnapshot = List[Tuple["bpy.types.Object", UVState]]
-
-
-def get_uv_state(obj: "bpy.types.Object") -> UVState:
-    """Return (active_uv_name, active_render_uv_name) for a mesh object."""
-    if obj is None or obj.type != "MESH":
-        return (None, None)
-    mesh = getattr(obj, "data", None)
-    if mesh is None or not getattr(mesh, "uv_layers", None):
-        return (None, None)
-
-    active = mesh.uv_layers.active.name if mesh.uv_layers.active else None
-    render = None
-    for uv in mesh.uv_layers:
-        if getattr(uv, "active_render", False):
-            render = uv.name
-            break
-    if render is None:
-        render = active
-    return (active, render)
-
-
-def _set_active_uv(mesh: "bpy.types.Mesh", uv_name: Optional[str]) -> None:
-    if not mesh or not getattr(mesh, "uv_layers", None) or not uv_name:
-        return
-    if uv_name not in mesh.uv_layers:
-        return
-    try:
-        mesh.uv_layers[uv_name].active = True
-    except Exception:
-        # Some Blender versions are finicky; fall back to active_index.
-        try:
-            mesh.uv_layers.active_index = list(mesh.uv_layers).index(mesh.uv_layers[uv_name])
-        except Exception:
-            pass
-
-
-def _set_render_uv(mesh: "bpy.types.Mesh", uv_name: Optional[str]) -> None:
-    if not mesh or not getattr(mesh, "uv_layers", None) or not uv_name:
-        return
-    if uv_name not in mesh.uv_layers:
-        return
-    try:
-        for uv in mesh.uv_layers:
-            if getattr(uv, "active_render", None) is not None:
-                uv.active_render = False
-        mesh.uv_layers[uv_name].active_render = True
-    except Exception:
-        # If active_render isn't supported, ignore.
-        pass
-
-
-def set_uv_state(obj: "bpy.types.Object", state: UVState) -> None:
-    """Set active/render UV for a mesh object, if the UV names exist."""
-    if obj is None or obj.type != "MESH":
-        return
-    mesh = getattr(obj, "data", None)
-    if mesh is None or not getattr(mesh, "uv_layers", None):
-        return
-    active_name, render_name = state
-    if active_name:
-        _set_active_uv(mesh, active_name)
-    if render_name:
-        _set_render_uv(mesh, render_name)
-
-
-def snapshot_uv_states(objects: Iterable["bpy.types.Object"]) -> UVSnapshot:
-    """Capture UV state for objects (only MESH objects with UV layers)."""
-    snap: UVSnapshot = []
-    for obj in objects:
-        if obj is None or obj.type != "MESH":
-            continue
-        mesh = getattr(obj, "data", None)
-        if mesh is None or not getattr(mesh, "uv_layers", None) or len(mesh.uv_layers) == 0:
-            continue
-        snap.append((obj, get_uv_state(obj)))
-    return snap
-
-
-def restore_uv_states(snapshot: UVSnapshot) -> None:
-    """Restore a previously-captured UV snapshot."""
-    for obj, state in snapshot:
-        try:
-            set_uv_state(obj, state)
-        except Exception:
-            # Never crash callers for a best-effort restore.
-            pass
 
 
 # ---------------------------------------------------------------------------
