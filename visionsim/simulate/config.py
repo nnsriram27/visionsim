@@ -194,6 +194,17 @@ class ThermalConfig:
     """Encoding used to compress EXRs"""
     bit_depth: Literal[16, 32] = 32
     """Bit depth for temperature/radiance EXRs"""
+    # --- animated (M2) ---
+    animated: bool = False
+    """Solve heat transfer per-frame as geometry animates (transient). When False, the static M1 solve is used."""
+    substeps_per_frame: int = 4
+    """Solver substeps per Blender frame in animated mode (dt = (1/fps)/substeps_per_frame)."""
+    frame_start: int | None = None
+    """First frame of the animated solve; defaults to the scene frame_start."""
+    frame_end: int | None = None
+    """Last frame of the animated solve; defaults to the scene frame_end."""
+    every_n_frames: int = 1
+    """Solve every Nth frame (cost control); skipped frames hold the last solved field."""
 
 
 @dataclass
