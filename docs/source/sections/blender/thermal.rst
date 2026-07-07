@@ -200,6 +200,86 @@ These set the physical material used for every mesh that has no per-object overr
         and the brightness of the ``thermal_radiance`` render — higher emissivity
         means more radiative loss and a brighter thermal image.
 
+Material presets
+~~~~~~~~~~~~~~~~
+
+The material knobs above are raw physical properties, so any material is a matter
+of supplying the right four numbers.  The table below lists starting-point values
+for common materials; the ``pvc / plastic`` row matches the built-in defaults.
+Thermal **diffusivity** is the dominant knob for how the heat *spreads* — metals
+(high diffusivity) conduct heat across the whole object quickly, while glass and
+plastics keep it localized near the heat source.
+
+.. list-table::
+    :header-rows: 1
+    :widths: 26 20 18 20 16
+
+    * - Material
+      - ``thermal-diffusivity-mm2-s``
+      - ``density-kg-m3``
+      - ``specific-heat-J-kgK``
+      - ``emissivity``
+    * - Aluminium
+      - ``97``
+      - ``2700``
+      - ``978``
+      - ``1.0`` [*]_
+    * - Copper
+      - ``111``
+      - ``8960``
+      - ``385``
+      - ``0.9``
+    * - Steel
+      - ``4.2``
+      - ``7930``
+      - ``280``
+      - ``0.9``
+    * - Cast iron
+      - ``18``
+      - ``7200``
+      - ``450``
+      - ``0.3``
+    * - Glass
+      - ``0.34``
+      - ``2500``
+      - ``840``
+      - ``0.9``
+    * - PVC / plastic (default)
+      - ``0.17``
+      - ``1330``
+      - ``880``
+      - ``0.9``
+    * - Wood
+      - ``0.082``
+      - ``897``
+      - ``2380``
+      - ``0.9``
+    * - Brick
+      - ``0.52``
+      - ``2200``
+      - ``800``
+      - ``0.9``
+
+.. [*] Emissivity is surface-finish dependent.  Polished metals are physically
+   much lower (aluminium ≈ 0.05–0.1); the value here follows the gray-body
+   convention used by the solver's radiation term and makes the
+   ``thermal_radiance`` image brighter.  Lower it for a polished-metal look.
+
+For example, to solve the whole scene as an aluminium object:
+
+.. code-block:: bash
+
+    vsim blender.render-animation scene.blend out/ \
+        --config.include-thermal \
+        --config.thermal.thermal-diffusivity-mm2-s 97 \
+        --config.thermal.density-kg-m3 2700 \
+        --config.thermal.specific-heat-J-kgK 978 \
+        --config.thermal.emissivity 1.0
+
+To give *different* objects different materials, set the per-object
+``heat_sim_material`` fields instead (see `Per-object material overrides`_); the
+global flags above are the fallback for any object without an override.
+
 Solver
 ~~~~~~
 
