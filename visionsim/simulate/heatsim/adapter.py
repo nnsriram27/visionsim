@@ -593,6 +593,231 @@ def solve_scene(scene: Any, *, defaults: dict, solver_cfg: dict, cache_root: Pat
     return per_object
 
 
+def _scene_fps(scene: Any) -> float:
+    """``scene.render.fps / scene.render.fps_base``, guarded against a zero base."""
+    r = scene.render
+    fps = float(getattr(r, "fps", 24) or 24)
+    fps_base = float(getattr(r, "fps_base", 1.0) or 1.0)
+    if fps_base <= 0.0:
+        fps_base = 1.0
+    return fps / fps_base
+
+
+def _order_fem_first(sim_objects: list, defaults: dict) -> tuple[list, set]:
+    """Split ``sim_objects`` into FEM-participant-first, Dirichlet-source-last order.
+
+    A Dirichlet source's evaluated vertex count may change frame to frame (e.g. a
+    regenerated fluid mesh). Keeping it last in the combine order means its resize
+    never shifts the ``_combine`` offsets of any FEM-participant object, so the
+    FEM-participant surface prefix has a stable width across frames -- exactly the
+    property :func:`solve_scene_animated` relies on to carry ``u_prev`` forward by
+    index.
+    """
+    fem: list = []
+    dirichlet: list = []
+    dirichlet_names: set = set()
+    for obj in sim_objects:
+        role = resolve_material(obj, defaults)["thermal_role"]
+        if role == "DIRICHLET_SOURCE":
+            dirichlet.append(obj)
+            dirichlet_names.add(obj.name)
+        else:
+            fem.append(obj)
+    return fem + dirichlet, dirichlet_names
+
+
+def solve_scene_animated(
+    scene: Any,
+    *,
+    defaults: dict,
+    solver_cfg: dict,
+    cache_root: Path,
+    frame_start: int,
+    frame_end: int,
+    every_n: int,
+    substeps_per_frame: int,
+) -> tuple[dict, list]:
+    """Transient per-frame FEM solve over an animated scene (Phase 1 / M2).
+
+    ``FEM_PARTICIPANT`` objects (stable topology) evolve: ``u_prev`` carries the
+    previous frame's final state forward by vertex index. ``DIRICHLET_SOURCE``
+    objects (topology may change frame to frame, e.g. a regenerated fluid mesh)
+    are a constant-temperature reservoir -- re-extracted every frame purely for
+    *position* (so they couple heat into nearby FEM-participant vertices through
+    the POINTS kNN Laplacian; see ``solver._build_matrices``, which builds that
+    Laplacian over ALL combined points regardless of source object) and reset to
+    the reservoir temperature every frame. Their own field never evolves and is
+    not recorded.
+
+    On a vertex-count change of any Dirichlet source, the combined system is
+    rebuilt from scratch for that frame (via :func:`_combine`); the
+    FEM-participant prefix of ``u_prev`` is preserved unchanged and the Dirichlet
+    slice is refilled with its (possibly keyframed) reservoir temperature. A
+    vertex-count change on a FEM-participant object is NOT supported (matches
+    heat-sim-blender's ANIMATE Phase 1) and raises ``RuntimeError`` with a clear
+    message pointing at ``thermal_role``.
+
+    POINTS domain only. Per the M2 design (irradiance re-bake is a deferred
+    non-goal -- see the design spec), irradiance is not computed here: coupling
+    into the FEM participants comes from the Dirichlet reservoir's *position* via
+    the shared POINTS Laplacian, which is sufficient for a "hot pour" testbed.
+    Known v1 limitation: interior-point-volume samples (POINTS domain,
+    ``interior_point_ratio`` > 0) are reseeded at their configured initial
+    temperature every frame rather than carried forward (deformation-aware
+    interior continuity is an explicit M2 non-goal).
+
+    Returns ``({obj_name: (n_frames, n_surface_verts) ndarray}, frames)`` for
+    FEM-participant objects only -- Dirichlet sources are not recorded, since
+    their temperature is always the constant we configured. Cache-aware: a hit
+    on ``cache.read_animated`` short-circuits the solve entirely.
+    """
+    cache_root = Path(cache_root)
+    sim_objects = gather_meshes(scene)
+
+    frame_start = int(frame_start)
+    frame_end = int(frame_end)
+    every_n = max(1, int(every_n))
+    substeps_per_frame = max(1, int(substeps_per_frame))
+    frames = list(range(frame_start, frame_end + 1, every_n))
+
+    blend_path = Path(str(getattr(getattr(bpy, "data", None), "filepath", "") or ""))
+    key_cfg = {
+        "solver": dict(solver_cfg),
+        "defaults": dict(defaults),
+        "objects": sorted(o.name for o in sim_objects),
+        "animated": True,
+        "frame_start": frame_start,
+        "frame_end": frame_end,
+        "every_n": every_n,
+        "substeps": substeps_per_frame,
+    }
+    key = cache.cache_key(blend_path, key_cfg)
+    cache_dir = cache_root / key
+
+    cached = cache.read_animated(cache_dir)
+    if cached is not None:
+        _log.debug("[heatsim.adapter] animated cache hit: %s", key)
+        return cached
+
+    if not frames or not sim_objects:
+        cache.write_animated(cache_dir, {}, frames, {"objects": []})
+        return {}, frames
+
+    ordered_objects, dirichlet_names = _order_fem_first(sim_objects, defaults)
+    objects_by_name = {o.name: o for o in ordered_objects}
+
+    from visionsim.simulate.heatsim.solver import HeatSimFEM
+
+    device = str(solver_cfg.get("device", "cpu"))
+    domain = str(solver_cfg.get("domain", "POINTS")).upper()
+    backend = str(solver_cfg.get("laplacian_backend", "ROBUST")).upper()
+
+    fps = _scene_fps(scene)
+    dt = (1.0 / fps) / float(substeps_per_frame)
+
+    gen_params = SimpleNamespace(
+        device=device,
+        RHO=float(defaults["density_kg_m3"]) / _KGM3_TO_KGMM3,
+        C=float(defaults["specific_heat_J_kgK"]),
+        K=float(defaults["thermal_diffusivity_mm2_s"]),
+        NUM_FRAME_DELTA=dt * 60.0,
+    )
+    sim_params = SimpleNamespace(
+        sim_radiation=True,
+        sim_convection=False,
+        add_tikhonov_reg=False,
+        sim_time=0.0,
+        record_time=0.0,
+    )
+    fem = HeatSimFEM(
+        gen_params,
+        sim_params,
+        laplacian_domain=domain,
+        laplacian_backend=backend,
+        robust_mollify_factor=float(solver_cfg.get("robust_mollify_factor", 1e-5)),
+        pointcloud_neighbors=int(solver_cfg.get("pointcloud_neighbors", 30)),
+    )
+
+    orig_frame = int(scene.frame_current)
+    history_rows: dict = {}
+    u_prev: Optional[np.ndarray] = None
+    n_fem_surface: Optional[int] = None
+
+    try:
+        for f in frames:
+            scene.frame_set(int(f))
+            combined = _combine(ordered_objects, {}, defaults, solver_cfg)
+            if combined is None:
+                raise RuntimeError(
+                    f"[heatsim.adapter] solve_scene_animated: no geometry at frame {f} "
+                    "(all sim objects vanished mid-run)."
+                )
+
+            fem_entries = [(name, off, n) for name, off, n in combined.layout if name not in dirichlet_names]
+            cur_n_fem_surface = sum(n for _, _, n in fem_entries)
+
+            if u_prev is None:
+                u_prev = combined.t0.copy()
+                n_fem_surface = cur_n_fem_surface
+            else:
+                if cur_n_fem_surface != n_fem_surface:
+                    raise RuntimeError(
+                        "[heatsim.adapter] solve_scene_animated: a FEM_PARTICIPANT "
+                        f"object's vertex count changed at frame {f} (expected "
+                        f"{n_fem_surface} surface vertices, got {cur_n_fem_surface}). "
+                        "Animated mode requires stable topology for FEM participants; "
+                        "set thermal_role=DIRICHLET_SOURCE for meshes with changing "
+                        "topology (e.g. fluids)."
+                    )
+                new_u_prev = combined.t0.copy()
+                new_u_prev[:n_fem_surface] = u_prev[:n_fem_surface]
+                u_prev = new_u_prev
+
+            states = fem.simulate_for_pose(
+                combined.verts,
+                combined.faces,
+                combined.boundary_mask,
+                u_prev,
+                combined.irradiance,
+                combined.alpha,
+                combined.density,
+                combined.c,
+                combined.eps,
+                num_substeps=substeps_per_frame,
+                dt=dt,
+            )  # (substeps, N)
+
+            # Dirichlet clamp: pin reservoir vertices back to their target
+            # temperature after every substep (also covers a future keyframed
+            # dirichlet_temperature_K -- resolved fresh every frame).
+            for name, off, n in combined.layout:
+                if name in dirichlet_names:
+                    mat = resolve_material(objects_by_name[name], defaults)
+                    t_target = mat["dirichlet_temperature_K"] or mat["initial_temperature_K"]
+                    states[:, off : off + n] = t_target
+
+            u_prev = states[-1].copy()
+            for name, off, n in fem_entries:
+                history_rows.setdefault(name, []).append(
+                    np.asarray(states[-1, off : off + n], dtype=np.float64)
+                )
+    finally:
+        scene.frame_set(orig_frame)
+
+    history = {name: np.stack(rows, axis=0) for name, rows in history_rows.items()}
+
+    meta = {
+        "objects": sorted(history),
+        "frame_start": frame_start,
+        "frame_end": frame_end,
+        "every_n": every_n,
+        "substeps": substeps_per_frame,
+    }
+    cache.write_animated(cache_dir, history, frames, meta)
+    _log.debug("[heatsim.adapter] animated solve: %d object(s), %d frame(s)", len(history), len(frames))
+    return history, frames
+
+
 def _write_point_float_attr(mesh: Any, name: str, values: np.ndarray) -> None:
     """(Re)create a POINT/FLOAT mesh attribute from ``values``."""
     if name in mesh.attributes:
