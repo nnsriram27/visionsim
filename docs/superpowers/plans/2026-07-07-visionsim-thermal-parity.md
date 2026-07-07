@@ -171,11 +171,32 @@ Expected: PASS — stdout contains `ALBEDO_BAKE_OK (128, 128, 3) <mean> <std>` w
 Run: `cd /home/sriram/research/visionsim && grep -nE "from .uv_utils|from .constants import|import irradiance" visionsim/simulate/heatsim/irradiance.py`
 Expected: only `from .constants import ALBEDO_LAYER_NAME, BAKE_UV_LAYER_NAME` (no `.uv_utils`, no `IRRADIANCE_LAYER_NAME`, no `CYCLES_LOUT_TO_IRRADIANCE`). The `from .adapter import snapshot_uv_states, restore_uv_states` line lives inside `bake_albedo_map`, not at module top.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 7: Add `irradiance.py` to the vendored ruff + mypy exclude lists**
+
+The other vendored bpy-heavy modules (`irradiance_kernel.py`, `light_models.py`, etc.) are excluded from ruff and mypy in `pyproject.toml`. This port is the same kind of file, so add it to both lists to keep `inv lint` / `inv type-check` clean.
+
+In `pyproject.toml`, in the `[tool.ruff]` `exclude = [` block (alongside the existing `"visionsim/simulate/heatsim/temperature_io.py",` entry), add:
+
+```
+    "visionsim/simulate/heatsim/irradiance.py",
+```
+
+In the `[tool.mypy]` `exclude = [` block (alongside `"visionsim/simulate/heatsim/temperature_io\\.py",`), add (note the escaped dot):
+
+```
+    "visionsim/simulate/heatsim/irradiance\\.py",
+```
+
+- [ ] **Step 8: Run the lint + type-check gates**
+
+Run: `cd /home/sriram/research/visionsim && inv lint && inv type-check`
+Expected: `inv lint` clean (no new findings). `inv type-check` shows only the 6 pre-existing errors in `emulate/dvs/v2e/emulator.py` + `dataset/dataset.py` (NOT in heatsim) — no new errors from the port. If new heatsim errors appear, the exclude entries are missing/misspelled — fix Step 7.
+
+- [ ] **Step 9: Commit**
 
 ```bash
 cd /home/sriram/research/visionsim
-git add visionsim/simulate/heatsim/irradiance.py visionsim/simulate/heatsim/constants.py tests/test_heatsim_irradiance.py
+git add visionsim/simulate/heatsim/irradiance.py visionsim/simulate/heatsim/constants.py pyproject.toml tests/test_heatsim_irradiance.py
 git commit -m "feat(heatsim): port Cycles albedo bake (bake_albedo_map) into VisionSim"
 ```
 
@@ -284,7 +305,12 @@ Expected: PASS — both tests green; stdout contains `VARYING_ALBEDO_OK <mean> <
 Run: `cd /home/sriram/research/visionsim && pytest tests/test_heatsim_adapter.py -v --executable /net/acadia2a/data/sriram/blender-fem-research/blender`
 Expected: PASS — untextured objects (e.g. the grid in `test_solve_writes_finite_sim_temperature`) still solve; the bake either produces a uniform albedo or returns None → full absorption, so `sim_irradiance.max() > 0` still holds.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 7: Lint gate**
+
+`adapter.py` is a linted (non-excluded) glue module. Run: `cd /home/sriram/research/visionsim && inv lint`
+Expected: clean (no unused-import or import-order findings introduced by removing the pre-stamp / function).
+
+- [ ] **Step 8: Commit**
 
 ```bash
 cd /home/sriram/research/visionsim
@@ -412,7 +438,12 @@ print('AUTHORED_SCALE_OK')
 Run: `cd /home/sriram/research/visionsim && pytest tests/test_heatsim_irradiance.py::test_authored_irradiance_scale_read_under_bpy -v --executable /net/acadia2a/data/sriram/blender-fem-research/blender`
 Expected: PASS — stdout contains `AUTHORED_SCALE_OK`.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 8: Lint + type-check gate**
+
+Both `adapter.py` and `blender.py` are linted, non-excluded modules; the new function has a type annotation. Run: `cd /home/sriram/research/visionsim && inv lint && inv type-check`
+Expected: `inv lint` clean; `inv type-check` shows only the 6 pre-existing errors (none new from `adapter.py`/`blender.py`).
+
+- [ ] **Step 9: Commit**
 
 ```bash
 cd /home/sriram/research/visionsim
