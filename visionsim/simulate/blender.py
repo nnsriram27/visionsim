@@ -1519,6 +1519,11 @@ class BlenderService(rpyc.Service):
         # (e.g. 1000). Let it override the ThermalConfig default so the scene
         # renders identically to the addon without manual CLI tuning.
         _authored_scale = adapter.read_authored_irradiance_scale(self.scene)
+        if _authored_scale is not None and _authored_scale != defaults["irradiance_scale"]:
+            server_log.info(
+                "thermal: using blend-authored irradiance_scale=%.3g (overrides configured %.3g)",
+                _authored_scale, defaults["irradiance_scale"],
+            )
         if _authored_scale is not None:
             defaults["irradiance_scale"] = _authored_scale
         solver_cfg = {

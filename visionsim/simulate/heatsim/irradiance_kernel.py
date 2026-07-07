@@ -282,7 +282,7 @@ def get_or_bake_vertex_albedo(
         # An all-zero albedo is the degenerate "fully absorbing" fallback (and the
         # sentinel a stale/cross-tool cache leaves behind), never a real bake — so
         # ignore it and fall through to a fresh bake.
-        if vals is not None and float(np.max(vals)) > 0.0:
+        if vals is not None and vals.size > 0 and float(np.max(vals)) > 0.0:
             out[obj.name] = np.clip(vals, 0.0, 1.0)
             continue
 
@@ -290,6 +290,7 @@ def get_or_bake_vertex_albedo(
         cached = disk_cache.get(obj.name)
         if (cached is not None
                 and int(cached.shape[0]) == len(obj.data.vertices)
+                and np.asarray(cached).size > 0
                 and float(np.max(np.asarray(cached))) > 0.0):
             vals = np.clip(np.asarray(cached, dtype=np.float64), 0.0, 1.0)
             _store_vertex_albedo_attr(obj, attr_name, vals)

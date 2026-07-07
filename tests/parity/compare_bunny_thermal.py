@@ -33,7 +33,11 @@ def load(path):
 
 def main():
     hs = load(HS)
-    vs_path = sorted(glob.glob(VS_GLOB, recursive=True))[-1]
+    vs_matches = sorted(glob.glob(VS_GLOB, recursive=True))
+    if not vs_matches:
+        print("PARITY_FAIL no VisionSim cache found — run the solve first")
+        return
+    vs_path = vs_matches[-1]
     vs = load(vs_path)
     n = min(hs.shape[0], vs.shape[0])
     hs, vs = hs[:n], vs[:n]

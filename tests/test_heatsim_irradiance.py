@@ -87,7 +87,7 @@ attr = mesh.attributes.get('albedo')
 assert attr is not None, 'no albedo attribute after solve'
 vals = np.zeros(len(mesh.vertices), dtype=np.float32)
 attr.data.foreach_get('value', vals)
-assert float(vals.std()) > 1e-3, f'albedo not varying (std={{vals.std()}}) - bake did not run'
+assert float(vals.std()) > 0.05, f'albedo not varying (std={{vals.std()}}) - bake did not run'
 assert 0.0 < float(vals.mean()) < 1.0, f'albedo mean out of range: {{vals.mean()}}'
 print('VARYING_ALBEDO_OK', round(float(vals.mean()), 3), round(float(vals.std()), 3))
 """.replace("{tmp}", str(tmp_path))
@@ -147,3 +147,36 @@ print('ZERO_CACHE_IGNORED_OK', round(float(alb.mean()),3), round(float(alb.std()
     out = subprocess.run([str(executable), "-b", "--python-expr", code],
                          capture_output=True, text=True)
     assert "ZERO_CACHE_IGNORED_OK" in out.stdout, out.stdout + "\n" + out.stderr
+
+
+def test_all_zero_attribute_albedo_is_ignored_and_rebaked(executable):
+    code = r"""
+import bpy, numpy as np
+from visionsim.simulate.heatsim import register, irradiance_kernel
+register()
+bpy.ops.object.select_all(action='SELECT'); bpy.ops.object.delete()
+bpy.ops.mesh.primitive_grid_add(x_subdivisions=12, y_subdivisions=12, size=2.0)
+obj = bpy.context.active_object
+mat = bpy.data.materials.new('checker'); mat.use_nodes = True
+nt = mat.node_tree; bsdf = nt.nodes.get('Principled BSDF')
+ck = nt.nodes.new('ShaderNodeTexChecker'); ck.inputs['Scale'].default_value = 6.0
+nt.links.new(ck.outputs['Color'], bsdf.inputs['Base Color'])
+obj.data.materials.append(mat)
+bpy.context.scene.render.engine = 'CYCLES'
+try: bpy.context.scene.cycles.device = 'CPU'; bpy.context.scene.cycles.samples = 4
+except Exception: pass
+nv = len(obj.data.vertices)
+# Stale all-zeros mesh attribute for this object must NOT be served; must re-bake.
+mesh = obj.data
+attr = mesh.attributes.new(name='albedo', type='FLOAT', domain='POINT')
+attr.data.foreach_set('value', np.zeros(nv, dtype=np.float64))
+amap = irradiance_kernel.get_or_bake_vertex_albedo(
+    bpy.context.scene, [obj], texture_size=128)
+alb = amap.get(obj.name)
+assert alb is not None, 'albedo absent'
+assert float(alb.std()) > 0.05, f'zeros attribute was served instead of re-baking (std={alb.std()})'
+print('ZERO_ATTR_IGNORED_OK', round(float(alb.mean()),3), round(float(alb.std()),3))
+"""
+    out = subprocess.run([str(executable), "-b", "--python-expr", code],
+                         capture_output=True, text=True)
+    assert "ZERO_ATTR_IGNORED_OK" in out.stdout, out.stdout + "\n" + out.stderr
