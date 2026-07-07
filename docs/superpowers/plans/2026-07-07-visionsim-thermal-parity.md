@@ -574,6 +574,120 @@ Record the printed parity numbers in the task ledger / final report.
 
 ---
 
+## Task 5: Robustness — ignore a degenerate (all-zero) cached albedo
+
+**Files:**
+- Modify: `visionsim/simulate/heatsim/irradiance_kernel.py` (`get_or_bake_vertex_albedo`, the tier-1 attribute read and tier-2 disk-cache read)
+- Test: `tests/test_heatsim_irradiance.py` (append)
+
+**Interfaces:**
+- Consumes: the ported bake (Task 1) via the unchanged tier-3 path.
+- Produces: `get_or_bake_vertex_albedo` treats an all-zero stored/cached albedo as absent and falls through to a fresh bake, so a stale zeros cache can never shadow a real material.
+
+**Context (discovered during Task 4 parity):** the kernel albedo disk cache lives at `<stem>.heatsim/latest/albedo_cache.npz` — a stem-based, non-content-keyed path that collides with heat-sim's cache dir. Pre-Task-2 VisionSim runs (constant albedo=0) and heat-sim's own bake wrote **all-zeros** there. After the bake was unblocked, the tier-2 disk-cache hit still served those zeros → albedo 0 → full absorption → parity failed on mean ΔT (1.8×) until the stale cache was manually cleared. An all-zero albedo is the degenerate "fully absorbing" fallback, never a meaningful bake result — so treat it as a re-bake trigger. This is a cache-correctness fix in the albedo-resolution logic, NOT a change to irradiance physics (the Global Constraint bars physics changes, which this is not).
+
+- [ ] **Step 1: Write the failing test**
+
+Append to `tests/test_heatsim_irradiance.py`:
+
+```python
+def test_all_zero_cached_albedo_is_ignored_and_rebaked(executable):
+    code = r"""
+import bpy, numpy as np
+from visionsim.simulate.heatsim import register, irradiance_kernel
+register()
+bpy.ops.object.select_all(action='SELECT'); bpy.ops.object.delete()
+bpy.ops.mesh.primitive_grid_add(x_subdivisions=12, y_subdivisions=12, size=2.0)
+obj = bpy.context.active_object
+mat = bpy.data.materials.new('checker'); mat.use_nodes = True
+nt = mat.node_tree; bsdf = nt.nodes.get('Principled BSDF')
+ck = nt.nodes.new('ShaderNodeTexChecker'); ck.inputs['Scale'].default_value = 6.0
+nt.links.new(ck.outputs['Color'], bsdf.inputs['Base Color'])
+obj.data.materials.append(mat)
+bpy.context.scene.render.engine = 'CYCLES'
+try: bpy.context.scene.cycles.device = 'CPU'; bpy.context.scene.cycles.samples = 4
+except Exception: pass
+nv = len(obj.data.vertices)
+# Stale all-zeros disk cache for this object must NOT be served; must re-bake.
+amap = irradiance_kernel.get_or_bake_vertex_albedo(
+    bpy.context.scene, [obj], texture_size=128,
+    disk_cache={obj.name: np.zeros(nv, dtype=np.float64)})
+alb = amap.get(obj.name)
+assert alb is not None, 'albedo absent'
+assert float(alb.std()) > 0.05, f'zeros cache was served instead of re-baking (std={alb.std()})'
+print('ZERO_CACHE_IGNORED_OK', round(float(alb.mean()),3), round(float(alb.std()),3))
+"""
+    import subprocess
+    out = subprocess.run([str(executable), "-b", "--python-expr", code],
+                         capture_output=True, text=True)
+    assert "ZERO_CACHE_IGNORED_OK" in out.stdout, out.stdout + "\n" + out.stderr
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `cd /home/sriram/research/visionsim && pytest tests/test_heatsim_irradiance.py::test_all_zero_cached_albedo_is_ignored_and_rebaked -v --executable /net/acadia2a/data/sriram/blender-fem-research/blender`
+Expected: FAIL — the all-zeros disk cache is served (`std == 0`), so the assertion fails and `ZERO_CACHE_IGNORED_OK` is absent.
+
+- [ ] **Step 3: Add the all-zero guard to `get_or_bake_vertex_albedo`**
+
+In `visionsim/simulate/heatsim/irradiance_kernel.py`, in the per-object loop of `get_or_bake_vertex_albedo`:
+
+Tier 1 (existing mesh attribute) — change:
+```python
+        vals = _read_vertex_albedo_attr(obj, attr_name)
+        if vals is not None:
+            out[obj.name] = np.clip(vals, 0.0, 1.0)
+            continue
+```
+to:
+```python
+        vals = _read_vertex_albedo_attr(obj, attr_name)
+        # An all-zero albedo is the degenerate "fully absorbing" fallback (and the
+        # sentinel a stale/cross-tool cache leaves behind), never a real bake — so
+        # ignore it and fall through to a fresh bake.
+        if vals is not None and float(np.max(vals)) > 0.0:
+            out[obj.name] = np.clip(vals, 0.0, 1.0)
+            continue
+```
+
+Tier 2 (disk cache) — change:
+```python
+        cached = disk_cache.get(obj.name)
+        if cached is not None and int(cached.shape[0]) == len(obj.data.vertices):
+```
+to:
+```python
+        cached = disk_cache.get(obj.name)
+        if (cached is not None
+                and int(cached.shape[0]) == len(obj.data.vertices)
+                and float(np.max(np.asarray(cached))) > 0.0):
+```
+
+Leave the tier-3 bake path unchanged.
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+Run: `cd /home/sriram/research/visionsim && pytest tests/test_heatsim_irradiance.py::test_all_zero_cached_albedo_is_ignored_and_rebaked -v --executable /net/acadia2a/data/sriram/blender-fem-research/blender`
+Expected: PASS — stdout contains `ZERO_CACHE_IGNORED_OK <mean> <std>` with std > 0.05.
+
+- [ ] **Step 5: Run the full heatsim-irradiance test file (no regression)**
+
+Run: `cd /home/sriram/research/visionsim && pytest tests/test_heatsim_irradiance.py -v --executable /net/acadia2a/data/sriram/blender-fem-research/blender`
+Expected: all tests PASS.
+
+- [ ] **Step 6: Lint + type-check gate**
+
+`irradiance_kernel.py` is in the mypy/ruff exclude list (vendored), but run the whole-tree gate to confirm nothing regressed. Run: `cd /home/sriram/research/visionsim && PATH="$PWD/.venv/bin:$PATH" .venv/bin/inv lint && PATH="$PWD/.venv/bin:$PATH" .venv/bin/inv type-check`
+Expected: lint clean; type-check only the 6 pre-existing errors.
+
+- [ ] **Step 7: Commit**
+
+```bash
+cd /home/sriram/research/visionsim
+git add visionsim/simulate/heatsim/irradiance_kernel.py tests/test_heatsim_irradiance.py
+git commit -m "fix(heatsim): ignore degenerate all-zero cached albedo, re-bake instead"
+```
+
 ## Out of Scope (per spec §5)
 
 - The optional ambient/initial-temperature alignment (heat-sim 295.372 K vs VisionSim 295.0 K, a 0.372 K constant offset) is **not** implemented — it does not affect ΔT parity. Only revisit if absolute-Kelvin parity is later required.
