@@ -148,3 +148,80 @@ print('DIRICHLET_FALLBACK_OK')
     )
     out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
     assert "DIRICHLET_FALLBACK_OK" in out.stdout, out.stdout + "\n" + out.stderr
+
+
+def test_thermal_write_frame_advances_animated_field(executable, tmp_path):
+    """Task 5 integration test: drive the real ``BlenderService`` methods end-to-end.
+
+    After an animated ``exposed_prepare_thermal`` solve, ``exposed_set_current_frame`` +
+    ``_thermal_write_frame`` (the per-frame render hook used by ``exposed_render_frame``)
+    must write an increasingly hot ``sim_temperature`` onto the plate as later frames are
+    requested, since the transient field keeps evolving toward the Dirichlet reservoir.
+    The Dirichlet box itself is absent from the animated history, so it must still hit
+    the Task 4 reservoir-temperature fallback rather than ambient.
+    """
+    code = (
+        _SCENE_SETUP
+        + r"""
+import bpy
+import numpy as np
+from visionsim.simulate.blender import BlenderService
+
+blend_path = r'{tmp_path}/animated_test.blend'
+root_path = r'{tmp_path}'
+bpy.ops.wm.save_as_mainfile(filepath=blend_path)
+
+service = BlenderService()
+service.exposed_initialize(blend_path, root_path)
+
+service.exposed_prepare_thermal(
+    animated=True,
+    domain='POINTS',
+    laplacian_backend='ROBUST',
+    device='cpu',
+    frame_start=1,
+    frame_end=5,
+    substeps_per_frame=4,
+    every_n_frames=1,
+    initial_temperature_K=295.0,
+    thermal_diffusivity_mm2_s=0.17,
+    density_kg_m3=1330.0,
+    specific_heat_J_kgK=880.0,
+    emissivity=0.9,
+    irradiance_scale=100.0,
+)
+
+assert service._thermal_animated_history is not None, 'animated history was not stored on the service'
+assert service._thermal_animated_frames == [1, 2, 3, 4, 5], service._thermal_animated_frames
+assert 'Plate' in service._thermal_animated_history, list(service._thermal_animated_history.keys())
+
+plate_obj = bpy.data.objects['Plate']
+
+
+def plate_mean():
+    attr = plate_obj.data.attributes['sim_temperature']
+    vals = np.zeros(len(attr.data), dtype=np.float32)
+    attr.data.foreach_get('value', vals)
+    return float(vals.mean())
+
+
+service.exposed_set_current_frame(1)
+service._thermal_write_frame(1)
+mean_early = plate_mean()
+
+service.exposed_set_current_frame(5)
+service._thermal_write_frame(5)
+mean_late = plate_mean()
+
+assert mean_late > mean_early, (mean_early, mean_late)
+
+# The Dirichlet box has no per-frame history entry, so the write must fall
+# through to the reservoir-temperature fallback (Task 4), not ambient.
+box_obj = bpy.data.objects['Box']
+assert box_obj['heatsim_default_temperature'] == 369.0, box_obj['heatsim_default_temperature']
+
+print('ANIMATED_RENDER_WRITE_OK', round(mean_early, 4), round(mean_late, 4))
+"""
+    ).replace("{tmp_path}", str(tmp_path))
+    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
+    assert "ANIMATED_RENDER_WRITE_OK" in out.stdout, out.stdout + "\n" + out.stderr

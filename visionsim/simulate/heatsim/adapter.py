@@ -183,6 +183,32 @@ def global_temperature_range(history: dict[str, Any], default_K: float) -> tuple
     return tmin, tmax
 
 
+def global_temperature_range_animated(history: dict[str, Any], default_K: float) -> tuple[float, float]:
+    """Global colormap range ``(tmin, tmax)`` in Kelvin spanning EVERY frame of an animated solve.
+
+    Like :func:`global_temperature_range`, but folds in the full per-frame history instead
+    of only the final timestep. The animated (M2) field keeps evolving frame to frame, so a
+    final-frame-only range would clip the preview colormap against later (typically hotter)
+    frames -- this instead gives a single, stable scale for the whole sequence.
+
+    Args:
+        history: ``{obj_name: (n_frames, n_verts) array}`` from :func:`solve_scene_animated`.
+        default_K: Default initial temperature stamped on unsolved meshes.
+
+    Returns:
+        ``(tmin, tmax)`` with ``tmax - tmin >= 1.0``.
+    """
+    arrays = [np.asarray(arr, dtype=float) for arr in history.values() if np.asarray(arr).size]
+    if not arrays:
+        return float(default_K), float(default_K) + 1.0
+    tmin = min(float(np.min(a)) for a in arrays)
+    tmax = max(float(np.max(a)) for a in arrays)
+    tmin = min(tmin, float(default_K))
+    if tmax - tmin < 1.0:
+        tmax = tmin + 1.0
+    return tmin, tmax
+
+
 # ---------------------------------------------------------------------------
 # Geometry extraction (evaluated mesh -> world mm + triangulated faces)
 # ---------------------------------------------------------------------------
