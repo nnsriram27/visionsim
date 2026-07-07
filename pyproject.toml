@@ -66,6 +66,7 @@ exclude = [
     "visionsim/simulate/heatsim/sky_visibility.py",
     "visionsim/simulate/heatsim/bvh_backend.py",
     "visionsim/simulate/heatsim/temperature_io.py",
+    "visionsim/simulate/heatsim/irradiance.py",
 ]
 
 [tool.mypy]
@@ -81,6 +82,7 @@ exclude = [
     "visionsim/simulate/heatsim/bvh_backend\\.py",
     "visionsim/simulate/heatsim/temperature_io\\.py",
     "visionsim/simulate/heatsim/properties\\.py",
+    "visionsim/simulate/heatsim/irradiance\\.py",
 ]
 follow_imports="skip"
 
