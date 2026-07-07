@@ -279,13 +279,18 @@ def get_or_bake_vertex_albedo(
     for obj in objects:
         # 1. Existing mesh attribute.
         vals = _read_vertex_albedo_attr(obj, attr_name)
-        if vals is not None:
+        # An all-zero albedo is the degenerate "fully absorbing" fallback (and the
+        # sentinel a stale/cross-tool cache leaves behind), never a real bake — so
+        # ignore it and fall through to a fresh bake.
+        if vals is not None and float(np.max(vals)) > 0.0:
             out[obj.name] = np.clip(vals, 0.0, 1.0)
             continue
 
         # 2. Disk cache.
         cached = disk_cache.get(obj.name)
-        if cached is not None and int(cached.shape[0]) == len(obj.data.vertices):
+        if (cached is not None
+                and int(cached.shape[0]) == len(obj.data.vertices)
+                and float(np.max(np.asarray(cached))) > 0.0):
             vals = np.clip(np.asarray(cached, dtype=np.float64), 0.0, 1.0)
             _store_vertex_albedo_attr(obj, attr_name, vals)
             out[obj.name] = vals

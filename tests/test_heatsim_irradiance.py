@@ -116,3 +116,34 @@ print('AUTHORED_SCALE_OK')
         capture_output=True, text=True,
     )
     assert "AUTHORED_SCALE_OK" in out.stdout, out.stdout + "\n" + out.stderr
+
+
+def test_all_zero_cached_albedo_is_ignored_and_rebaked(executable):
+    code = r"""
+import bpy, numpy as np
+from visionsim.simulate.heatsim import register, irradiance_kernel
+register()
+bpy.ops.object.select_all(action='SELECT'); bpy.ops.object.delete()
+bpy.ops.mesh.primitive_grid_add(x_subdivisions=12, y_subdivisions=12, size=2.0)
+obj = bpy.context.active_object
+mat = bpy.data.materials.new('checker'); mat.use_nodes = True
+nt = mat.node_tree; bsdf = nt.nodes.get('Principled BSDF')
+ck = nt.nodes.new('ShaderNodeTexChecker'); ck.inputs['Scale'].default_value = 6.0
+nt.links.new(ck.outputs['Color'], bsdf.inputs['Base Color'])
+obj.data.materials.append(mat)
+bpy.context.scene.render.engine = 'CYCLES'
+try: bpy.context.scene.cycles.device = 'CPU'; bpy.context.scene.cycles.samples = 4
+except Exception: pass
+nv = len(obj.data.vertices)
+# Stale all-zeros disk cache for this object must NOT be served; must re-bake.
+amap = irradiance_kernel.get_or_bake_vertex_albedo(
+    bpy.context.scene, [obj], texture_size=128,
+    disk_cache={obj.name: np.zeros(nv, dtype=np.float64)})
+alb = amap.get(obj.name)
+assert alb is not None, 'albedo absent'
+assert float(alb.std()) > 0.05, f'zeros cache was served instead of re-baking (std={alb.std()})'
+print('ZERO_CACHE_IGNORED_OK', round(float(alb.mean()),3), round(float(alb.std()),3))
+"""
+    out = subprocess.run([str(executable), "-b", "--python-expr", code],
+                         capture_output=True, text=True)
+    assert "ZERO_CACHE_IGNORED_OK" in out.stdout, out.stdout + "\n" + out.stderr
