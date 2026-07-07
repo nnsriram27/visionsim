@@ -193,44 +193,9 @@ def _extract_geometry(obj: Any) -> Optional[tuple]:
 # ---------------------------------------------------------------------------
 
 
-def _ensure_albedo_attr(obj: Any, value: float) -> None:
-    """Stamp a constant ``albedo`` POINT/FLOAT attribute when one is absent.
-
-    The Direct Kernel's albedo step would otherwise fall through to a one-shot
-    Cycles bake (``irradiance.bake_albedo_map``) - a module that is intentionally
-    NOT vendored here. Pre-seeding the attribute makes the kernel read it instead
-    of baking; ``value == 0`` reproduces the kernel's own "missing albedo => fully
-    absorbing" fallback exactly. A pre-existing valid ``albedo`` attribute is kept.
-    """
-    mesh = getattr(obj, "data", None)
-    if mesh is None:
-        return
-    n = len(mesh.vertices)
-    existing = mesh.attributes.get("albedo")
-    if (
-        existing is not None
-        and getattr(existing, "domain", None) == "POINT"
-        and getattr(existing, "data_type", None) == "FLOAT"
-        and len(existing.data) == n
-    ):
-        return
-    if existing is not None:
-        try:
-            mesh.attributes.remove(existing)
-        except Exception:
-            pass
-    attr = mesh.attributes.new(name="albedo", type="FLOAT", domain="POINT")
-    attr.data.foreach_set("value", np.full(n, float(value), dtype=np.float32))
-    mesh.update()
-
-
 def _compute_irradiance(scene: Any, sim_objects: list, solver_cfg: dict, defaults: dict) -> dict:
     """Run the Direct-Kernel and return ``{obj: (N,) float64 W/m^2 absorbed}``."""
     from visionsim.simulate.heatsim import irradiance_kernel
-
-    default_albedo = float(defaults.get("albedo", 0.0))
-    for obj in sim_objects:
-        _ensure_albedo_attr(obj, default_albedo)
 
     # SimpleNamespace surrogate for the addon's scene PropertyGroup (the kernel
     # only reads these via getattr(..., default)). Sky occlusion defaults off so

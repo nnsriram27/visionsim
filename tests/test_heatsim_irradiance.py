@@ -42,3 +42,57 @@ print('ALBEDO_BAKE_OK', px.shape, round(mean, 3), round(float(px.std()), 3))
         capture_output=True, text=True,
     )
     assert "ALBEDO_BAKE_OK" in out.stdout, out.stdout + "\n" + out.stderr
+
+
+def test_solve_produces_varying_albedo_attribute(executable, tmp_path):
+    code = r"""
+import bpy, numpy as np
+from pathlib import Path
+from visionsim.simulate.heatsim import register, adapter
+
+register()
+bpy.ops.object.select_all(action='SELECT')
+bpy.ops.object.delete()
+bpy.ops.mesh.primitive_grid_add(x_subdivisions=20, y_subdivisions=20, size=2.0)
+obj = bpy.context.active_object
+obj.name = 'ThermalPlane'
+obj.heat_simulation_enabled = True
+
+mat = bpy.data.materials.new('checker_mat')
+mat.use_nodes = True
+nt = mat.node_tree
+bsdf = nt.nodes.get('Principled BSDF')
+checker = nt.nodes.new('ShaderNodeTexChecker')
+checker.inputs['Scale'].default_value = 6.0
+nt.links.new(checker.outputs['Color'], bsdf.inputs['Base Color'])
+obj.data.materials.append(mat)
+
+bpy.ops.object.light_add(type='SUN')
+bpy.context.active_object.data.energy = 10.0
+world = bpy.context.scene.world
+world.use_nodes = True
+bg = world.node_tree.nodes.get('Background')
+bg.inputs['Strength'].default_value = 1.0
+
+defaults = dict(initial_temperature_K=295.0, thermal_diffusivity_mm2_s=0.17,
+                density_kg_m3=1330.0, specific_heat_J_kgK=880.0, emissivity=0.9,
+                irradiance_scale=100.0)
+solver_cfg = dict(sim_time_s=0.1, timestep_s=0.05, domain='POINTS',
+                  laplacian_backend='ROBUST', device='cpu')
+adapter.solve_scene(bpy.context.scene, defaults=defaults,
+                    solver_cfg=solver_cfg, cache_root=Path(r'{tmp}'))
+
+mesh = obj.data
+attr = mesh.attributes.get('albedo')
+assert attr is not None, 'no albedo attribute after solve'
+vals = np.zeros(len(mesh.vertices), dtype=np.float32)
+attr.data.foreach_get('value', vals)
+assert float(vals.std()) > 1e-3, f'albedo not varying (std={{vals.std()}}) - bake did not run'
+assert 0.0 < float(vals.mean()) < 1.0, f'albedo mean out of range: {{vals.mean()}}'
+print('VARYING_ALBEDO_OK', round(float(vals.mean()), 3), round(float(vals.std()), 3))
+""".replace("{tmp}", str(tmp_path))
+    out = subprocess.run(
+        [str(executable), "-b", "--python-expr", code],
+        capture_output=True, text=True,
+    )
+    assert "VARYING_ALBEDO_OK" in out.stdout, out.stdout + "\n" + out.stderr
