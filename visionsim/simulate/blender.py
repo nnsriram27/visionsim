@@ -550,6 +550,7 @@ class BlenderService(rpyc.Service):
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: int = 32,
         preview: bool = False,
+        preview_view_transform: str | None = None,
         c: int | None = None,
         denoise: bool = False,
     ) -> None:
@@ -564,6 +565,9 @@ class BlenderService(rpyc.Service):
             exr_codec (str, optional): EXR codec to use. Defaults to "DWAA".
             bit_depth (int, optional): Bit depth to use. Defaults to 32.
             preview (bool, optional): If true, output node will be configured for preview. Defaults to False.
+            preview_view_transform (str, optional): When set on a preview output, overrides the preview
+                default "Raw" view transform (e.g. "Standard" to sRGB-encode a colormapped image).
+                Ignored for non-preview outputs. Defaults to None (leave the preview default "Raw").
             c (int, optional): Number of channels for registration. Defaults to None (inferred from color_mode).
             denoise (bool, optional): If true, insert a denoise compositor node before the file output.
                 This enables the Cycles denoising data view layer passes (albedo and normal) and connects
@@ -609,6 +613,11 @@ class BlenderService(rpyc.Service):
             self.tree.links.new(source_socket, socket)
         else:
             self.tree.links.new(source_socket, socket)
+
+        if preview and preview_view_transform is not None:
+            # file_output_node(preview=True) forces "Raw"; override it (e.g. to
+            # "Standard") when the compositor output must be display-encoded.
+            node.format.view_settings.view_transform = preview_view_transform
 
         if c is None:
             c = COLOR_MODE_CHANNELS.get(color_mode.upper())
@@ -1626,6 +1635,10 @@ class BlenderService(rpyc.Service):
                 "emissivity": emissivity,
             },
         )
+        # Global temperature range for the preview colormap, spanning the solved
+        # scene's actual data instead of a fixed band. Stashed on the service so
+        # ``include_thermal`` (a separate call on the same instance) can read it.
+        self._thermal_temp_range = adapter.global_temperature_range(history, initial_temperature_K)
         thermal_shader.stamp_default_temperatures(self.scene, default_K=initial_temperature_K)
         thermal_shader.setup_temperature_aov(self.scene, self.view_layer)
 
@@ -1724,7 +1737,7 @@ class BlenderService(rpyc.Service):
 
         Wires the per-vertex temperature map (in Kelvin) from the ``temperature`` AOV registered by
         :meth:`prepare_thermal <visionsim.simulate.blender.BlenderService.exposed_prepare_thermal>` into the
-        compositor, optionally adds a turbo-colormap preview, and optionally arms a second gray-body render pass
+        compositor, optionally adds an inferno-colormap preview, and optionally arms a second gray-body render pass
         that produces a thermal-camera radiance image (emitted at render time by
         :meth:`render_current_frame <visionsim.simulate.blender.BlenderService.exposed_render_current_frame>`).
 
@@ -1737,7 +1750,7 @@ class BlenderService(rpyc.Service):
         Args:
             radiance (bool, optional): If true, arm the gray-body thermal-camera radiance image as a second render
                 pass and register its per-frame output. Defaults to True.
-            preview (bool, optional): If true, also save a turbo-colormap PNG preview of the temperature map.
+            preview (bool, optional): If true, also save an inferno-colormap PNG preview of the temperature map.
                 Defaults to True.
             initial_temperature_K (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
                 ignored here. Default initial temperature, in Kelvin, for meshes without a per-object value.
@@ -1786,15 +1799,27 @@ class BlenderService(rpyc.Service):
         if preview:
             from visionsim.simulate.nodes import thermal_preview_node_group
 
+            # Span the colormap over the solved scene's actual temperature range
+            # (computed in prepare_thermal) instead of the fixed 295-400 K default,
+            # so low-dT scenes are not crushed to the dark end of inferno.
+            rng = getattr(self, "_thermal_temp_range", None)
             group = self.tree.nodes.new("CompositorNodeGroup")
             group.label = "Thermal Preview"
-            group.node_tree = thermal_preview_node_group()
+            group.node_tree = (
+                thermal_preview_node_group(tmin=rng[0], tmax=rng[1])
+                if rng is not None
+                else thermal_preview_node_group()
+            )
             self.tree.links.new(self.render_layers.outputs["temperature"], group.inputs["Temperature"])
+            # heat-sim writes srgb_encode(inferno_lut) as its PNG; the compositor
+            # inferno output is scene-linear, so display-encode it with the
+            # Standard (sRGB) view transform instead of the preview default "Raw".
             self._include_output(
                 "previews/temperature",
                 group.outputs["Image"],
                 label="Preview Temperature Output",
                 preview=True,
+                preview_view_transform="Standard",
                 color_mode="RGB",
                 c=3,
             )

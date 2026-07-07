@@ -151,6 +151,38 @@ def read_authored_irradiance_scale(scene: Any) -> Optional[float]:
         return None
 
 
+def global_temperature_range(history: dict[str, Any], default_K: float) -> tuple[float, float]:
+    """Global colormap range ``(tmin, tmax)`` in Kelvin over the solved scene.
+
+    Spans the **final-timestep** temperatures of every solved object (M1 renders
+    the final state on every frame), so the thermal preview colormap covers the
+    actual data instead of a fixed 295-400 K band. The lower bound is floored at
+    ``default_K`` — unsolved meshes are stamped at that temperature — and the span
+    is widened to at least 1 K so a near-uniform field does not collapse to a
+    single colour.
+
+    Args:
+        history: ``{obj_name: (timesteps, vertices) array}`` from :func:`solve_scene`.
+        default_K: Default initial temperature stamped on unsolved meshes.
+
+    Returns:
+        ``(tmin, tmax)`` with ``tmax - tmin >= 1.0``.
+    """
+    finals = []
+    for arr in history.values():
+        a = np.asarray(arr, dtype=float)
+        if a.size:
+            finals.append(a[-1] if a.ndim >= 2 else a)
+    if not finals:
+        return float(default_K), float(default_K) + 1.0
+    tmin = min(float(np.min(a)) for a in finals)
+    tmax = max(float(np.max(a)) for a in finals)
+    tmin = min(tmin, float(default_K))
+    if tmax - tmin < 1.0:
+        tmax = tmin + 1.0
+    return tmin, tmax
+
+
 # ---------------------------------------------------------------------------
 # Geometry extraction (evaluated mesh -> world mm + triangulated faces)
 # ---------------------------------------------------------------------------

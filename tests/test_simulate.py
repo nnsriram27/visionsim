@@ -172,7 +172,7 @@ def test_render_thermal(tmp_path_factory, executable):
     main RGB pass plus the thermal outputs and asserts that:
       * the radiance second-render pass did NOT clobber the main RGB ``frames/``,
       * ``temperature/`` ground-truth EXRs are written (single channel, Kelvin),
-      * the turbo-colormap ``previews/temperature/`` PNGs are written, and
+      * the inferno-colormap ``previews/temperature/`` PNGs are written, and
       * the gray-body ``thermal_radiance/`` EXRs are written.
 
     N is the number of frames rendered by this gate.
@@ -225,7 +225,7 @@ def test_render_thermal(tmp_path_factory, executable):
     assert Dataset.load_data(temp_exrs[0]).shape == (50, 50, 1)
     Metadata.load(temp / "transforms.db")  # round-trips without error
 
-    # turbo-colormap previews.
+    # inferno-colormap previews.
     assert preview.exists()
     assert len(list(preview.glob("**/*.png"))) == N
 

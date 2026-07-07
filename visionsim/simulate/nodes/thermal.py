@@ -1,6 +1,8 @@
 # NOTE: This needs to be imported by blender to work properly.
 
-# Turbo colormap stop data sourced from heat-sim-blender temperature_viz.get_turbo_colormap() (@ 543ee81).
+# Inferno colormap stop data sourced verbatim from heat-sim-blender's
+# scripts/post/_exr_io.py ``_INFERNO_STOPS`` (matplotlib inferno sampled at 11
+# even t values), so the preview matches heat-sim's rendered To/thermal PNGs.
 
 from __future__ import annotations
 
@@ -10,14 +12,19 @@ from .common import MAPRANGE_NODE, new_socket, set_clamp
 
 
 def thermal_preview_node_group(tmin: float = 295.0, tmax: float = 400.0) -> bpy.types.NodeTree:
-    """Compositor node group mapping a scalar temperature (K) to a turbo-coloured RGB image.
+    """Compositor node group mapping a scalar temperature (K) to an inferno-coloured RGB image.
 
     Structure: ``Temperature`` float INPUT → MapRange([tmin, tmax] → [0, 1]) →
-    ``ShaderNodeValToRGB`` with turbo colour stops → ``Image`` colour OUTPUT.
+    ``ShaderNodeValToRGB`` with inferno colour stops → ``Image`` colour OUTPUT.
+
+    The inferno stops match heat-sim-blender's colormap. heat-sim treats the LUT
+    output as scene-linear and sRGB-encodes it before writing the PNG; the caller
+    (``include_thermal``) reproduces that by rendering this group's output through
+    the ``Standard`` (sRGB) view transform rather than the preview default ``Raw``.
 
     Args:
-        tmin: Minimum temperature in Kelvin — maps to the cool (dark blue) end of turbo.
-        tmax: Maximum temperature in Kelvin — maps to the hot (dark red) end of turbo.
+        tmin: Minimum temperature in Kelvin — maps to the cool (near-black) end of inferno.
+        tmax: Maximum temperature in Kelvin — maps to the hot (bright yellow) end of inferno.
 
     Returns:
         A ``CompositorNodeTree`` named ``"ThermalPreview"``.
@@ -49,33 +56,34 @@ def thermal_preview_node_group(tmin: float = 295.0, tmax: float = 400.0) -> bpy.
     map_range.inputs[3].default_value = 0.0           # To Min
     map_range.inputs[4].default_value = 1.0           # To Max
 
-    # Turbo colour ramp (ShaderNodeValToRGB is correct for the Blender ≥5.0 compositor).
+    # Inferno colour ramp (ShaderNodeValToRGB is correct for the Blender ≥5.0 compositor).
     color_ramp = ng.nodes.new("ShaderNodeValToRGB")
-    color_ramp.name = "TurboRamp"
+    color_ramp.name = "InfernoRamp"
     ramp = color_ramp.color_ramp
     ramp.interpolation = "LINEAR"
 
-    # Turbo colormap stops — mirrors temperature_viz.get_turbo_colormap() exactly.
-    _turbo_stops = [
-        (0.00, (0.18995, 0.07176, 0.23217, 1.0)),  # dark blue
-        (0.10, (0.25107, 0.25237, 0.63374, 1.0)),  # blue
-        (0.20, (0.19943, 0.47510, 0.82373, 1.0)),  # light blue
-        (0.30, (0.12394, 0.67124, 0.75369, 1.0)),  # cyan
-        (0.40, (0.21960, 0.80968, 0.53235, 1.0)),  # green-cyan
-        (0.50, (0.48137, 0.89499, 0.29948, 1.0)),  # green
-        (0.60, (0.73563, 0.91465, 0.18511, 1.0)),  # yellow-green
-        (0.70, (0.92989, 0.83247, 0.14869, 1.0)),  # yellow
-        (0.80, (0.99324, 0.61749, 0.11615, 1.0)),  # orange
-        (0.90, (0.96102, 0.37572, 0.11219, 1.0)),  # orange-red
-        (1.00, (0.84620, 0.17942, 0.15089, 1.0)),  # dark red
+    # Inferno colormap stops — verbatim from heat-sim-blender _exr_io._INFERNO_STOPS
+    # (matplotlib inferno at 11 even positions 0.0, 0.1, …, 1.0).
+    _inferno_stops = [
+        (0.00, (0.00146, 0.00047, 0.01387, 1.0)),  # near-black
+        (0.10, (0.08741, 0.04456, 0.22481, 1.0)),  # deep purple
+        (0.20, (0.25823, 0.03857, 0.40648, 1.0)),  # purple
+        (0.30, (0.41633, 0.09020, 0.43294, 1.0)),  # magenta
+        (0.40, (0.57830, 0.14804, 0.40441, 1.0)),  # red-magenta
+        (0.50, (0.73568, 0.21591, 0.33025, 1.0)),  # red
+        (0.60, (0.86501, 0.31682, 0.22606, 1.0)),  # red-orange
+        (0.70, (0.95451, 0.46874, 0.09987, 1.0)),  # orange
+        (0.80, (0.98762, 0.64532, 0.03989, 1.0)),  # amber
+        (0.90, (0.96439, 0.84385, 0.27339, 1.0)),  # yellow
+        (1.00, (0.98836, 0.99836, 0.64492, 1.0)),  # pale yellow
     ]
 
     # Mirror colorize_indices_node_group: clear existing, resize, then fill.
-    while len(ramp.elements) < len(_turbo_stops):
+    while len(ramp.elements) < len(_inferno_stops):
         ramp.elements.new(0.5)
-    while len(ramp.elements) > len(_turbo_stops):
+    while len(ramp.elements) > len(_inferno_stops):
         ramp.elements.remove(ramp.elements[-1])
-    for i, (pos, color) in enumerate(_turbo_stops):
+    for i, (pos, color) in enumerate(_inferno_stops):
         ramp.elements[i].position = pos
         ramp.elements[i].color = color
 

@@ -159,7 +159,7 @@ class ThermalConfig:
     radiance: bool = True
     """If true, also render the gray-body thermal-camera radiance image (second render pass)"""
     preview: bool = True
-    """Also save a turbo-colormap PNG preview of the temperature map"""
+    """Also save an inferno-colormap PNG preview of the temperature map"""
     # --- per-object override hook (else globals below) ---
     # overrides: dict[str, ...]  # (M2: per-object params by object name; M1 uses globals + obj.heat_sim_material)
     # --- global material defaults (used where no per-object value is set) ---
