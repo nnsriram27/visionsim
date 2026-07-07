@@ -80,6 +80,56 @@ modality.  A few common invocations:
         --config.include-thermal \
         --config.thermal.irradiance-scale 1000
 
+Animated geometry
+-----------------
+
+Everything above is a **static** solve: one temperature field is computed and held constant for
+every frame of the render. Setting ``--config.thermal.animated`` switches to a **per-frame
+transient solve** instead, so geometry that moves or deforms over the timeline produces a genuine
+thermal *animation* rather than a single frozen field. The motivating example is a hot liquid
+pouring into a cup: frame by frame, the liquid's heat diffuses into the cup and the cup's surface
+visibly warms up over the sequence.
+
+.. code-block:: bash
+
+    vsim blender.render-animation cup_pour.blend out/ \
+        --config.include-thermal \
+        --config.thermal.animated \
+        --config.thermal.substeps-per-frame 4
+
+Animated mode distinguishes two kinds of objects, selected per object via the ``thermal_role``
+material override (see `Per-object material overrides`_):
+
+``FEM_PARTICIPANT`` objects (default) — stable topology
+    Objects whose vertex count never changes across the animation (e.g. the cup itself). Their
+    temperature **evolves**: each frame's solve carries the previous frame's result forward, so
+    heat accumulates and diffuses realistically over time.
+
+``DIRICHLET_SOURCE`` objects — topology-changing sources
+    Objects whose mesh is regenerated every frame with a different vertex count — the standard
+    situation for a fluid simulation's surface as it pours and splashes. A per-vertex temperature
+    history can't be carried forward for a mesh like this, so instead it is treated as a
+    **constant-temperature source**: every frame it drives heat into the nearby FEM-participant
+    objects at its fixed ``dirichlet_temperature_K``, but its own temperature never evolves and is
+    not part of the solve output. Set ``thermal_role = "DIRICHLET_SOURCE"`` on the hot liquid to
+    get this behavior.
+
+.. admonition:: Note
+
+    The fluid (or other topology-changing) mesh must already be **baked** before running an
+    animated thermal solve — e.g. a Mantaflow fluid domain baked to disk. The solver only reads
+    geometry at each frame; it does not run or advance the fluid simulation itself, so the mesh
+    must already exist at every frame the thermal solve visits.
+
+.. admonition:: Note
+
+    Animated mode currently requires ``--config.thermal.domain POINTS``. Requesting
+    ``animated`` together with ``domain MESH`` logs a warning and falls back to the static
+    (M1) solve described above.
+
+The four animated-mode parameters are listed in the `Solver`_ table below; they only take effect
+when ``animated`` is ``True``.
+
 Parameters
 ----------
 
@@ -179,6 +229,28 @@ Solver
       - ``cuda``
       - Compute device for the solve.  Falls back to ``cpu`` automatically when
         CUDA is unavailable.
+    * - ``animated``
+      - ``False``
+      - Enable the per-frame transient solve described in `Animated geometry`_,
+        instead of the static single-shot solve above.  Requires
+        ``domain = POINTS``; with ``domain = MESH`` it logs a warning and falls
+        back to the static solve unchanged.
+    * - ``substeps-per-frame``
+      - ``4``
+      - Solver substeps computed within each rendered Blender frame in animated
+        mode.  More substeps make the per-frame integration more stable and
+        accurate, at extra solve cost; the internal timestep is
+        ``(1 / fps) / substeps-per-frame``.
+    * - ``frame-start`` / ``frame-end``
+      - scene frame range
+      - First/last frame of the animated solve.  Defaults to the blend file's
+        own ``frame_start``/``frame_end``.  Narrowing this range solves (and
+        caches) only the portion of the timeline you actually render.
+    * - ``every-n-frames``
+      - ``1``
+      - Solve every Nth frame instead of every frame, to cut solve cost on long
+        sequences.  Frames that are skipped hold the most recently solved
+        field rather than triggering a fresh solve.
 
 Radiance render and file formats
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -238,6 +310,15 @@ The per-object fields are:
 ``dirichlet_temperature_K``
     Constant temperature applied when ``thermal_role = "DIRICHLET_SOURCE"``.
     Falls back to ``initial_temperature_K`` when set to 0.
+
+.. admonition:: Animated scenes
+
+    These two fields are the mechanism behind `Animated geometry`_.  Give the
+    topology-changing object — a pouring liquid, or any mesh whose vertex count
+    changes frame to frame — ``thermal_role = "DIRICHLET_SOURCE"`` and a
+    ``dirichlet_temperature_K``; leave stable-topology objects like the cup at
+    the default ``"FEM_PARTICIPANT"`` so their temperature evolves across the
+    animation instead of staying fixed.
 
 Solve caching
 -------------
