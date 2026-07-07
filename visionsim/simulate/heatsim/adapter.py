@@ -132,6 +132,25 @@ def resolve_material(obj: Any, defaults: dict) -> dict:
     }
 
 
+def read_authored_irradiance_scale(scene: Any) -> Optional[float]:
+    """Return the heat-sim addon's authored scene-level ``irradiance_scale``.
+
+    The addon stores it under ``scene.heat_sim_settings.irradiance_scale``.
+    VisionSim does not register that scene-level PropertyGroup, so the value is
+    read from the raw ID-property (``scene.get("heat_sim_settings")`` returns an
+    ``IDPropertyGroup``). Returns ``None`` when the blend has no authored
+    heat-sim scene settings, so the caller keeps its own default.
+    """
+    try:
+        raw = scene.get("heat_sim_settings")
+        if raw is None:
+            return None
+        val = raw.get("irradiance_scale")
+        return None if val is None else float(val)
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Geometry extraction (evaluated mesh -> world mm + triangulated faces)
 # ---------------------------------------------------------------------------

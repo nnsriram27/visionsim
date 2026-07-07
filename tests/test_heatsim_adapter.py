@@ -174,3 +174,24 @@ print('THERMAL_ADAPTER_OK')
 """
     out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
     assert "THERMAL_ADAPTER_OK" in out.stdout, out.stderr
+
+
+def test_read_authored_irradiance_scale():
+    from visionsim.simulate.heatsim.adapter import read_authored_irradiance_scale
+
+    class _FakeScene:
+        def __init__(self, data):
+            self._data = data
+        def get(self, key, default=None):
+            return self._data.get(key, default)
+
+    # Authored heat_sim_settings with an irradiance_scale -> returns it.
+    authored = _FakeScene({"heat_sim_settings": {"irradiance_scale": 1000.0}})
+    assert read_authored_irradiance_scale(authored) == 1000.0
+
+    # No heat_sim_settings at all -> None (caller keeps its default).
+    assert read_authored_irradiance_scale(_FakeScene({})) is None
+
+    # heat_sim_settings present but no irradiance_scale key -> None.
+    partial = _FakeScene({"heat_sim_settings": {"fem_domain": "POINTS"}})
+    assert read_authored_irradiance_scale(partial) is None

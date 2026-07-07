@@ -1515,6 +1515,12 @@ class BlenderService(rpyc.Service):
             "emissivity": emissivity,
             "irradiance_scale": irradiance_scale,
         }
+        # A heat-sim-authored .blend carries its own scene-level irradiance_scale
+        # (e.g. 1000). Let it override the ThermalConfig default so the scene
+        # renders identically to the addon without manual CLI tuning.
+        _authored_scale = adapter.read_authored_irradiance_scale(self.scene)
+        if _authored_scale is not None:
+            defaults["irradiance_scale"] = _authored_scale
         solver_cfg = {
             "sim_time_s": sim_time_s,
             "timestep_s": timestep_s,

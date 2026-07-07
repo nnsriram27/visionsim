@@ -96,3 +96,23 @@ print('VARYING_ALBEDO_OK', round(float(vals.mean()), 3), round(float(vals.std())
         capture_output=True, text=True,
     )
     assert "VARYING_ALBEDO_OK" in out.stdout, out.stdout + "\n" + out.stderr
+
+
+def test_authored_irradiance_scale_read_under_bpy(executable):
+    code = r"""
+import bpy
+from visionsim.simulate.heatsim import register, adapter
+register()
+sc = bpy.context.scene
+sc['heat_sim_settings'] = {'irradiance_scale': 1000.0}
+val = adapter.read_authored_irradiance_scale(sc)
+assert val == 1000.0, f'expected 1000.0, got {val!r}'
+del sc['heat_sim_settings']
+assert adapter.read_authored_irradiance_scale(sc) is None
+print('AUTHORED_SCALE_OK')
+"""
+    out = subprocess.run(
+        [str(executable), "-b", "--python-expr", code],
+        capture_output=True, text=True,
+    )
+    assert "AUTHORED_SCALE_OK" in out.stdout, out.stdout + "\n" + out.stderr
