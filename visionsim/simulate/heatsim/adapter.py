@@ -829,15 +829,33 @@ def _write_point_float_attr(mesh: Any, name: str, values: np.ndarray) -> None:
     attr.data.foreach_set("value", np.asarray(values, dtype=np.float32))
 
 
+def _fallback_temperature_K(obj: Any, defaults: dict, default_T: float) -> float:
+    """Object-level fallback temperature for ``write_frame_attributes``.
+
+    A ``DIRICHLET_SOURCE`` (e.g. a topology-changing hot liquid whose
+    evaluated vertex count doesn't line up with its base mesh, so it can't be
+    given a per-vertex history) must still render at its reservoir
+    temperature rather than ambient. Everything else (FEM participants)
+    keeps the ambient ``initial_temperature_K`` default.
+    """
+    material = resolve_material(obj, defaults)
+    if material["thermal_role"] == "DIRICHLET_SOURCE":
+        return float(material["dirichlet_temperature_K"]) or float(material["initial_temperature_K"])
+    return default_T
+
+
 def write_frame_attributes(scene: Any, history: dict, timestep: int, defaults: dict) -> None:
     """Write per-vertex temperatures for the chosen ``timestep`` (use ``-1`` for last).
 
     For every simulated mesh (present in ``history``) this writes a
     ``sim_temperature`` (FLOAT/POINT) attribute for that timestep plus a constant
     ``emissivity`` (FLOAT/POINT) attribute. Meshes that were NOT simulated get an
-    OBJECT-level ``heatsim_default_temperature`` custom property (=
-    ``defaults['initial_temperature_K']``) so downstream rendering still has a
-    sane fallback.
+    OBJECT-level ``heatsim_default_temperature`` custom property so downstream
+    rendering still has a sane fallback: ``defaults['initial_temperature_K']``
+    (ambient) for FEM participants, or the object's own
+    ``dirichlet_temperature_K`` reservoir temperature for a ``DIRICHLET_SOURCE``
+    (e.g. a topology-changing hot liquid whose vertex count can't be tracked
+    per-frame) so it still renders hot instead of at ambient.
     """
     default_T = float(defaults["initial_temperature_K"])
     for obj in scene.objects:
@@ -849,7 +867,7 @@ def write_frame_attributes(scene: Any, history: dict, timestep: int, defaults: d
 
         hist = history.get(obj.name)
         if hist is None:
-            obj["heatsim_default_temperature"] = default_T
+            obj["heatsim_default_temperature"] = _fallback_temperature_K(obj, defaults, default_T)
             continue
 
         arr = np.asarray(hist)
@@ -857,7 +875,7 @@ def write_frame_attributes(scene: Any, history: dict, timestep: int, defaults: d
         if arr.ndim != 2 or arr.shape[0] == 0 or arr.shape[1] != n:
             # Topology mismatch (modifiers) or empty history: fall back to a
             # constant object-level temperature rather than writing garbage.
-            obj["heatsim_default_temperature"] = default_T
+            obj["heatsim_default_temperature"] = _fallback_temperature_K(obj, defaults, default_T)
             continue
 
         row = np.asarray(arr[timestep], dtype=np.float32).reshape(-1)

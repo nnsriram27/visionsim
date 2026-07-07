@@ -121,3 +121,30 @@ print('ANIMATED_RESIZE_OK', plate_hist.shape)
     ).replace("{tmp_path}", str(tmp_path))
     out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
     assert "ANIMATED_RESIZE_OK" in out.stdout, out.stdout + "\n" + out.stderr
+
+
+def test_write_frame_attributes_dirichlet_fallback_uses_reservoir_temperature(executable, tmp_path):
+    """When ``write_frame_attributes`` hits its fallback branch (object absent
+    from ``history``, e.g. a topology-changing Dirichlet liquid whose evaluated
+    vertex count no longer matches), a ``DIRICHLET_SOURCE`` object must stamp
+    its reservoir temperature (``dirichlet_temperature_K``), not the ambient
+    ``initial_temperature_K`` default. A ``FEM_PARTICIPANT`` hitting the same
+    fallback keeps stamping the ambient default (unchanged behavior)."""
+    code = (
+        _SCENE_SETUP
+        + _DEFAULTS
+        + """
+from visionsim.simulate.heatsim import adapter
+
+# Empty history => both Plate (FEM_PARTICIPANT) and Box (DIRICHLET_SOURCE)
+# hit the fallback branch.
+adapter.write_frame_attributes(bpy.context.scene, {}, -1, defaults)
+
+assert box['heatsim_default_temperature'] == 369.0, box['heatsim_default_temperature']
+assert plate['heatsim_default_temperature'] == 295.0, plate['heatsim_default_temperature']
+
+print('DIRICHLET_FALLBACK_OK')
+"""
+    )
+    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
+    assert "DIRICHLET_FALLBACK_OK" in out.stdout, out.stdout + "\n" + out.stderr
