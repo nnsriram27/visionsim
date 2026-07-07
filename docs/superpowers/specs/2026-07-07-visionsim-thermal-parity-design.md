@@ -269,3 +269,38 @@ fixed seeds, `temperature_follow_timeline = False`.
 | `visionsim/simulate/heatsim/adapter.py` | Stop pre-stamping constant albedo=0; call `get_or_bake_vertex_albedo` so the real bake runs (material read is already correct — no change) |
 | `visionsim/simulate/blender.py` | In `_thermal_solve`, read `scene.heat_sim_settings.irradiance_scale` into `defaults`, fallback to `ThermalConfig` |
 | `tests/…` (VisionSim) | Add albedo-bake + irradiance_scale + material-resolution component tests; parity acceptance script |
+
+## 9. Outcome & Known Limitations (post-implementation)
+
+**Outcome — parity achieved and verified.** Fresh solves of `bunny_textured.blend`
+in both tools compared per-vertex: peak ΔT ratio **1.012**, mean ΔT ratio
+**1.102**, per-vertex ΔT correlation **0.996** (checkerboard imprinted and
+aligned). VisionSim's baked albedo mean 0.389 ≈ heat-sim's ~0.4. Implemented as
+five commits on `heatsim`: (1) port `bake_albedo_map` into `irradiance.py` +
+vendored `uv_utils.py`; (2) remove the constant-albedo pre-stamp; (3) honor the
+blend-authored `irradiance_scale` via a raw ID-property read (VisionSim does not
+register the addon's scene PropertyGroup, so `scene.get("heat_sim_settings")` is
+used, not `scene.heat_sim_settings`); (4) an all-zero guard so a stale/degenerate
+cached albedo re-bakes; (5) a parity acceptance harness.
+
+**Known limitations / follow-ups (from the final whole-branch review):**
+
+- **Albedo cache is not content-keyed (pre-existing).** The kernel albedo cache
+  lives at `<stem>.heatsim/latest/albedo_cache.npz` — a stem-based path that
+  collides cross-tool with heat-sim's cache dir, keyed by object *name*, not
+  content. The Task-5 guard rejects an all-*zero* stale cache (the incident that
+  broke parity), but a stale *non-zero* albedo (e.g. after swapping a material
+  while the object name and vertex count are unchanged) would still be served —
+  no re-bake. Benign for parity on a fixed blend; **until the cache is
+  content/mtime-keyed, clear `*.heatsim/latest/albedo_cache.npz` after changing
+  an object's material.**
+- **Behavioral change from removing the pre-stamp (intended).** Every materialed
+  M1 sim object now absorbs `E·(1−albedo)` (matching heat-sim per-object) instead
+  of full `E`; objects lacking UVs/materials get an auto `smart_project` unwrap
+  and/or a default gray material created *during the solve* (both inherited
+  verbatim from heat-sim). This changes non-bunny M1 scene temperatures and adds
+  solve-time mesh side effects — the intended correctness alignment with heat-sim.
+- **`irradiance_scale` precedence (by design).** A blend-authored
+  `heat_sim_settings.irradiance_scale` unconditionally overrides the
+  ThermalConfig/CLI value (blend = source of truth per §3). An INFO log now
+  surfaces when this override happens so the effective scale is not a surprise.
