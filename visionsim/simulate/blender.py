@@ -1718,16 +1718,22 @@ class BlenderService(rpyc.Service):
             self._thermal_animated_history = history
             self._thermal_animated_frames = frames
             self._thermal_animated_defaults = defaults
-            # Write the first solved frame immediately so a render taken before
-            # exposed_render_frame's per-frame hook runs still sees a correct field.
-            if frames:
-                self._thermal_write_frame(frames[0])
             # Colormap range spans EVERY solved frame (not just the last), since the
             # animated field keeps evolving -- a final-frame-only range would clip the
             # preview against later, hotter frames.
             self._thermal_temp_range = adapter.global_temperature_range_animated(history, initial_temperature_K)
+            # Stamp/register BEFORE writing frame 0: stamp_default_temperatures blindly
+            # sets heatsim_default_temperature = ambient on every mesh, which would
+            # clobber the correct per-object Dirichlet-reservoir fallback that
+            # _thermal_write_frame -> write_frame_attributes just set for any
+            # DIRICHLET_SOURCE absent from the animated history (e.g. a topology-
+            # changing fluid). Running it first means frame 0's write wins.
             thermal_shader.stamp_default_temperatures(self.scene, default_K=initial_temperature_K)
             thermal_shader.setup_temperature_aov(self.scene, self.view_layer)
+            # Write the first solved frame immediately so a render taken before
+            # exposed_render_frame's per-frame hook runs still sees a correct field.
+            if frames:
+                self._thermal_write_frame(frames[0])
             return
 
         history = self._thermal_solve(

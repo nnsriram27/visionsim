@@ -95,6 +95,20 @@ mod.levels = 0
 mod.keyframe_insert(data_path='levels', frame=1)
 mod.levels = 3
 mod.keyframe_insert(data_path='levels', frame=3)
+
+# Finding 6: the whole point of this test is that the box's EVALUATED vertex
+# count actually changes mid-run; assert that directly so the test can't
+# silently pass if the resize never triggered (e.g. the Subsurf modifier
+# didn't evaluate, or the keyframe didn't take effect).
+def _eval_vert_count(obj, frame):
+    bpy.context.scene.frame_set(frame)
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    return len(obj.evaluated_get(depsgraph).data.vertices)
+
+
+n_box_frame1 = _eval_vert_count(box, 1)
+n_box_frame5 = _eval_vert_count(box, 5)
+assert n_box_frame1 != n_box_frame5, (n_box_frame1, n_box_frame5)
 """
         + _DEFAULTS
         + """
@@ -225,3 +239,103 @@ print('ANIMATED_RENDER_WRITE_OK', round(mean_early, 4), round(mean_late, 4))
     ).replace("{tmp_path}", str(tmp_path))
     out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
     assert "ANIMATED_RENDER_WRITE_OK" in out.stdout, out.stdout + "\n" + out.stderr
+
+
+def test_simulate_for_pose_pins_dirichlet_every_substep(executable, tmp_path):
+    """Finding 1 regression: ``HeatSimFEM.simulate_for_pose`` must re-pin
+    ``dirichlet_indices`` to ``dirichlet_values`` after EVERY substep's CG
+    solve, not just on the initial state or the final returned row. Isolates
+    the pin logic itself (no scene/adapter involved) on a tiny synthetic
+    point cloud so a regression here can't hide behind adapter-level
+    clamping.
+    """
+    code = r"""
+import numpy as np
+from types import SimpleNamespace
+from visionsim.simulate.heatsim.solver import HeatSimFEM
+
+n = 32
+rng = np.random.default_rng(0)
+points = rng.uniform(-10.0, 10.0, size=(n, 3)).astype(np.float64)
+
+gen_params = SimpleNamespace(
+    device='cpu', RHO=1330.0 / 1e9, C=880.0, K=0.17, NUM_FRAME_DELTA=0.05 * 60.0,
+)
+sim_params = SimpleNamespace(
+    sim_radiation=True, sim_convection=False, add_tikhonov_reg=False,
+    sim_time=0.0, record_time=0.0,
+)
+fem = HeatSimFEM(gen_params, sim_params, laplacian_domain='POINTS', laplacian_backend='ROBUST')
+
+u0 = np.full(n, 295.0, dtype=np.float64)
+boundary_mask = np.zeros(n, dtype=bool)
+irradiance = np.zeros(n, dtype=np.float64)
+density = np.full(n, 1330.0 / 1e9, dtype=np.float64)
+specific_heat = np.full(n, 880.0, dtype=np.float64)
+tdiff = np.full(n, 50.0, dtype=np.float64)
+emissivity = np.full(n, 0.9, dtype=np.float64)
+
+dirichlet_indices = [0, 5, 17]
+dirichlet_values = [369.0, 369.0, 369.0]
+
+states = fem.simulate_for_pose(
+    points, None, boundary_mask, u0, irradiance, tdiff, density, specific_heat, emissivity,
+    num_substeps=4, dt=0.05 / 4,
+    dirichlet_indices=dirichlet_indices, dirichlet_values=dirichlet_values,
+)
+
+assert states.shape == (4, n), states.shape
+for s in range(4):
+    row = states[s, dirichlet_indices]
+    assert np.all(row == 369.0), (s, row)
+
+# Sanity: the pin isn't a no-op that happens to match because nothing moved --
+# a non-pinned vertex must actually be free to evolve toward the hot nodes.
+assert states[-1, 1] != 295.0, 'non-pinned vertex did not evolve at all'
+
+print('DIRICHLET_SUBSTEP_PIN_OK')
+"""
+    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
+    assert "DIRICHLET_SUBSTEP_PIN_OK" in out.stdout, out.stdout + "\n" + out.stderr
+
+
+def test_animated_solve_more_substeps_does_not_lower_plate_mean(executable, tmp_path):
+    """Finding 1 regression (coarse, end-to-end): pre-fix, the external
+    post-solve Dirichlet clamp only overwrote the RETURNED states array, so
+    the reservoir nodes drifted down *within* a frame across substeps (the
+    Dirichlet<->FEM coupling weight in ``mv`` keeps pulling them toward the
+    FEM neighbors between re-pins) and the plate under-heated -- MORE
+    substeps made this WORSE. With the per-substep pin, raising
+    ``substeps_per_frame`` must not lower the plate's final mean temperature.
+    """
+    code = (
+        _SCENE_SETUP
+        + _DEFAULTS
+        + """
+import numpy as np
+from pathlib import Path
+from visionsim.simulate.heatsim import adapter
+
+bpy.context.scene.frame_start = 1
+bpy.context.scene.frame_end = 5
+
+
+def final_plate_mean(substeps, cache_tag):
+    history, frames = adapter.solve_scene_animated(
+        bpy.context.scene, defaults=defaults, solver_cfg=solver_cfg,
+        cache_root=Path(r'{tmp_path}') / cache_tag,
+        frame_start=1, frame_end=5, every_n=1, substeps_per_frame=substeps,
+    )
+    return float(np.asarray(history['Plate'])[-1].mean())
+
+
+mean_2 = final_plate_mean(2, 'substeps_2')
+mean_8 = final_plate_mean(8, 'substeps_8')
+
+assert mean_8 >= mean_2, (mean_2, mean_8)
+
+print('SUBSTEP_MONOTONIC_OK', round(mean_2, 4), round(mean_8, 4))
+"""
+    ).replace("{tmp_path}", str(tmp_path))
+    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
+    assert "SUBSTEP_MONOTONIC_OK" in out.stdout, out.stdout + "\n" + out.stderr

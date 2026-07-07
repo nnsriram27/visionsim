@@ -781,6 +781,8 @@ class HeatSimFEM:
         emissivity_map,
         num_substeps: int,
         dt: float,
+        dirichlet_indices=None,
+        dirichlet_values=None,
     ):
         """Build (L, M, M_boundary) for a single pose and advance ``num_substeps``
         implicit-Euler CG solves with ``u_prev`` as the initial state.
@@ -790,6 +792,15 @@ class HeatSimFEM:
         geometry. The Laplacian / mass matrices are rebuilt because they depend
         on positions; everything else is a function of constant per-vertex data
         plus the per-pose mass matrix (which is what couples flux into RHS).
+
+        When ``dirichlet_indices`` is given (with matching ``dirichlet_values``),
+        those vertex indices are pinned to their target temperature on the
+        initial state AND re-pinned after every substep's CG solve -- not just
+        once per frame -- since the FEM/Dirichlet coupling weight in ``mv`` would
+        otherwise let the pinned nodes drift within a frame as substeps advance
+        (this matters most as ``num_substeps`` grows). Callers that don't pass
+        these params (e.g. :meth:`perform_gt_heat_simulation`'s static path) get
+        byte-identical behavior to before.
 
         Returns: ``(num_substeps, N)`` float64 array of post-step states.
         """
@@ -879,10 +890,18 @@ class HeatSimFEM:
 
         u_prev_t = torch.from_numpy(u_prev.astype(np.float32).reshape(-1, 1)).to(self.device)
 
+        di_t = None
+        if dirichlet_indices is not None and len(dirichlet_indices) > 0:
+            di_t = torch.from_numpy(np.asarray(dirichlet_indices, dtype=np.int64)).to(self.device)
+            dv_t = torch.from_numpy(np.asarray(dirichlet_values, dtype=np.float32).reshape(-1, 1)).to(self.device)
+            u_prev_t[di_t] = dv_t
+
         out_states = np.zeros((num_substeps, N), dtype=np.float64)
         for s in range(num_substeps):
             b = torch.sparse.mm(M_t, u_prev_t) + B_step
             u_next_t = cg_solve(mv, b, x0=u_prev_t, tol=1e-5, max_iter=200)
+            if di_t is not None:
+                u_next_t[di_t] = dv_t
             out_states[s, :] = u_next_t.detach().cpu().numpy().astype(np.float64).reshape(-1)
             u_prev_t = u_next_t
 

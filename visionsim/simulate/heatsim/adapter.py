@@ -732,6 +732,19 @@ def solve_scene_animated(
     ordered_objects, dirichlet_names = _order_fem_first(sim_objects, defaults)
     objects_by_name = {o.name: o for o in ordered_objects}
 
+    # M2 design: irradiance re-bake is a deferred non-goal for animated mode --
+    # ``_combine`` below is always called with an empty ``flux_by_obj``, so every
+    # object's incident flux is always zero. The only possible heat source for an
+    # animated solve is therefore a DIRICHLET_SOURCE reservoir; warn once so a
+    # scene with neither doesn't silently stay at ambient for the whole run.
+    if not dirichlet_names:
+        _log.warning(
+            "[heatsim.adapter] solve_scene_animated: no DIRICHLET_SOURCE object and "
+            "animated mode never re-bakes irradiance -- this scene has no heat "
+            "source, so the solved field will stay at ambient temperature for the "
+            "entire run."
+        )
+
     from visionsim.simulate.heatsim.solver import HeatSimFEM
 
     device = str(solver_cfg.get("device", "cpu"))
@@ -799,6 +812,23 @@ def solve_scene_animated(
                 new_u_prev[:n_fem_surface] = u_prev[:n_fem_surface]
                 u_prev = new_u_prev
 
+            # Dirichlet pin: resolve each reservoir vertex's target temperature
+            # fresh every frame (also covers a future keyframed
+            # dirichlet_temperature_K) and hand the indices/values to
+            # simulate_for_pose so it re-pins them internally AFTER EVERY
+            # substep's CG solve, not just once on the returned array -- the
+            # FEM/Dirichlet coupling weight in the solve would otherwise let
+            # pinned nodes drift within a frame across substeps (and drift
+            # further as substeps_per_frame grows).
+            dir_idx: list[int] = []
+            dir_val: list[float] = []
+            for name, off, n in combined.layout:
+                if name in dirichlet_names:
+                    mat = resolve_material(objects_by_name[name], defaults)
+                    t_target = mat["dirichlet_temperature_K"] or mat["initial_temperature_K"]
+                    dir_idx.extend(range(off, off + n))
+                    dir_val.extend([t_target] * n)
+
             states = fem.simulate_for_pose(
                 combined.verts,
                 combined.faces,
@@ -811,16 +841,9 @@ def solve_scene_animated(
                 combined.eps,
                 num_substeps=substeps_per_frame,
                 dt=dt,
-            )  # (substeps, N)
-
-            # Dirichlet clamp: pin reservoir vertices back to their target
-            # temperature after every substep (also covers a future keyframed
-            # dirichlet_temperature_K -- resolved fresh every frame).
-            for name, off, n in combined.layout:
-                if name in dirichlet_names:
-                    mat = resolve_material(objects_by_name[name], defaults)
-                    t_target = mat["dirichlet_temperature_K"] or mat["initial_temperature_K"]
-                    states[:, off : off + n] = t_target
+                dirichlet_indices=dir_idx or None,
+                dirichlet_values=dir_val or None,
+            )  # (substeps, N); Dirichlet rows already pinned every substep.
 
             u_prev = states[-1].copy()
             for name, off, n in fem_entries:

@@ -127,6 +127,14 @@ material override (see `Per-object material overrides`_):
     ``animated`` together with ``domain MESH`` logs a warning and falls back to the static
     (M1) solve described above.
 
+.. admonition:: Note
+
+    Because the animated thermal timeline is keyed to unscaled Blender frames at
+    ``dt = (1 / fps) / substeps-per-frame``, combining animated thermal with
+    ``every-n-frames > 1`` or a ``keyframe-multiplier != 1.0`` render stretch is only
+    approximate (and not officially supported) — the simulated timestep doesn't rescale
+    to match either setting.
+
 The four animated-mode parameters are listed in the `Solver`_ table below; they only take effect
 when ``animated`` is ``True``.
 
