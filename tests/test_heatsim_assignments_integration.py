@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import inspect
 import json
 import logging
+from dataclasses import asdict, fields
 from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
+from visionsim.simulate.blender import BlenderService
+from visionsim.simulate.config import ThermalConfig
 from visionsim.simulate.heatsim import adapter, materials
 
 _DEFAULTS = dict(
@@ -294,3 +298,20 @@ def test_solve_scene_animated_warns_on_slot_level_dirichlet_mismatch(tmp_path, m
 
 
 # Task 3 appends the config/service plumbing tests to this same file.
+
+
+# --- config / service plumbing ----------------------------------------------
+
+
+def test_thermal_config_has_an_assignments_field():
+    assert "assignments" in {f.name for f in fields(ThermalConfig)}
+    assert ThermalConfig().assignments is None
+    assert ThermalConfig(assignments=Path("a.json")).assignments == Path("a.json")
+
+
+def test_asdict_dispatch_matches_both_service_signatures():
+    """job.py and cli/blender.py both call **asdict(config.thermal); every key must land."""
+    keys = set(asdict(ThermalConfig()))
+    for method in (BlenderService.exposed_prepare_thermal, BlenderService.exposed_heatsim_solve):
+        missing = keys - (set(inspect.signature(method).parameters) - {"self"})
+        assert not missing, f"{method.__name__} is missing {sorted(missing)}"

@@ -160,6 +160,10 @@ class ThermalConfig:
     """If true, also render the gray-body thermal-camera radiance image (second render pass)"""
     preview: bool = True
     """Also save an inferno-colormap PNG preview of the temperature map"""
+    assignments: Path | None = None
+    """Path to a thermal material assignment sidecar (``<scene>.thermal.json``). When set, thermal properties
+    are resolved per material slot from the sidecar; when unset the global defaults below are used for every
+    surface. Sidecars are authored offline by ``scripts/thermal_assign.py`` and committed."""
     # --- per-object override hook (else globals below) ---
     # overrides: dict[str, ...]  # (M2: per-object params by object name; M1 uses globals + obj.heat_sim_material)
     # --- global material defaults (used where no per-object value is set) ---

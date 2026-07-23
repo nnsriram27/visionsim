@@ -218,6 +218,7 @@ class BlenderService(rpyc.Service):
     _thermal_animated_history: dict[str, Any] | None
     _thermal_animated_frames: list[int] | None
     _thermal_animated_defaults: dict[str, Any] | None
+    _thermal_assignment: Any | None
 
     def __init__(self) -> None:
         """Initialize render service.
@@ -714,7 +715,8 @@ class BlenderService(rpyc.Service):
         domain: Literal["POINTS", "MESH"],
         laplacian_backend: Literal["ROBUST", "IGL"],
         device: Literal["cuda", "cpu"],
-    ) -> tuple[dict, dict, Path]:
+        assignments: str | None = None,
+    ) -> tuple[dict, dict, Path, Any]:
         """Shared ``defaults``/``solver_cfg``/``cache_root`` builder for every thermal-solve
         entry point.
 
@@ -725,7 +727,7 @@ class BlenderService(rpyc.Service):
         override -- and therefore share the same cache-key convention.
 
         Returns:
-            tuple[dict, dict, Path]: ``(defaults, solver_cfg, cache_root)``.
+            tuple[dict, dict, Path, Any]: (defaults, solver_cfg, cache_root, assignment).
         """
 
     def _thermal_solve(
@@ -742,6 +744,7 @@ class BlenderService(rpyc.Service):
         domain: Literal["POINTS", "MESH"],
         laplacian_backend: Literal["ROBUST", "IGL"],
         device: Literal["cuda", "cpu"],
+        assignments: str | None = None,
     ) -> dict:
         """Shared FEM-solve core used by :meth:`exposed_prepare_thermal` and
         :meth:`exposed_heatsim_solve`.
@@ -781,6 +784,7 @@ class BlenderService(rpyc.Service):
         frame_start: int | None = None,
         frame_end: int | None = None,
         every_n_frames: int = 1,
+        assignments: str | None = None,
     ) -> None:
         """Solve the scene's heat-transfer simulation and prepare it for thermal rendering.
 
@@ -835,6 +839,9 @@ class BlenderService(rpyc.Service):
                 ``frame_end`` when None. Defaults to None.
             every_n_frames (int, optional): Solve every Nth frame in animated mode (cost control); skipped frames
                 hold the last solved field. Defaults to 1.
+            assignments (str | None, optional): Path to a thermal material assignment sidecar
+                (``<scene>.thermal.json``). When set, thermal properties are resolved per material
+                slot; when unset the global defaults are used everywhere. Defaults to None.
         """
 
     def _thermal_write_frame(self, frame_number: int) -> None:
@@ -876,6 +883,7 @@ class BlenderService(rpyc.Service):
         frame_start: int | None = None,
         frame_end: int | None = None,
         every_n_frames: int = 1,
+        assignments: str | None = None,
     ) -> None:
         """Solve and cache the scene's heat-transfer simulation without preparing it for rendering.
 
@@ -928,6 +936,9 @@ class BlenderService(rpyc.Service):
                 Defaults to None.
             every_n_frames (int, optional): Accepted for uniform thermal-config dispatch; not used by this method.
                 Defaults to 1.
+            assignments (str | None, optional): Path to a thermal material assignment sidecar
+                (``<scene>.thermal.json``). When set, thermal properties are resolved per material
+                slot; when unset the global defaults are used everywhere. Defaults to None.
         """
 
     @require_initialized_service
@@ -954,6 +965,7 @@ class BlenderService(rpyc.Service):
         frame_start: int | None = None,
         frame_end: int | None = None,
         every_n_frames: int = 1,
+        assignments: str | None = None,
     ) -> None:
         """Sets up Blender compositor to include thermal outputs for rendered images.
 
@@ -966,9 +978,9 @@ class BlenderService(rpyc.Service):
         Note:
             This must be called after ``prepare_thermal``, which registers the ``temperature`` AOV and exposes the
             matching render-layer output socket. The solver and material parameters
-            (``initial_temperature_K`` through ``device``, and the ``animated``/``substeps_per_frame``/
-            ``frame_start``/``frame_end``/``every_n_frames`` M2 fields) are accepted only to mirror
-            ``ThermalConfig`` and are consumed by ``prepare_thermal``; ``include_thermal`` itself ignores them.
+            (``initial_temperature_K`` through ``device``, ``assignments``, and the ``animated``/
+            ``substeps_per_frame``/``frame_start``/``frame_end``/``every_n_frames`` M2 fields) are accepted only to
+            mirror ``ThermalConfig`` and are consumed by ``prepare_thermal``; ``include_thermal`` itself ignores them.
             For animated scenes, the per-frame field update happens later, in
             :meth:`render_frame <visionsim.simulate.blender.BlenderService.exposed_render_frame>`.
 
@@ -1017,6 +1029,9 @@ class BlenderService(rpyc.Service):
                 ignored here. Defaults to None.
             every_n_frames (int, optional): Mirrors ``ThermalConfig`` (M2); consumed by ``prepare_thermal`` and
                 ignored here. Defaults to 1.
+            assignments (str | None, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
+                ignored here. Path to a thermal material assignment sidecar (``<scene>.thermal.json``). Defaults
+                to None.
         """
 
     @require_initialized_service
@@ -1811,6 +1826,7 @@ class BlenderClient:
         frame_start: int | None = None,
         frame_end: int | None = None,
         every_n_frames: int = 1,
+        assignments: str | None = None,
     ) -> None:
         """Solve the scene's heat-transfer simulation and prepare it for thermal rendering.
 
@@ -1865,6 +1881,9 @@ class BlenderClient:
                 ``frame_end`` when None. Defaults to None.
             every_n_frames (int, optional): Solve every Nth frame in animated mode (cost control); skipped frames
                 hold the last solved field. Defaults to 1.
+            assignments (str | None, optional): Path to a thermal material assignment sidecar
+                (``<scene>.thermal.json``). When set, thermal properties are resolved per material
+                slot; when unset the global defaults are used everywhere. Defaults to None.
         """
 
     @type_check_only
@@ -1891,6 +1910,7 @@ class BlenderClient:
         frame_start: int | None = None,
         frame_end: int | None = None,
         every_n_frames: int = 1,
+        assignments: str | None = None,
     ) -> None:
         """Solve and cache the scene's heat-transfer simulation without preparing it for rendering.
 
@@ -1943,6 +1963,9 @@ class BlenderClient:
                 Defaults to None.
             every_n_frames (int, optional): Accepted for uniform thermal-config dispatch; not used by this method.
                 Defaults to 1.
+            assignments (str | None, optional): Path to a thermal material assignment sidecar
+                (``<scene>.thermal.json``). When set, thermal properties are resolved per material
+                slot; when unset the global defaults are used everywhere. Defaults to None.
         """
 
     @type_check_only
@@ -1969,6 +1992,7 @@ class BlenderClient:
         frame_start: int | None = None,
         frame_end: int | None = None,
         every_n_frames: int = 1,
+        assignments: str | None = None,
     ) -> None:
         """Sets up Blender compositor to include thermal outputs for rendered images.
 
@@ -1981,9 +2005,9 @@ class BlenderClient:
         Note:
             This must be called after ``prepare_thermal``, which registers the ``temperature`` AOV and exposes the
             matching render-layer output socket. The solver and material parameters
-            (``initial_temperature_K`` through ``device``, and the ``animated``/``substeps_per_frame``/
-            ``frame_start``/``frame_end``/``every_n_frames`` M2 fields) are accepted only to mirror
-            ``ThermalConfig`` and are consumed by ``prepare_thermal``; ``include_thermal`` itself ignores them.
+            (``initial_temperature_K`` through ``device``, ``assignments``, and the ``animated``/
+            ``substeps_per_frame``/``frame_start``/``frame_end``/``every_n_frames`` M2 fields) are accepted only to
+            mirror ``ThermalConfig`` and are consumed by ``prepare_thermal``; ``include_thermal`` itself ignores them.
             For animated scenes, the per-frame field update happens later, in
             :meth:`render_frame <visionsim.simulate.blender.BlenderService.exposed_render_frame>`.
 
@@ -2032,6 +2056,9 @@ class BlenderClient:
                 ignored here. Defaults to None.
             every_n_frames (int, optional): Mirrors ``ThermalConfig`` (M2); consumed by ``prepare_thermal`` and
                 ignored here. Defaults to 1.
+            assignments (str | None, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
+                ignored here. Path to a thermal material assignment sidecar (``<scene>.thermal.json``). Defaults
+                to None.
         """
 
     @type_check_only
@@ -2899,6 +2926,7 @@ class BlenderClients(tuple):
         frame_start: int | None = None,
         frame_end: int | None = None,
         every_n_frames: int = 1,
+        assignments: str | None = None,
     ) -> None:
         """Solve the scene's heat-transfer simulation and prepare it for thermal rendering.
 
@@ -2953,6 +2981,9 @@ class BlenderClients(tuple):
                 ``frame_end`` when None. Defaults to None.
             every_n_frames (int, optional): Solve every Nth frame in animated mode (cost control); skipped frames
                 hold the last solved field. Defaults to 1.
+            assignments (str | None, optional): Path to a thermal material assignment sidecar
+                (``<scene>.thermal.json``). When set, thermal properties are resolved per material
+                slot; when unset the global defaults are used everywhere. Defaults to None.
         """
 
     @type_check_only
@@ -2979,6 +3010,7 @@ class BlenderClients(tuple):
         frame_start: int | None = None,
         frame_end: int | None = None,
         every_n_frames: int = 1,
+        assignments: str | None = None,
     ) -> None:
         """Solve and cache the scene's heat-transfer simulation without preparing it for rendering.
 
@@ -3031,6 +3063,9 @@ class BlenderClients(tuple):
                 Defaults to None.
             every_n_frames (int, optional): Accepted for uniform thermal-config dispatch; not used by this method.
                 Defaults to 1.
+            assignments (str | None, optional): Path to a thermal material assignment sidecar
+                (``<scene>.thermal.json``). When set, thermal properties are resolved per material
+                slot; when unset the global defaults are used everywhere. Defaults to None.
         """
 
     @type_check_only
@@ -3057,6 +3092,7 @@ class BlenderClients(tuple):
         frame_start: int | None = None,
         frame_end: int | None = None,
         every_n_frames: int = 1,
+        assignments: str | None = None,
     ) -> None:
         """Sets up Blender compositor to include thermal outputs for rendered images.
 
@@ -3069,9 +3105,9 @@ class BlenderClients(tuple):
         Note:
             This must be called after ``prepare_thermal``, which registers the ``temperature`` AOV and exposes the
             matching render-layer output socket. The solver and material parameters
-            (``initial_temperature_K`` through ``device``, and the ``animated``/``substeps_per_frame``/
-            ``frame_start``/``frame_end``/``every_n_frames`` M2 fields) are accepted only to mirror
-            ``ThermalConfig`` and are consumed by ``prepare_thermal``; ``include_thermal`` itself ignores them.
+            (``initial_temperature_K`` through ``device``, ``assignments``, and the ``animated``/
+            ``substeps_per_frame``/``frame_start``/``frame_end``/``every_n_frames`` M2 fields) are accepted only to
+            mirror ``ThermalConfig`` and are consumed by ``prepare_thermal``; ``include_thermal`` itself ignores them.
             For animated scenes, the per-frame field update happens later, in
             :meth:`render_frame <visionsim.simulate.blender.BlenderService.exposed_render_frame>`.
 
@@ -3120,6 +3156,9 @@ class BlenderClients(tuple):
                 ignored here. Defaults to None.
             every_n_frames (int, optional): Mirrors ``ThermalConfig`` (M2); consumed by ``prepare_thermal`` and
                 ignored here. Defaults to 1.
+            assignments (str | None, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
+                ignored here. Path to a thermal material assignment sidecar (``<scene>.thermal.json``). Defaults
+                to None.
         """
 
     @type_check_only
