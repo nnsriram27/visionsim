@@ -90,6 +90,12 @@ def prepare_object_bake_uv(obj: bpy.types.Object) -> None:
     mesh = obj.data
     if mesh is None or not getattr(mesh, "uv_layers", None):
         return
+    # Skip degenerate (zero-geometry) meshes: an empty object has no albedo to
+    # bake, and bpy.ops.uv.smart_project.poll() fails on it in --background mode
+    # (nothing to unwrap), which would otherwise abort the whole scene's bake.
+    # Mirrors the empty-mesh guard in irradiance_kernel.py.
+    if len(mesh.polygons) == 0 or len(mesh.vertices) == 0:
+        return
 
     # Ensure bake UV layer exists
     if BAKE_UV_LAYER_NAME not in mesh.uv_layers:
