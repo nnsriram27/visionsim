@@ -184,11 +184,20 @@ def load_assignments(path: Path) -> SceneAssignment:
     if version != _SCHEMA_VERSION:
         raise ValueError(f"{path}: schema_version {version} != expected {_SCHEMA_VERSION}")
 
-    default_preset = _lookup_preset(raw.get("defaults", {}).get("preset"), f"{path.name}:defaults")
+    defaults_block = raw.get("defaults", {})
+    if not isinstance(defaults_block, dict):
+        raise ValueError(f"{path}: 'defaults' must be an object, got {type(defaults_block).__name__}")
+    default_preset = _lookup_preset(defaults_block.get("preset"), f"{path.name}:defaults")
+
+    materials_block = raw.get("materials", {})
+    if not isinstance(materials_block, dict):
+        raise ValueError(f"{path}: 'materials' must be an object, got {type(materials_block).__name__}")
 
     entries: Dict[str, MaterialEntry] = {}
-    for name, spec in dict(raw.get("materials", {})).items():
+    for name, spec in materials_block.items():
         where = f"{path.name}:{name}"
+        if not isinstance(spec, dict):
+            raise ValueError(f"{path}: material {name!r} spec must be an object, got {type(spec).__name__}")
         preset = _lookup_preset(spec.get("preset"), where)
 
         role = str(spec.get("role") or "FEM_PARTICIPANT").upper()
@@ -199,7 +208,12 @@ def load_assignments(path: Path) -> SceneAssignment:
 
         dirichlet_K: Optional[float] = None
         if spec.get("dirichlet_K") is not None:
-            value = float(spec["dirichlet_K"])
+            try:
+                value = float(spec["dirichlet_K"])
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"{path}: material {name!r} has non-numeric dirichlet_K {spec['dirichlet_K']!r}"
+                ) from exc
             if MIN_DIRICHLET_K <= value <= MAX_DIRICHLET_K:
                 dirichlet_K = value
             else:

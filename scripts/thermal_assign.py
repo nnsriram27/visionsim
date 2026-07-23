@@ -107,7 +107,13 @@ def _describe(material: Any) -> Dict[str, Any]:
                     "transmission": _socket(node, "Transmission Weight"),
                 }
                 strength = _socket(node, "Emission Strength")
-                if strength:
+                color = _socket(node, "Emission Color")
+                # Blender 4.x defaults Principled BSDF to Emission Strength=1.0 with a
+                # BLACK emission color, i.e. zero actual emission. Strength alone would
+                # spuriously flag most materials as heat sources on a modern scene. An
+                # absent color socket means an older Blender where strength alone is
+                # the right signal (these are older archviz assets).
+                if strength and (color is None or max(color) > 1e-6):
                     emission = {"is_emissive": True, "strength": float(strength)}
             elif node_type == "EMISSION":
                 emission = {"is_emissive": True, "strength": float(_socket(node, "Strength") or 0.0)}

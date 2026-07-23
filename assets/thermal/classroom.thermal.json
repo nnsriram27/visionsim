@@ -71,8 +71,8 @@
     },
     "dayLight_portal": {
       "preset": "glass",
-      "role": "DIRICHLET_SOURCE",
-      "dirichlet_K": 450.0,
+      "role": "FEM_PARTICIPANT",
+      "dirichlet_K": null,
       "confidence": 0.4,
       "reason": "Emissive daylight portal (strength 20) on windows representing strong solar radiation input."
     },

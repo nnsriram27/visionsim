@@ -147,6 +147,36 @@ def test_bad_schema_version_raises(tmp_path):
         materials.load_assignments(path)
 
 
+def test_non_numeric_dirichlet_k_raises_naming_the_sidecar(tmp_path):
+    path = _write(tmp_path, {"ilum": {"preset": "glass", "role": "DIRICHLET_SOURCE", "dirichlet_K": "hot"}})
+    with pytest.raises(ValueError, match="scene.thermal.json"):
+        materials.load_assignments(path)
+
+
+def test_null_defaults_block_raises_naming_the_sidecar(tmp_path):
+    path = tmp_path / "scene.thermal.json"
+    path.write_text(json.dumps({
+        "schema_version": 1, "scene": "kitchen1.blend", "defaults": None, "materials": {},
+    }), encoding="utf-8")
+    with pytest.raises(ValueError, match="scene.thermal.json"):
+        materials.load_assignments(path)
+
+
+def test_null_materials_block_raises_naming_the_sidecar(tmp_path):
+    path = tmp_path / "scene.thermal.json"
+    path.write_text(json.dumps({
+        "schema_version": 1, "scene": "kitchen1.blend", "defaults": {}, "materials": None,
+    }), encoding="utf-8")
+    with pytest.raises(ValueError, match="scene.thermal.json"):
+        materials.load_assignments(path)
+
+
+def test_non_dict_material_spec_raises_naming_the_sidecar_and_material(tmp_path):
+    path = _write(tmp_path, {"ilum": ["not", "a", "dict"]})
+    with pytest.raises(ValueError, match=r"scene\.thermal\.json.*'ilum'"):
+        materials.load_assignments(path)
+
+
 def test_digest_tracks_file_bytes(tmp_path):
     path = _write(tmp_path, {"x": {"preset": "wood"}})
     sa = materials.load_assignments(path)

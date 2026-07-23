@@ -1523,7 +1523,7 @@ class BlenderService(rpyc.Service):
         override -- and therefore share the same cache-key convention.
 
         Returns:
-            tuple[dict, dict, Path, Any]: (defaults, solver_cfg, cache_root, assignment).
+            tuple[dict, dict, Path, Any]: ``(defaults, solver_cfg, cache_root, assignment)``.
         """
         from visionsim.simulate.heatsim import adapter
 

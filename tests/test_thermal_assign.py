@@ -91,6 +91,34 @@ def test_emission_and_bsdf_are_captured():
     assert by_name["MADERA"]["emission"]["is_emissive"] is False
 
 
+def test_principled_emission_strength_with_black_color_is_not_emissive():
+    """Blender 4.x defaults Principled BSDF to Emission Strength=1.0 with BLACK emission
+    color, i.e. zero actual emission - strength alone must not flag it."""
+    mat = _Material("wall", nodes=[_Node("BSDF_PRINCIPLED", {
+        "Emission Strength": _Socket(1.0), "Emission Color": _Socket([0.0, 0.0, 0.0, 1.0]),
+    })])
+    obj = _Obj("o", _Mesh([_Poly(0, 1.0)], 3), [mat])
+    dump = thermal_assign.collect_scene_materials(_scene([obj]), _data([mat]))
+    assert dump["materials"][0]["emission"]["is_emissive"] is False
+
+
+def test_principled_emission_strength_with_non_black_color_is_emissive():
+    mat = _Material("lamp", nodes=[_Node("BSDF_PRINCIPLED", {
+        "Emission Strength": _Socket(1.0), "Emission Color": _Socket([1.0, 0.9, 0.7, 1.0]),
+    })])
+    obj = _Obj("o", _Mesh([_Poly(0, 1.0)], 3), [mat])
+    dump = thermal_assign.collect_scene_materials(_scene([obj]), _data([mat]))
+    assert dump["materials"][0]["emission"] == {"is_emissive": True, "strength": pytest.approx(1.0)}
+
+
+def test_principled_emission_strength_without_color_socket_is_emissive():
+    """Older Blender with no Emission Color socket: strength alone is the right signal."""
+    mat = _Material("lamp_old", nodes=[_Node("BSDF_PRINCIPLED", {"Emission Strength": _Socket(2.0)})])
+    obj = _Obj("o", _Mesh([_Poly(0, 1.0)], 3), [mat])
+    dump = thermal_assign.collect_scene_materials(_scene([obj]), _data([mat]))
+    assert dump["materials"][0]["emission"] == {"is_emissive": True, "strength": pytest.approx(2.0)}
+
+
 def test_unused_materials_hidden_objects_and_node_free_materials_are_handled():
     used, unused = _Material("USED"), _Material("UNUSED", use_nodes=False)
     hidden = _Obj("h", _Mesh([_Poly(0, 100.0)], 3), [used], hide_render=True)
