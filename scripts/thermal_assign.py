@@ -235,6 +235,32 @@ using the exact name string given:
 """
 
 
+def parse_assignments_content(content: str) -> List[Dict[str, Any]]:
+    """Extract the ``assignments`` list from a chat-completion message body.
+
+    Reasoning-capable models (GLM, several others) wrap their answer in a
+    ```json ... ``` markdown fence even when asked for ``response_format:
+    json_object``, so a bare ``json.loads`` fails on the leading fence. Strip an
+    optional fence, then parse. Raises ``ValueError`` with the offending text if
+    the payload still isn't the expected shape, so a bad endpoint fails loudly
+    rather than silently yielding an empty draft.
+    """
+    text = content.strip()
+    if text.startswith("```"):
+        # Drop the opening fence line (``` or ```json) and the closing fence.
+        text = text.split("\n", 1)[1] if "\n" in text else ""
+        if text.rstrip().endswith("```"):
+            text = text.rstrip()[:-3]
+        text = text.strip()
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"model did not return JSON: {content[:200]!r}") from exc
+    if not isinstance(parsed, dict) or "assignments" not in parsed:
+        raise ValueError(f"model JSON lacks an 'assignments' array: {content[:200]!r}")
+    return list(parsed["assignments"])
+
+
 def request_assignments(dump: Dict[str, Any]) -> List[Dict[str, Any]]:  # pragma: no cover - network
     """POST the prompt to an OpenAI-compatible ``/chat/completions`` endpoint."""
     api_key = os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY")
@@ -257,7 +283,7 @@ def request_assignments(dump: Dict[str, Any]) -> List[Dict[str, Any]]:  # pragma
     )
     with urllib.request.urlopen(request, timeout=600) as response:  # noqa: S310
         payload = json.loads(response.read().decode("utf-8"))
-    return list(json.loads(payload["choices"][0]["message"]["content"])["assignments"])
+    return parse_assignments_content(payload["choices"][0]["message"]["content"])
 
 
 def apply_guards(dump: Dict[str, Any], raw_assignments: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:

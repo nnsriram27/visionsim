@@ -224,6 +224,36 @@ def test_sidecar_round_trips_through_the_loader(tmp_path):
     assert lamp is not None and lamp.role == "DIRICHLET_SOURCE"
 
 
+# --- response parsing -------------------------------------------------------
+
+
+def test_parse_assignments_accepts_a_bare_json_object():
+    out = thermal_assign.parse_assignments_content('{"assignments": [{"material": "A", "preset": "wood"}]}')
+    assert out == [{"material": "A", "preset": "wood"}]
+
+
+def test_parse_assignments_strips_a_markdown_fence():
+    """Reasoning models (GLM etc.) fence their JSON even under response_format=json_object."""
+    fenced = '```json\n{"assignments": [{"material": "A", "preset": "wood"}]}\n```'
+    out = thermal_assign.parse_assignments_content(fenced)
+    assert out == [{"material": "A", "preset": "wood"}]
+
+
+def test_parse_assignments_strips_a_bare_triple_backtick_fence():
+    fenced = '```\n{"assignments": []}\n```'
+    assert thermal_assign.parse_assignments_content(fenced) == []
+
+
+def test_parse_assignments_rejects_non_json():
+    with pytest.raises(ValueError, match="did not return JSON"):
+        thermal_assign.parse_assignments_content("I cannot help with that.")
+
+
+def test_parse_assignments_rejects_json_without_the_assignments_key():
+    with pytest.raises(ValueError, match="assignments"):
+        thermal_assign.parse_assignments_content('{"result": "ok"}')
+
+
 # --- report -----------------------------------------------------------------
 
 
