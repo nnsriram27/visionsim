@@ -165,6 +165,34 @@ def test_object_with_no_slots_keeps_the_object_level_path(tmp_path):
     assert np.allclose(combined.alpha, _DEFAULTS["thermal_diffusivity_mm2_s"])
 
 
+def test_topology_changing_modifier_falls_back_to_object_level(tmp_path, monkeypatch, caplog):
+    """A modifier makes the evaluated geometry a different vertex count than the base mesh.
+
+    resolve_vertex_materials sizes its arrays to the base mesh (4 verts here); _combine
+    operates on the evaluated geometry. When they disagree the per-slot arrays cannot be
+    combined with the (evaluated-sized) flux/mask, so the object must degrade to the
+    object-level path with a warning rather than raise a broadcast error (the real-scene
+    crash on kitchen1's modifier-carrying 'Circle' lamp: dmask (6018,) vs irr (6870,)).
+    """
+    # Evaluated geometry has 6 verts / 2 tris while the base _square() mesh has 4.
+    ev_xyz = np.array([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0),
+                       (0.0, 1.0, 0.0), (0.5, 0.5, 0.0), (0.5, 0.0, 0.0)], dtype=np.float64)
+    ev_faces = np.array([[0, 1, 4], [2, 3, 5]], dtype=np.int32)
+    monkeypatch.setattr(adapter, "_extract_geometry", lambda obj: (ev_xyz * 1000.0, ev_faces, 6))
+
+    sa = _sidecar(tmp_path, {"WOODY": {"preset": "wood"}, "STEELY": {"preset": "steel"}})
+    obj = _square()
+    with caplog.at_level("WARNING"):
+        combined = adapter._combine([obj], {}, _DEFAULTS, _SOLVER_CFG, assignment=sa)
+
+    assert combined is not None
+    assert combined.alpha.shape == (6,), "arrays must match the evaluated geometry, not the base mesh"
+    # Fell back to the object-level constant rather than per-slot values.
+    assert np.allclose(combined.alpha, _DEFAULTS["thermal_diffusivity_mm2_s"])
+    assert np.allclose(combined.eps, _DEFAULTS["emissivity"])
+    assert "topology-changing modifier" in caplog.text
+
+
 # --- write_frame_attributes -------------------------------------------------
 
 

@@ -337,6 +337,20 @@ def _combine(
         per_vertex = None
         if assignment is not None:
             per_vertex = materials.resolve_vertex_materials(obj, assignment, mat)
+            # resolve_vertex_materials walks the object's *base* mesh, so its arrays
+            # are sized to len(obj.data.vertices). _combine operates on the *evaluated*
+            # geometry from _extract_geometry, whose vertex count differs when the
+            # object carries topology-changing modifiers (Subdivision, Array, ...).
+            # When they disagree we cannot map slots to evaluated vertices, so fall
+            # back to the object-level path for this object rather than crash - the
+            # same shape-mismatch degradation write_frame_attributes already applies.
+            if per_vertex is not None and int(per_vertex["alpha"].shape[0]) != n:
+                _log.warning(
+                    "[heatsim.adapter] '%s': base mesh has %d verts but evaluated geometry has %d "
+                    "(topology-changing modifier); per-slot thermal materials skipped, using object-level values.",
+                    obj.name, int(per_vertex["alpha"].shape[0]), n,
+                )
+                per_vertex = None
 
         flux = flux_by_obj.get(obj)
         if flux is not None and int(np.asarray(flux).reshape(-1).shape[0]) == n:
