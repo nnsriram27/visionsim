@@ -408,6 +408,85 @@ The per-object fields are:
     the default ``"FEM_PARTICIPANT"`` so their temperature evolves across the
     animation instead of staying fixed.
 
+Automatic material assignment (sidecars)
+----------------------------------------
+
+`Per-object material overrides`_ are authored inside the blend file, one object at a time.  That
+does not scale to a published dataset of scenes whose objects have no thermal information and whose
+materials are named by artists (often not in English).  For that case VisionSim reads a committed
+**assignment sidecar**: a JSON file that maps each Blender *material name* to a thermal **preset**,
+and per material a role and (for heat sources) a reservoir temperature.  Pass it with:
+
+.. code-block:: bash
+
+    vsim blender.render-animation scene.blend out/ \
+        --config.include-thermal \
+        --config.thermal.assignments assets/thermal/scene.thermal.json
+
+When ``--config.thermal.assignments`` is omitted, behaviour is exactly as documented above
+(scene-wide `Material defaults`_ plus any in-blend `Per-object material overrides`_).  When it is
+supplied, thermal properties are resolved **per material slot**: a stool's metal legs and wooden
+seat get different :math:`\alpha, \rho, c, \varepsilon`, and an emissive lamp element becomes a
+pinned heat source while its glass shade solves normally.  A material the sidecar does not name, or
+names with an unknown preset, falls back to the scene defaults.
+
+.. important::
+
+    ``visionsim`` itself never calls an LLM and needs no API key to *render* — it only reads the
+    committed JSON.  The sidecars are authored **offline**, by hand or with the helper tool below,
+    and reviewed before publishing.
+
+Slot-to-vertex resolution
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Blender stores materials on faces; the solver wants one value per vertex.  Almost every vertex is
+interior to a single material, so resolution is a lookup.  At a **seam** — a vertex touching faces
+of two materials — continuous properties (:math:`\alpha, \rho, c, \varepsilon`, initial
+temperature) are the **area-weighted mean** of the incident faces, while categorical facts (is the
+vertex a pinned heat source, and at what temperature) take the **dominant** incident material by
+area.  A vertex cannot be "partly pinned", so the pin is a majority vote, not a blend.
+
+.. note::
+
+    Per-slot resolution needs the object's base-mesh vertex count to match the evaluated geometry.
+    An object carrying a **topology-changing modifier** (Subdivision Surface, Array, …) changes that
+    count, so it falls back to object-level (scene-default or ``heat_sim_material``) properties for
+    the whole object, with a warning naming it.  The static per-slot dataset path does not use such
+    modifiers; this only affects hand-authored scenes that do.
+
+Authoring a sidecar
+~~~~~~~~~~~~~~~~~~~~
+
+The offline tool ``scripts/thermal_assign.py`` (outside the installed package) drafts and reviews
+sidecars in three steps:
+
+.. code-block:: bash
+
+    # 1. Inventory a scene's materials (runs inside Blender; free, deterministic)
+    blender -b scene.blend --python scripts/thermal_assign.py -- dump \
+        --output scene.materials.json
+
+    # 2. Draft a sidecar with an LLM (the only step that makes a network call)
+    export LLM_API_KEY=...            # any OpenAI-compatible endpoint
+    # export LLM_BASE_URL=...         # e.g. a local LiteLLM proxy / vLLM; default is OpenAI
+    # export LLM_MODEL=...            # default gpt-4o-mini
+    python scripts/thermal_assign.py assign scene.materials.json \
+        --output assets/thermal/scene.thermal.json
+
+    # 3. Render an HTML review sheet, then hand-correct the sidecar
+    python scripts/thermal_assign.py report scene.materials.json \
+        assets/thermal/scene.thermal.json --output scene.review.html
+
+The tool is provider-neutral (a plain ``/chat/completions`` call over the standard library — no
+SDK dependency) so any OpenAI-compatible backend works, including a local model.  The LLM only
+produces a **first draft**: the tool then applies deterministic guards — an out-of-library preset
+becomes *unassigned* rather than a silent guess, and a material with an emission node is forced to a
+heat source regardless of what the model said — and every correction warns.  The review step is not
+optional: the draft is marked ``REVIEW AND CORRECT BY HAND BEFORE PUBLISHING``.  Sort the review
+sheet by surface area and check the high-coverage materials first; watch in particular for render
+helpers (e.g. a *daylight portal*) that carry an emission node and get force-pinned as spuriously
+hot sources.
+
 Solve caching
 -------------
 
