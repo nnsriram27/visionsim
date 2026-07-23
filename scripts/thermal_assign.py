@@ -306,6 +306,9 @@ def apply_guards(dump: Dict[str, Any], raw_assignments: List[Dict[str, Any]]) ->
 
         # Ground truth beats judgement: an EMISSION node IS a heat source.
         if scene_materials[name].get("emission", {}).get("is_emissive"):
+            if role != "DIRICHLET_SOURCE":
+                warnings.warn(f"thermal assign: {name!r} has an EMISSION node; overriding model role "
+                              f"{role!r} to DIRICHLET_SOURCE", UserWarning, stacklevel=2)
             role = "DIRICHLET_SOURCE"
             if dirichlet_K is None:
                 dirichlet_K = DEFAULT_LAMP_K
@@ -317,15 +320,20 @@ def apply_guards(dump: Dict[str, Any], raw_assignments: List[Dict[str, Any]]) ->
 
     for name in scene_materials:
         if name not in out:
-            warnings.warn(f"thermal assign: no assignment returned for {name!r}; marking unassigned",
-                          UserWarning, stacklevel=2)
-            role = "FEM_PARTICIPANT"
-            dirichlet_K = None
             # Ground truth beats absence: an EMISSION node IS a heat source even if
-            # the model skipped the material entirely.
+            # the model skipped the material entirely. That is a different, more
+            # consequential correction than "unassigned", so it gets its own warning
+            # rather than the generic "marking unassigned" one.
             if scene_materials[name].get("emission", {}).get("is_emissive"):
+                warnings.warn(f"thermal assign: no assignment returned for {name!r}, but it has an "
+                              "EMISSION node; forcing DIRICHLET_SOURCE", UserWarning, stacklevel=2)
                 role = "DIRICHLET_SOURCE"
                 dirichlet_K = DEFAULT_LAMP_K
+            else:
+                warnings.warn(f"thermal assign: no assignment returned for {name!r}; marking unassigned",
+                              UserWarning, stacklevel=2)
+                role = "FEM_PARTICIPANT"
+                dirichlet_K = None
             out[name] = {"preset": None, "role": role, "dirichlet_K": dirichlet_K,
                          "confidence": 0.0, "reason": "no assignment returned by the model"}
     return out

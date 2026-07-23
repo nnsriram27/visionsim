@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -9,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 import thermal_assign  # noqa: E402
 
-from visionsim.simulate.heatsim.materials import preset_keys  # noqa: E402
+from visionsim.simulate.heatsim.materials import MAX_DIRICHLET_K, MIN_DIRICHLET_K, preset_keys  # noqa: E402
 
 # --- dump -------------------------------------------------------------------
 
@@ -128,9 +129,40 @@ def test_emissive_material_is_forced_to_a_source_role():
     """Deterministic guard: the EMISSION node is ground truth and outranks the model."""
     raw = [{"material": "ilum", "preset": "glass", "role": "FEM_PARTICIPANT",
             "dirichlet_K": None, "confidence": 0.6, "reason": "lamp glass"}]
-    out = thermal_assign.apply_guards(_dump([_material("ilum", emissive=True)]), raw)
+    with pytest.warns(UserWarning, match="overrid"):
+        out = thermal_assign.apply_guards(_dump([_material("ilum", emissive=True)]), raw)
     assert out["ilum"]["role"] == "DIRICHLET_SOURCE"
     assert out["ilum"]["dirichlet_K"] is not None
+
+
+def test_emissive_material_already_marked_source_does_not_warn_about_override():
+    """No warning-spam: the model already got it right, so the force is a no-op."""
+    raw = [{"material": "ilum", "preset": "glass", "role": "DIRICHLET_SOURCE",
+            "dirichlet_K": 350.0, "confidence": 0.9, "reason": "lamp element"}]
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        out = thermal_assign.apply_guards(_dump([_material("ilum", emissive=True)]), raw)
+    assert not any("overrid" in str(w.message) for w in caught)
+    assert out["ilum"]["role"] == "DIRICHLET_SOURCE"
+    assert out["ilum"]["dirichlet_K"] == pytest.approx(350.0)
+
+
+def test_emissive_material_skipped_by_model_is_forced_to_source_and_warns_accurately():
+    """A skipped emissive material is forced to DIRICHLET_SOURCE, not left 'unassigned'."""
+    with pytest.warns(UserWarning, match="EMISSION node"):
+        out = thermal_assign.apply_guards(_dump([_material("ilum", emissive=True)]), [])
+    assert out["ilum"]["role"] == "DIRICHLET_SOURCE"
+    assert out["ilum"]["dirichlet_K"] == pytest.approx(thermal_assign.DEFAULT_LAMP_K)
+    assert MIN_DIRICHLET_K <= out["ilum"]["dirichlet_K"] <= MAX_DIRICHLET_K
+
+
+def test_unknown_role_becomes_fem_participant_and_warns():
+    raw = [{"material": "MUROS", "preset": "plaster", "role": "MOLTEN",
+            "dirichlet_K": None, "confidence": 0.4, "reason": "??"}]
+    with pytest.warns(UserWarning, match="role"):
+        out = thermal_assign.apply_guards(_dump([_material("MUROS")]), raw)
+    assert out["MUROS"]["role"] == "FEM_PARTICIPANT"
+    assert out["MUROS"]["dirichlet_K"] is None
 
 
 def test_non_emissive_material_keeps_its_model_role():
