@@ -33,7 +33,7 @@ from typing import Any, Optional
 
 import numpy as np
 
-from visionsim.simulate.heatsim import cache
+from visionsim.simulate.heatsim import cache, materials
 
 try:
     import bpy  # type: ignore
@@ -297,12 +297,26 @@ def _compute_irradiance(scene: Any, sim_objects: list, solver_cfg: dict, default
 # ---------------------------------------------------------------------------
 
 
-def _combine(sim_objects: list, flux_by_obj: dict, defaults: dict, solver_cfg: dict) -> Optional[SimpleNamespace]:
+def _combine(
+    sim_objects: list,
+    flux_by_obj: dict,
+    defaults: dict,
+    solver_cfg: dict,
+    assignment: Optional[Any] = None,
+) -> Optional[SimpleNamespace]:
     """Stack per-object geometry + material vectors into one solver-ready system.
 
     Surface vertices come first (layout records each object's slice); optional
     interior POINTS-mode samples are appended afterwards by
     :func:`_augment_interior_points` so the surface slices stay valid.
+
+    When *assignment* (a parsed thermal sidecar) is supplied and an object has
+    usable material slots, alpha/rho/c/eps/T0 and the Dirichlet mask are resolved
+    **per vertex** from the slot assignment
+    (:func:`materials.resolve_vertex_materials`) instead of being filled with one
+    object-level constant. ``resolve_material`` still supplies the per-object
+    fallback for unassigned slots, so addon-authored blends are unaffected. With
+    ``assignment=None`` this function behaves exactly as before.
     """
     irradiance_scale = float(defaults.get("irradiance_scale", 1.0))
 
@@ -317,9 +331,14 @@ def _combine(sim_objects: list, flux_by_obj: dict, defaults: dict, solver_cfg: d
         if geom is None:
             continue
         verts, faces, n = geom
-        geom_by_obj[obj] = geom
+        # Keyed by identity, not the object itself: duck-typed test doubles (and
+        # some addon-authored proxies) may not be hashable.
+        geom_by_obj[id(obj)] = geom
         mat = resolve_material(obj, defaults)
-        is_dirichlet = mat["thermal_role"] == "DIRICHLET_SOURCE"
+
+        per_vertex = None
+        if assignment is not None:
+            per_vertex = materials.resolve_vertex_materials(obj, assignment, mat)
 
         flux = flux_by_obj.get(obj)
         if flux is not None and int(np.asarray(flux).reshape(-1).shape[0]) == n:
@@ -327,27 +346,50 @@ def _combine(sim_objects: list, flux_by_obj: dict, defaults: dict, solver_cfg: d
         else:
             irr = np.zeros(n, dtype=np.float64)
 
-        if is_dirichlet:
-            # Pinned reservoir: no diffusion, no incident flux, excluded from the
-            # radiation/convection boundary (mirrors fem_adapter Dirichlet setup).
-            t_dir = mat["dirichlet_temperature_K"] or mat["initial_temperature_K"]
-            t0 = np.full(n, float(t_dir), dtype=np.float64)
-            alpha = np.zeros(n, dtype=np.float64)
-            irr = np.zeros(n, dtype=np.float64)
-            bmask = np.zeros(n, dtype=bool)
+        if per_vertex is not None:
+            # Per-slot resolution: every field is already (N,). Dirichlet vertices
+            # are pinned individually - alpha=0, no incident flux, excluded from the
+            # radiation/convection boundary - exactly what the object-level branch
+            # below does, just per vertex. T0 is the simulation's *initial condition*,
+            # not a constitutive property: a FEM-participant vertex starts at ambient
+            # even where it seams against a Dirichlet slot (materials.resolve_vertex_materials
+            # area-weights T0 like any other continuous field, which would otherwise
+            # pre-seed seam vertices with a slice of the reservoir's temperature before
+            # the solver ever runs a step -- mirrors the object-level branch below,
+            # which always starts a non-Dirichlet object at initial_temperature_K).
+            rho = per_vertex["rho"]
+            c_vec = per_vertex["c"]
+            eps = per_vertex["eps"]
+            dmask = per_vertex["dirichlet_mask"]
+            t0 = np.where(dmask, per_vertex["t0"], mat["initial_temperature_K"])
+            alpha = np.where(dmask, 0.0, per_vertex["alpha"])
+            irr = np.where(dmask, 0.0, irr)
+            bmask = ~dmask
         else:
-            t0 = np.full(n, mat["initial_temperature_K"], dtype=np.float64)
-            alpha = np.full(n, mat["thermal_diffusivity_mm2_s"], dtype=np.float64)
-            bmask = np.ones(n, dtype=bool)
+            rho = np.full(n, mat["density_kg_m3"], dtype=np.float64)
+            c_vec = np.full(n, mat["specific_heat_J_kgK"], dtype=np.float64)
+            eps = np.full(n, mat["emissivity"], dtype=np.float64)
+            if mat["thermal_role"] == "DIRICHLET_SOURCE":
+                # Pinned reservoir: no diffusion, no incident flux, excluded from the
+                # radiation/convection boundary (mirrors fem_adapter Dirichlet setup).
+                t_dir = mat["dirichlet_temperature_K"] or mat["initial_temperature_K"]
+                t0 = np.full(n, float(t_dir), dtype=np.float64)
+                alpha = np.zeros(n, dtype=np.float64)
+                irr = np.zeros(n, dtype=np.float64)
+                bmask = np.zeros(n, dtype=bool)
+            else:
+                t0 = np.full(n, mat["initial_temperature_K"], dtype=np.float64)
+                alpha = np.full(n, mat["thermal_diffusivity_mm2_s"], dtype=np.float64)
+                bmask = np.ones(n, dtype=bool)
 
         verts_l.append(verts)
         faces_l.append(faces + offset)
         irr_l.append(irr)
         t0_l.append(t0)
         alpha_l.append(alpha)
-        rho_l.append(np.full(n, mat["density_kg_m3"], dtype=np.float64))
-        c_l.append(np.full(n, mat["specific_heat_J_kgK"], dtype=np.float64))
-        eps_l.append(np.full(n, mat["emissivity"], dtype=np.float64))
+        rho_l.append(rho)
+        c_l.append(c_vec)
+        eps_l.append(eps)
         bmask_l.append(bmask)
         layout.append((obj.name, offset, n))
         offset += n
@@ -399,7 +441,7 @@ def _augment_interior_points(
     extra_c: list = []
     extra_eps: list = []
     for obj in sim_objects:
-        geom = geom_by_obj.get(obj)
+        geom = geom_by_obj.get(id(obj))
         if geom is None:
             continue
         verts, faces, n = geom
@@ -569,7 +611,9 @@ def _split_history(history: np.ndarray, combined: SimpleNamespace) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def solve_scene(scene: Any, *, defaults: dict, solver_cfg: dict, cache_root: Path) -> dict:
+def solve_scene(
+    scene: Any, *, defaults: dict, solver_cfg: dict, cache_root: Path, assignment: Optional[Any] = None
+) -> dict:
     """Cache-aware FEM heat solve for ``scene``.
 
     On a cache hit the stored per-object ``(timesteps, vertices)`` history is
@@ -587,6 +631,7 @@ def solve_scene(scene: Any, *, defaults: dict, solver_cfg: dict, cache_root: Pat
         "solver": dict(solver_cfg),
         "defaults": dict(defaults),
         "objects": sorted(o.name for o in sim_objects),
+        "assignments": None if assignment is None else assignment.digest,
     }
     key = cache.cache_key(blend_path, key_cfg)
 
@@ -600,7 +645,7 @@ def solve_scene(scene: Any, *, defaults: dict, solver_cfg: dict, cache_root: Pat
         return {}
 
     flux_by_obj = _compute_irradiance(scene, sim_objects, solver_cfg, defaults)
-    combined = _combine(sim_objects, flux_by_obj, defaults, solver_cfg)
+    combined = _combine(sim_objects, flux_by_obj, defaults, solver_cfg, assignment=assignment)
     if combined is None:
         cache.write_temperatures(cache_root, key, {}, {"objects": []})
         return {}
@@ -662,6 +707,7 @@ def solve_scene_animated(
     frame_end: int,
     every_n: int,
     substeps_per_frame: int,
+    assignment: Optional[Any] = None,
 ) -> tuple[dict, list]:
     """Transient per-frame FEM solve over an animated scene (Phase 1 / M2).
 
@@ -716,6 +762,7 @@ def solve_scene_animated(
         "frame_end": frame_end,
         "every_n": every_n,
         "substeps": substeps_per_frame,
+        "assignments": None if assignment is None else assignment.digest,
     }
     key = cache.cache_key(blend_path, key_cfg)
     cache_dir = cache_root / key
@@ -785,7 +832,7 @@ def solve_scene_animated(
     try:
         for f in frames:
             scene.frame_set(int(f))
-            combined = _combine(ordered_objects, {}, defaults, solver_cfg)
+            combined = _combine(ordered_objects, {}, defaults, solver_cfg, assignment=assignment)
             if combined is None:
                 raise RuntimeError(
                     f"[heatsim.adapter] solve_scene_animated: no geometry at frame {f} "
@@ -893,7 +940,9 @@ def _fallback_temperature_K(obj: Any, defaults: dict, default_T: float) -> float
     return default_T
 
 
-def write_frame_attributes(scene: Any, history: dict, timestep: int, defaults: dict) -> None:
+def write_frame_attributes(
+    scene: Any, history: dict, timestep: int, defaults: dict, assignment: Optional[Any] = None
+) -> None:
     """Write per-vertex temperatures for the chosen ``timestep`` (use ``-1`` for last).
 
     For every simulated mesh (present in ``history``) this writes a
@@ -905,6 +954,12 @@ def write_frame_attributes(scene: Any, history: dict, timestep: int, defaults: d
     ``dirichlet_temperature_K`` reservoir temperature for a ``DIRICHLET_SOURCE``
     (e.g. a topology-changing hot liquid whose vertex count can't be tracked
     per-frame) so it still renders hot instead of at ambient.
+
+    When *assignment* is supplied the ``emissivity`` attribute is resolved **per
+    vertex** from the object's material slots rather than stamped as one
+    object-level constant, so per-slot emissivity reaches the gray-body radiance
+    shader. In LWIR that difference (polished metal ~0.05 vs painted ~0.9)
+    dominates how the rendered frame looks.
     """
     default_T = float(defaults["initial_temperature_K"])
     for obj in scene.objects:
@@ -929,6 +984,14 @@ def write_frame_attributes(scene: Any, history: dict, timestep: int, defaults: d
 
         row = np.asarray(arr[timestep], dtype=np.float32).reshape(-1)
         _write_point_float_attr(mesh, "sim_temperature", row)
-        eps = float(resolve_material(obj, defaults)["emissivity"])
-        _write_point_float_attr(mesh, "emissivity", np.full(n, eps, dtype=np.float32))
+
+        material = resolve_material(obj, defaults)
+        eps_vec = None
+        if assignment is not None:
+            per_vertex = materials.resolve_vertex_materials(obj, assignment, material)
+            if per_vertex is not None:
+                eps_vec = np.asarray(per_vertex["eps"], dtype=np.float32).reshape(-1)
+        if eps_vec is None or eps_vec.shape[0] != n:
+            eps_vec = np.full(n, float(material["emissivity"]), dtype=np.float32)
+        _write_point_float_attr(mesh, "emissivity", eps_vec)
         mesh.update()
