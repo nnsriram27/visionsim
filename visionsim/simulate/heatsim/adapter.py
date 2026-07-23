@@ -331,9 +331,7 @@ def _combine(
         if geom is None:
             continue
         verts, faces, n = geom
-        # Keyed by identity, not the object itself: duck-typed test doubles (and
-        # some addon-authored proxies) may not be hashable.
-        geom_by_obj[id(obj)] = geom
+        geom_by_obj[obj] = geom
         mat = resolve_material(obj, defaults)
 
         per_vertex = None
@@ -430,6 +428,10 @@ def _augment_interior_points(
     interior nodes, not blue-noise spacing). Interior nodes carry the object's
     default material, zero incident flux, and are excluded from the boundary.
     Best-effort: any failure simply adds no interior points.
+
+    Known per-vertex-materials gap: materials here are resolved object-level via
+    :func:`resolve_material`, not per vertex via :func:`materials.resolve_vertex_materials`,
+    so interior POINTS-domain samples do not reflect per-slot material variation.
     """
     if mathutils is None:
         return
@@ -441,7 +443,7 @@ def _augment_interior_points(
     extra_c: list = []
     extra_eps: list = []
     for obj in sim_objects:
-        geom = geom_by_obj.get(id(obj))
+        geom = geom_by_obj.get(obj)
         if geom is None:
             continue
         verts, faces, n = geom
@@ -697,6 +699,33 @@ def _order_fem_first(sim_objects: list, defaults: dict) -> tuple[list, set]:
     return fem + dirichlet, dirichlet_names
 
 
+def _slot_level_dirichlet_mismatches(sim_objects: list, assignment: Any, defaults: dict) -> list:
+    """Objects with a **slot-level** ``DIRICHLET_SOURCE`` assignment their own
+    ``heat_sim_material.thermal_role`` does not already declare.
+
+    :func:`_order_fem_first` (and the per-substep re-pin loop in
+    :func:`solve_scene_animated`) only ever look at the object-level role, so a
+    material slot the sidecar assigns ``DIRICHLET_SOURCE`` is never re-pinned
+    between substeps in animated mode even though :func:`_combine` correctly
+    zeroes its ``alpha``/``irradiance`` and clears its ``boundary_mask`` for the
+    static solve. This is a detector for that gap, used to warn the caller
+    rather than silently drifting -- see :func:`solve_scene_animated`.
+    """
+    names: list = []
+    for obj in sim_objects:
+        if resolve_material(obj, defaults)["thermal_role"] == "DIRICHLET_SOURCE":
+            continue  # already re-pinned wholesale as an object-level Dirichlet source
+        for slot in getattr(obj, "material_slots", []):
+            material = getattr(slot, "material", None)
+            if material is None:
+                continue
+            entry = assignment.entry_for(str(getattr(material, "name", "")))
+            if entry is not None and entry.role == "DIRICHLET_SOURCE":
+                names.append(obj.name)
+                break
+    return names
+
+
 def solve_scene_animated(
     scene: Any,
     *,
@@ -737,6 +766,17 @@ def solve_scene_animated(
     ``interior_point_ratio`` > 0) are reseeded at their configured initial
     temperature every frame rather than carried forward (deformation-aware
     interior continuity is an explicit M2 non-goal).
+
+    Known limitation -- **slot-level Dirichlet sources are not supported here**:
+    when *assignment* is given, a material slot the sidecar assigns
+    ``DIRICHLET_SOURCE`` is pinned correctly in the static :func:`solve_scene`
+    but is only re-pinned *once per frame* here, not after every substep (the
+    per-substep re-pin loop below only knows about object-level
+    ``thermal_role``). Across substeps the FEM/Dirichlet coupling then lets
+    those vertices drift away from their reservoir temperature. A scene
+    exhibiting this logs a warning naming the affected object(s); use the
+    static solve for such scenes until per-vertex Dirichlet is supported in
+    the animated substep loop.
 
     Returns ``({obj_name: (n_frames, n_surface_verts) ndarray}, frames)`` for
     FEM-participant objects only -- Dirichlet sources are not recorded, since
@@ -791,6 +831,20 @@ def solve_scene_animated(
             "source, so the solved field will stay at ambient temperature for the "
             "entire run."
         )
+
+    if assignment is not None:
+        mismatched = _slot_level_dirichlet_mismatches(ordered_objects, assignment, defaults)
+        if mismatched:
+            _log.warning(
+                "[heatsim.adapter] solve_scene_animated: %s: material slot(s) assigned "
+                "DIRICHLET_SOURCE in the thermal sidecar, but the object-level "
+                "thermal_role does not declare it. Slot-level Dirichlet sources are NOT "
+                "re-pinned per substep in animated mode, so these vertices will drift "
+                "away from their reservoir temperature within a frame -- use the static "
+                "solve (solve_scene) for this scene until per-vertex Dirichlet is "
+                "supported in the animated substep loop.",
+                ", ".join(sorted(mismatched)),
+            )
 
     from visionsim.simulate.heatsim.solver import HeatSimFEM
 

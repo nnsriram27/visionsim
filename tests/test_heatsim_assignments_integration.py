@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
+from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -203,6 +206,91 @@ def test_unsimulated_mesh_still_gets_the_fallback_property(tmp_path):
     scene = type("S", (), {"objects": [obj]})()
     adapter.write_frame_attributes(scene, {}, -1, _DEFAULTS, assignment=sa)
     assert obj["heatsim_default_temperature"] == pytest.approx(_DEFAULTS["initial_temperature_K"])
+
+
+# --- Finding 1 (fix pass): slot-level Dirichlet in animated mode -----------
+
+
+class _AnimatedScene:
+    """Minimal ``bpy.types.Scene`` stand-in: only what ``solve_scene_animated``
+    (and its ``_scene_fps`` helper) touch directly -- object gathering itself
+    is monkeypatched via ``adapter.gather_meshes``."""
+
+    def __init__(self, objects):
+        self.objects = objects
+        self.frame_current = 1
+        self.render = SimpleNamespace(fps=24.0, fps_base=1.0)
+
+    def frame_set(self, frame):
+        self.frame_current = int(frame)
+
+
+def test_slot_level_dirichlet_mismatch_detector(tmp_path):
+    """Unit-level: the detector flags an object whose material slot is assigned
+    ``DIRICHLET_SOURCE`` in the sidecar while its own ``thermal_role`` stays at
+    the default (``FEM_PARTICIPANT``), and stays silent once the object-level
+    role already declares it."""
+    sa = _sidecar(tmp_path, {
+        "WOODY": {"preset": "wood"},
+        "STEELY": {"preset": "steel", "role": "DIRICHLET_SOURCE", "dirichlet_K": 350.0},
+    })
+    obj = _square()  # heat_sim_material is None -> object-level role defaults FEM_PARTICIPANT
+    assert adapter._slot_level_dirichlet_mismatches([obj], sa, _DEFAULTS) == ["square"]
+
+    # An object-level role that already declares DIRICHLET_SOURCE is not a mismatch --
+    # the whole object is re-pinned wholesale every substep.
+    declared = _square()
+    declared.heat_sim_material = SimpleNamespace(
+        is_property_set=lambda attr: attr == "thermal_role",
+        thermal_role="DIRICHLET_SOURCE",
+    )
+    assert adapter._slot_level_dirichlet_mismatches([declared], sa, _DEFAULTS) == []
+
+    # No slot-level Dirichlet assignment anywhere -> nothing to flag.
+    sa_clean = _sidecar(tmp_path, {"WOODY": {"preset": "wood"}, "STEELY": {"preset": "wood"}})
+    assert adapter._slot_level_dirichlet_mismatches([obj], sa_clean, _DEFAULTS) == []
+
+
+def test_solve_scene_animated_warns_on_slot_level_dirichlet_mismatch(tmp_path, monkeypatch, caplog):
+    """End-to-end (Finding 1): a scene with a slot-level ``DIRICHLET_SOURCE``
+    assignment and an object-level role left at default must warn, in animated
+    mode, that those vertices are not re-pinned per substep. Exercised through
+    the real ``solve_scene_animated`` (not just the detector) with a fake
+    ``bpy``-shaped scene/object, since the rest of the animated test suite
+    needs an actual Blender process for geometry extraction -- here
+    ``adapter._extract_geometry`` and ``adapter.gather_meshes`` are stubbed the
+    same way the rest of this file stubs geometry, so the substep solve itself
+    (pure numpy/scipy/torch, no ``bpy``) can run for real.
+    """
+    sa = _sidecar(tmp_path, {
+        "WOODY": {"preset": "wood"},
+        "STEELY": {"preset": "steel", "role": "DIRICHLET_SOURCE", "dirichlet_K": 350.0},
+    })
+    obj = _square()
+    scene = _AnimatedScene([obj])
+    monkeypatch.setattr(adapter, "gather_meshes", lambda scene: list(scene.objects))
+
+    caplog.set_level(logging.WARNING, logger="rich")
+    history, frames = adapter.solve_scene_animated(
+        scene,
+        defaults=_DEFAULTS,
+        solver_cfg=_SOLVER_CFG,
+        cache_root=Path(tmp_path) / "cache",
+        frame_start=1,
+        frame_end=1,
+        every_n=1,
+        substeps_per_frame=1,
+        assignment=sa,
+    )
+
+    assert frames == [1]
+    assert "square" in history
+
+    messages = [rec.getMessage() for rec in caplog.records]
+    matches = [m for m in messages if "square" in m and "NOT re-pinned per substep" in m]
+    assert matches, messages
+    assert "DIRICHLET_SOURCE" in matches[0]
+    assert "static solve" in matches[0]
 
 
 # Task 3 appends the config/service plumbing tests to this same file.

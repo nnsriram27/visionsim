@@ -301,6 +301,15 @@ def resolve_vertex_materials(
         ``{"t0", "alpha", "rho", "c", "eps", "dirichlet_mask"}``, each ``(N,)``,
         or ``None`` when the object has no slots or no vertices (the caller then
         keeps its existing object-level path).
+
+        ``t0`` is only meaningful where ``dirichlet_mask`` is ``True`` -- there it
+        holds the vertex's exact reservoir temperature. Where ``dirichlet_mask`` is
+        ``False`` it instead holds the same area-weighted mean as every other
+        continuous field, which at a seam onto a Dirichlet slot blends in a slice of
+        that reservoir's temperature even though the vertex itself is not pinned.
+        Callers must supply the ambient initial temperature themselves for unpinned
+        vertices rather than using this array's value wholesale (see
+        ``adapter._combine``, which does exactly that).
     """
     mesh = getattr(obj, "data", None)
     if mesh is None:
