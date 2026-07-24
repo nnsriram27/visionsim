@@ -59,17 +59,26 @@ def _ensure_uv_layer(obj):
         except Exception as exc:  # noqa: BLE001 - keep running but warn
             warnings.warn(f"HeatSim: Failed to auto-unwrap UVs for {obj.name}: {exc}")
         finally:
-            # Restore selection and active object/mode
-            bpy.ops.object.select_all(action="DESELECT")
-            for o in prev_selection:
-                o.select_set(True)
-            if prev_active:
-                view_layer.objects.active = prev_active
+            # Restore selection and active object/mode. Force OBJECT mode FIRST and
+            # guard the operators: if smart_project raised above it left the context
+            # in EDIT mode, and an unguarded object.select_all here would poll()-fail
+            # and abort the whole scene's bake instead of just skipping this object.
+            if getattr(bpy.context, "mode", "OBJECT") != "OBJECT":
                 try:
-                    if prev_active.mode != prev_mode:
-                        bpy.ops.object.mode_set(mode=prev_mode)
+                    bpy.ops.object.mode_set(mode="OBJECT")
                 except Exception:
                     pass
+            try:
+                bpy.ops.object.select_all(action="DESELECT")
+            except Exception:
+                pass
+            for o in prev_selection:
+                try:
+                    o.select_set(True)
+                except Exception:
+                    pass
+            if prev_active:
+                view_layer.objects.active = prev_active
 
     if not mesh.uv_layers:
         warnings.warn(f"HeatSim: {obj.name} has no UV map; cannot bake irradiance texture.")
@@ -119,7 +128,14 @@ def prepare_object_bake_uv(obj: bpy.types.Object) -> None:
     prev_mode = getattr(ctx, "mode", "OBJECT")
 
     try:
-        if prev_mode != "OBJECT":
+        # Establish a clean OBJECT-mode context before any selection operator.
+        # object.select_all / mode_set poll() fail in --background when the context
+        # is in EDIT mode with no valid active object (which happens on dense scenes
+        # once any earlier object's unwrap misbehaves). Point 'active' at the object
+        # we are about to bake first, so mode_set has a valid target to switch.
+        if view_layer.objects.active is None:
+            view_layer.objects.active = obj
+        if getattr(bpy.context, "mode", "OBJECT") != "OBJECT":
             try:
                 bpy.ops.object.mode_set(mode="OBJECT")
             except Exception:
@@ -131,11 +147,28 @@ def prepare_object_bake_uv(obj: bpy.types.Object) -> None:
 
         bpy.ops.object.mode_set(mode="EDIT")
         bpy.ops.mesh.select_all(action="SELECT")
-        # Using 1.6% island margin to prevent texture bleeding artifacts
+        # Using 1.6% island margin to prevent texture bleeding artifacts.
         bpy.ops.uv.smart_project(island_margin=0.016)
         bpy.ops.object.mode_set(mode="OBJECT")
+    except Exception as exc:
+        # A per-object unwrap failure (smart_project.poll() and friends can fail in
+        # --background on some meshes) must never abort the whole scene's bake. Warn
+        # and keep whatever UVs the object already has; the albedo kernel treats a
+        # missing/degenerate bake as full absorption, a documented fallback.
+        warnings.warn(f"HeatSim: bake-UV prep failed for {obj.name}; using existing UVs. {exc}")
     finally:
-        # Restore selection / active / mode best-effort
+        # Restore selection / active / mode best-effort.
+        # Crucially, always return to OBJECT mode: this function enters EDIT mode
+        # above, and if smart_project raised, control skipped the mode_set back to
+        # OBJECT. Leaving the shared context in EDIT makes the *next* object's
+        # object.select_all.poll() fail and abort the bake (the backwards
+        # ``prev_mode != "OBJECT"`` guard used to skip this reset when the object
+        # started, as they all do, in OBJECT mode).
+        if getattr(bpy.context, "mode", "OBJECT") != "OBJECT":
+            try:
+                bpy.ops.object.mode_set(mode="OBJECT")
+            except Exception:
+                pass
         try:
             bpy.ops.object.select_all(action="DESELECT")
         except Exception:
@@ -148,11 +181,6 @@ def prepare_object_bake_uv(obj: bpy.types.Object) -> None:
         if prev_active and prev_active in getattr(ctx, "visible_objects", []):
             try:
                 view_layer.objects.active = prev_active
-            except Exception:
-                pass
-        if prev_mode != "OBJECT":
-            try:
-                bpy.ops.object.mode_set(mode=prev_mode)
             except Exception:
                 pass
 
@@ -525,6 +553,16 @@ def bake_albedo_map(scene, obj, texture_size: int) -> Optional[BakedFluxMap]:
         # Keep textures sampling from the original UVs while baking into BAKE_UV_LAYER_NAME.
         uv_override_state = _install_bake_uv_material_overrides([obj], uv_snapshot)
 
+        # object.select_all.poll() fails in --background when the context is in
+        # EDIT mode; make sure we are in OBJECT mode (with a valid active object)
+        # before selecting the bake target.
+        if view_layer.objects.active is None:
+            view_layer.objects.active = obj
+        if getattr(bpy.context, "mode", "OBJECT") != "OBJECT":
+            try:
+                bpy.ops.object.mode_set(mode="OBJECT")
+            except Exception:
+                pass
         bpy.ops.object.select_all(action="DESELECT")
         obj.select_set(True)
         view_layer.objects.active = obj
@@ -548,9 +586,18 @@ def bake_albedo_map(scene, obj, texture_size: int) -> Optional[BakedFluxMap]:
 
         _restore_bake_uv_material_overrides(uv_override_state)
 
-        bpy.ops.object.select_all(action="DESELECT")
+        # Guarded: this runs in a finally, so an unhandled poll() failure here
+        # (context left in EDIT mode) would mask the real error and abort the
+        # whole scene's bake.
+        try:
+            bpy.ops.object.select_all(action="DESELECT")
+        except Exception:
+            pass
         for item in prev_selection:
-            item.select_set(True)
+            try:
+                item.select_set(True)
+            except Exception:
+                pass
         view_layer.objects.active = prev_active
         # Restore original UV selections
         restore_uv_states(uv_snapshot)
