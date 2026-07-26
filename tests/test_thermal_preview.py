@@ -9,19 +9,23 @@ builds a compositor tree), matching the pattern in ``test_heatsim_irradiance``.
 import subprocess
 
 
-def test_global_temperature_range_spans_final_timestep_and_floors(executable):
+def test_global_temperature_range_is_robust_to_outliers(executable):
     code = r"""
 import numpy as np
 from visionsim.simulate.heatsim import adapter
 
-# final rows: bunny [296, 297.5], plane [295.2, 295.1]
-hist = {
-    'bunny': np.array([[295.0, 295.0], [296.0, 297.5]]),
-    'plane': np.array([[295.0, 295.0], [295.2, 295.1]]),
-}
+# A realistic scene: the bulk sits near ambient with a modest warm spread, plus a
+# handful of artifact-hot vertices (2000 K, well under 1% of the data) that must
+# NOT dictate the colormap.
+final = np.full(1000, 295.0)
+final[:100] = np.linspace(296.0, 310.0, 100)   # genuine warm spread, up to ~310 K
+final[-3:] = 2000.0                             # 0.3% runaway artifact vertices
+hist = {'room': np.stack([np.full(1000, 295.0), final])}   # (timesteps, vertices)
+
 tmin, tmax = adapter.global_temperature_range(hist, default_K=295.0)
-assert abs(tmin - 295.0) < 1e-9, tmin       # floored at default (finals min 295.1 > 295)
-assert abs(tmax - 297.5) < 1e-9, tmax       # hottest final-timestep vertex, not 295-400
+assert abs(tmin - 295.0) < 1e-6, tmin          # floored at default / P1 of the ambient bulk
+assert tmax < 320.0, tmax                       # P99 rejects the 2000 K outliers
+assert tmax > 300.0, tmax                       # but still covers the genuine warm spread
 
 # empty history -> (default, default + 1)
 lo, hi = adapter.global_temperature_range({}, 295.0)

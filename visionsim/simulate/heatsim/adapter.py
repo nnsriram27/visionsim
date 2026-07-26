@@ -151,15 +151,27 @@ def read_authored_irradiance_scale(scene: Any) -> Optional[float]:
         return None
 
 
+# Robust percentile bounds for the preview colormap. Raw min/max lets a handful
+# of runaway/artifact vertices (low heat-capacity materials or coarse-mesh spikes
+# under an aggressive irradiance_scale) stretch tmax to thousands of Kelvin, which
+# crushes the entire ambient scene to the cool/black end of inferno and leaves
+# only the outlier blob visible. Clipping to P1..P99 discards those tails so the
+# colormap spans the temperatures the bulk of the scene actually occupies.
+_PREVIEW_PCT_LOW = 1.0
+_PREVIEW_PCT_HIGH = 99.0
+
+
 def global_temperature_range(history: dict[str, Any], default_K: float) -> tuple[float, float]:
-    """Global colormap range ``(tmin, tmax)`` in Kelvin over the solved scene.
+    """Robust global colormap range ``(tmin, tmax)`` in Kelvin over the solved scene.
 
     Spans the **final-timestep** temperatures of every solved object (M1 renders
     the final state on every frame), so the thermal preview colormap covers the
-    actual data instead of a fixed 295-400 K band. The lower bound is floored at
-    ``default_K`` — unsolved meshes are stamped at that temperature — and the span
-    is widened to at least 1 K so a near-uniform field does not collapse to a
-    single colour.
+    actual data instead of a fixed 295-400 K band. To keep a few artifact-hot
+    vertices from destroying the exposure, the bounds are the **1st and 99th
+    percentiles** of the pooled final-timestep temperatures rather than the raw
+    min/max. The lower bound is floored at ``default_K`` — unsolved meshes are
+    stamped at that temperature — and the span is widened to at least 1 K so a
+    near-uniform field does not collapse to a single colour.
 
     Args:
         history: ``{obj_name: (timesteps, vertices) array}`` from :func:`solve_scene`.
@@ -172,11 +184,16 @@ def global_temperature_range(history: dict[str, Any], default_K: float) -> tuple
     for arr in history.values():
         a = np.asarray(arr, dtype=float)
         if a.size:
-            finals.append(a[-1] if a.ndim >= 2 else a)
+            row = a[-1] if a.ndim >= 2 else a
+            finals.append(np.asarray(row, dtype=float).reshape(-1))
     if not finals:
         return float(default_K), float(default_K) + 1.0
-    tmin = min(float(np.min(a)) for a in finals)
-    tmax = max(float(np.max(a)) for a in finals)
+    pooled = np.concatenate(finals)
+    pooled = pooled[np.isfinite(pooled)]
+    if pooled.size == 0:
+        return float(default_K), float(default_K) + 1.0
+    tmin = float(np.percentile(pooled, _PREVIEW_PCT_LOW))
+    tmax = float(np.percentile(pooled, _PREVIEW_PCT_HIGH))
     tmin = min(tmin, float(default_K))
     if tmax - tmin < 1.0:
         tmax = tmin + 1.0
