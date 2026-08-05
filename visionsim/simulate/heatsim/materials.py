@@ -370,3 +370,55 @@ def resolve_vertex_materials(
 
     out["eps"] = np.clip(out["eps"], 0.0, 1.0)
     return out
+
+
+def resolve_face_materials(
+    obj: Any,
+    assignment: SceneAssignment,
+    fallback: Dict[str, Any],
+    face_slots: np.ndarray,
+) -> Optional[Dict[str, np.ndarray]]:
+    """Return per-FACE thermal arrays for *obj*, or ``None`` if slots cannot drive it.
+
+    The texel-sim analogue of :func:`resolve_vertex_materials`: a texel belongs to exactly
+    one face, and a face belongs to exactly one material slot, so there is no seam to blend
+    across - unlike the per-vertex path this is an exact lookup, never an area-weighted mean.
+
+    Args:
+        obj: A Blender ``MESH`` object (or duck-typed stand-in) exposing ``material_slots``.
+        assignment: The scene's parsed sidecar.
+        fallback: The object-level resolution from ``adapter.resolve_material``, used for
+            unassigned slots - so an explicitly authored ``heat_sim_material`` still wins
+            where the sidecar is silent.
+        face_slots: ``(M,)`` int array of ``material_index`` per face. The caller is
+            responsible for keeping face order consistent with whatever ``face`` indices it
+            later uses to index into the result (e.g. ``atlas.rasterize_tile``'s ``face``
+            output, which indexes into the same triangulated face array this was built
+            from). An out-of-range index is clamped to the last slot, mirroring
+            :func:`resolve_vertex_materials`'s ``material_index`` handling.
+
+    Returns:
+        ``{"t0", "alpha", "rho", "c", "eps", "dirichlet_mask"}``, each ``(M,)`` where
+        ``M = len(face_slots)``, or ``None`` when the object has no material slots.
+
+        ``t0`` here is always the face's exact assigned value (the reservoir temperature
+        where ``dirichlet_mask`` is True, else the slot/object ambient) since there is no
+        seam to blend across a whole face. A caller that wants the vertex path's "an
+        unpinned face starts at ambient regardless of a neighboring Dirichlet slot"
+        convention gets that for free here already - there is no neighbor contribution to
+        exclude. Callers combining this with an object-level Dirichlet override should
+        still apply that themselves (see ``adapter._combine``).
+    """
+    n_slots = len(getattr(obj, "material_slots", []))
+    if n_slots == 0:
+        return None
+
+    table = _slot_tables(obj, assignment, fallback)
+    slots = np.clip(np.asarray(face_slots, dtype=np.int64), 0, n_slots - 1)
+
+    out: Dict[str, np.ndarray] = {}
+    for key in ("t0", "alpha", "rho", "c", "eps"):
+        out[key] = table[key][slots]
+    out["dirichlet_mask"] = table["is_dirichlet"][slots]
+    out["eps"] = np.clip(out["eps"], 0.0, 1.0)
+    return out

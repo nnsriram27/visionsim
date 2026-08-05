@@ -26,14 +26,17 @@ irradiance modules are imported lazily inside :func:`solve_scene`.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 import numpy as np
 
-from visionsim.simulate.heatsim import cache, materials
+from visionsim.simulate.heatsim import atlas, cache, materials
+from visionsim.simulate.heatsim.constants import ATLAS_UV_LAYER_NAME, BAKE_UV_LAYER_NAME
 
 try:
     import bpy  # type: ignore
@@ -283,6 +286,343 @@ def _extract_geometry(obj: Any) -> Optional[tuple]:
 
 
 # ---------------------------------------------------------------------------
+# Thermal atlas (texel-sim) build
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class AtlasPlan:
+    """The output of :func:`build_atlas_plan`: per-object texel tables ready for
+    :func:`_combine`'s TEXEL branch, plus the shared tile layout and the allocator
+    settings that produced it (kept around so :func:`solve_scene` can fold them into
+    the solve cache key).
+
+    ``texels`` maps object name -> ``{"position_mm" (K,3), "normal" (K,3), "uv" (K,2),
+    "face" (K,) int64, "face_material_index" (M,) int32}``. Only objects that made it
+    all the way through selection, UV prep and rasterization appear here; every other
+    sim object (excluded by :func:`atlas.select_for_atlas`, or demoted after a UV/vertex-
+    count failure) is simply absent and keeps the per-vertex path in ``_combine``.
+    """
+
+    layout: "atlas.AtlasLayout"
+    texels: Dict[str, Dict[str, np.ndarray]] = field(default_factory=dict)
+    density: float = 0.0
+    tile_min: int = 16
+    tile_max: int = 512
+    soft_max: int = 500_000
+    digest: str = ""
+
+
+def _atlas_digest(layout: "atlas.AtlasLayout", tile_min: int, tile_max: int, soft_max: int) -> str:
+    """Stable digest of an atlas allocation, for the solve cache key."""
+    payload = {
+        "density": round(float(layout.effective_density), 6),
+        "tile_min": int(tile_min),
+        "tile_max": int(tile_max),
+        "soft_max": int(soft_max),
+        "atlas_size": list(layout.atlas_size),
+        "tiles": sorted(
+            (name, list(spec.size), list(spec.offset)) for name, spec in layout.tiles.items()
+        ),
+    }
+    return hashlib.sha1(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def _prepare_bake_uv(obj: Any) -> None:
+    """Lazy-import wrapper around ``irradiance.prepare_object_bake_uv``.
+
+    Keeps this module importable without ``bpy`` (mirrors :func:`_compute_irradiance`'s
+    lazy import of ``irradiance_kernel``); tests monkeypatch this function directly.
+    """
+    from visionsim.simulate.heatsim import irradiance
+
+    irradiance.prepare_object_bake_uv(obj)
+
+
+def _extract_face_uv_and_slots(obj: Any, uv_layer_name: str) -> Optional[tuple]:
+    """``(loop_uv (M,3,2) float64 in [0,1], face_material_index (M,) int32)`` for
+    ``obj.data``, triangulated identically to :func:`_extract_geometry` (all
+    triangle-polygons first, then each quad's two triangles in ``(v0,v1,v2)`` /
+    ``(v0,v2,v3)`` order) so a texel's ``face`` index from ``atlas.rasterize_tile``
+    lines up with the same triangle in both this function's output and
+    :func:`_extract_geometry`'s ``faces``. Reads UVs from the named UV layer on
+    ``mesh.loops``. Returns ``None`` if the mesh has no polygons or lacks that UV layer.
+    """
+    mesh = getattr(obj, "data", None)
+    if mesh is None:
+        return None
+    uv_layers = getattr(mesh, "uv_layers", None)
+    uv_layer = uv_layers.get(uv_layer_name) if uv_layers is not None else None
+    if uv_layer is None:
+        return None
+    poly_count = len(mesh.polygons)
+    if poly_count == 0:
+        return None
+
+    loop_starts: np.ndarray = np.zeros(poly_count, dtype=np.int32)
+    loop_totals: np.ndarray = np.zeros(poly_count, dtype=np.int32)
+    mesh.polygons.foreach_get("loop_start", loop_starts)
+    mesh.polygons.foreach_get("loop_total", loop_totals)
+    mat_index: np.ndarray = np.zeros(poly_count, dtype=np.int32)
+    mesh.polygons.foreach_get("material_index", mat_index)
+
+    uv_flat: np.ndarray = np.zeros(len(mesh.loops) * 2, dtype=np.float64)
+    uv_layer.data.foreach_get("uv", uv_flat)
+    loop_uv_all = uv_flat.reshape(-1, 2)
+
+    uv_parts = []
+    slot_parts = []
+    tri_mask = loop_totals == 3
+    tri_starts = loop_starts[tri_mask]
+    if tri_starts.size:
+        uv_parts.append(
+            np.stack([loop_uv_all[tri_starts], loop_uv_all[tri_starts + 1], loop_uv_all[tri_starts + 2]], axis=1)
+        )
+        slot_parts.append(mat_index[tri_mask])
+    quad_mask = loop_totals == 4
+    quad_starts = loop_starts[quad_mask]
+    if quad_starts.size:
+        u0 = loop_uv_all[quad_starts]
+        u1 = loop_uv_all[quad_starts + 1]
+        u2 = loop_uv_all[quad_starts + 2]
+        u3 = loop_uv_all[quad_starts + 3]
+        uv_parts.append(np.stack([u0, u1, u2], axis=1))
+        uv_parts.append(np.stack([u0, u2, u3], axis=1))
+        slot_parts.append(mat_index[quad_mask])
+        slot_parts.append(mat_index[quad_mask])
+    if not uv_parts:
+        return None
+
+    loop_uv = np.vstack(uv_parts).astype(np.float64)
+    face_material_index = np.concatenate(slot_parts).astype(np.int32)
+    return loop_uv, face_material_index
+
+
+def _write_atlas_uv_layer(obj: Any, tile: "atlas.TileSpec", atlas_size: tuple, src_layer_name: str) -> None:
+    """Remap ``src_layer_name``'s per-loop UVs into ``tile``'s placement inside the
+    shared atlas image and store the result as a fresh ``ATLAS_UV_LAYER_NAME`` UV layer
+    (per spec ``4.1`` - the thermal AOV shader samples the atlas image through this
+    layer). Best-effort: never raises, since a failure here must not abort the solve
+    (the texel sim-input assembly in ``_combine`` does not depend on this layer at all).
+    """
+    mesh = getattr(obj, "data", None)
+    uv_layers = getattr(mesh, "uv_layers", None) if mesh is not None else None
+    if uv_layers is None:
+        return
+    src = uv_layers.get(src_layer_name)
+    if src is None:
+        return
+    aw, ah = atlas_size
+    if aw <= 0 or ah <= 0:
+        return
+    try:
+        n_loops = len(mesh.loops)
+        flat: np.ndarray = np.zeros(n_loops * 2, dtype=np.float64)
+        src.data.foreach_get("uv", flat)
+        uv = flat.reshape(-1, 2)
+
+        tw, th = tile.size
+        tx, ty = tile.offset
+        atlas_uv = np.empty_like(uv)
+        atlas_uv[:, 0] = (tx + uv[:, 0] * tw) / aw
+        atlas_uv[:, 1] = (ty + uv[:, 1] * th) / ah
+
+        if ATLAS_UV_LAYER_NAME in uv_layers:
+            uv_layers.remove(uv_layers[ATLAS_UV_LAYER_NAME])
+        dst = uv_layers.new(name=ATLAS_UV_LAYER_NAME)
+        dst.data.foreach_set("uv", atlas_uv.ravel())
+        mesh.update()
+    except Exception as exc:  # pragma: no cover - defensive, mirrors irradiance.py's style
+        _log.warning("[heatsim.adapter] '%s': failed to write %s: %s", obj.name, ATLAS_UV_LAYER_NAME, exc)
+
+
+def build_atlas_plan(scene: Any, sim_objects: list, cfg: dict) -> AtlasPlan:
+    """Select, size and rasterize the thermal atlas for ``sim_objects``.
+
+    Per §4.1-4.2 of the design spec: an object joins the atlas iff its native vertex
+    density is below ``cfg['atlas_texel_density']`` (:func:`atlas.select_for_atlas`);
+    joining objects get a tile sized by surface area (:func:`atlas.allocate`) and
+    rasterized into texel sample points (:func:`atlas.rasterize_tile`) using the
+    object's bake UV (created/unwrapped by the existing hardened
+    ``irradiance.prepare_object_bake_uv`` machinery).
+
+    An object is demoted to the vertex path (excluded from the returned plan's
+    ``texels``, with a warning - never raised) when: its evaluated vertex count
+    doesn't match its base mesh's vertex count (the same modifier hazard
+    ``materials.resolve_vertex_materials`` already guards against elsewhere), its
+    bake-UV prep fails to produce a usable UV layer, or its UV triangulation doesn't
+    match the evaluated geometry's triangle count. Every check degrades gracefully;
+    this function never raises for a per-object failure.
+    """
+    density = float(cfg.get("atlas_texel_density", 50.0))
+    tile_min = int(cfg.get("atlas_tile_min", 16))
+    tile_max = int(cfg.get("atlas_tile_max", 512))
+    soft_max = int(cfg.get("atlas_texel_soft_max", 500_000))
+
+    geoms: Dict[str, tuple] = {}
+    areas: Dict[str, float] = {}
+    retained_vertex_count = 0
+    for obj in sim_objects:
+        geom = _extract_geometry(obj)
+        if geom is None:
+            continue
+        verts, faces, n = geom
+        geoms[obj.name] = (obj, verts, faces, n)
+        area_m2 = atlas.surface_area_m2(verts, faces)
+        if atlas.select_for_atlas(n, area_m2, density):
+            areas[obj.name] = area_m2
+        else:
+            retained_vertex_count += n
+
+    layout = atlas.allocate(
+        areas, density, tile_min=tile_min, tile_max=tile_max, soft_max=soft_max,
+        retained_vertex_count=retained_vertex_count,
+    )
+
+    texels: Dict[str, Dict[str, np.ndarray]] = {}
+    for name in areas:
+        obj, verts, faces, n = geoms[name]
+        tile = layout.tiles.get(name)
+        if tile is None:
+            continue
+
+        base_mesh = getattr(obj, "data", None)
+        base_n_verts = len(getattr(base_mesh, "vertices", [])) if base_mesh is not None else 0
+        if base_n_verts != n:
+            _log.warning(
+                "[heatsim.adapter] '%s': base mesh has %d verts but evaluated geometry has %d "
+                "(topology-changing modifier); demoted from the atlas to the per-vertex path.",
+                name, base_n_verts, n,
+            )
+            continue
+
+        _prepare_bake_uv(obj)
+        uv_result = _extract_face_uv_and_slots(obj, BAKE_UV_LAYER_NAME)
+        if uv_result is None:
+            _log.warning(
+                "[heatsim.adapter] '%s': bake UV unavailable after unwrap attempt; "
+                "demoted from the atlas to the per-vertex path.", name,
+            )
+            continue
+        loop_uv, face_material_index = uv_result
+        if loop_uv.shape[0] != faces.shape[0]:
+            _log.warning(
+                "[heatsim.adapter] '%s': UV triangulation (%d tris) does not match evaluated "
+                "geometry (%d tris); demoted from the atlas to the per-vertex path.",
+                name, loop_uv.shape[0], faces.shape[0],
+            )
+            continue
+
+        raster = atlas.rasterize_tile(verts, faces, loop_uv, tile.size)
+        if raster["xy"].shape[0] == 0:
+            _log.warning(
+                "[heatsim.adapter] '%s': atlas tile rasterized zero texels; "
+                "demoted from the atlas to the per-vertex path.", name,
+            )
+            continue
+
+        tw, th = tile.size
+        uv_at_texel = np.empty((raster["xy"].shape[0], 2), dtype=np.float64)
+        uv_at_texel[:, 0] = (raster["xy"][:, 0].astype(np.float64) + 0.5) / tw
+        uv_at_texel[:, 1] = (raster["xy"][:, 1].astype(np.float64) + 0.5) / th
+
+        texels[name] = {
+            "position_mm": raster["position_mm"],
+            "normal": raster["normal"],
+            "uv": uv_at_texel,
+            "face": raster["face"],
+            "face_material_index": face_material_index,
+        }
+        _write_atlas_uv_layer(obj, tile, layout.atlas_size, BAKE_UV_LAYER_NAME)
+
+    digest = _atlas_digest(layout, tile_min, tile_max, soft_max)
+    return AtlasPlan(
+        layout=layout, texels=texels, density=layout.effective_density,
+        tile_min=tile_min, tile_max=tile_max, soft_max=soft_max, digest=digest,
+    )
+
+
+def _sample_bilinear(pixels: np.ndarray, width: int, height: int, uv: np.ndarray) -> np.ndarray:
+    """Vectorized bilinear luminance sample from an ``(H, W, 3)`` image at ``(K, 2)``
+    UV coordinates in ``[0, 1]``. Mirrors ``irradiance._bilinear_sample`` (same
+    clamp/floor/lerp math and Rec.709 luma weights) but for many points at once."""
+    u = np.clip(uv[:, 0], 0.0, 1.0)
+    v = np.clip(uv[:, 1], 0.0, 1.0)
+    x = u * (width - 1)
+    y = v * (height - 1)
+    x0 = np.floor(x).astype(np.int64)
+    y0 = np.floor(y).astype(np.int64)
+    x1 = np.minimum(x0 + 1, width - 1)
+    y1 = np.minimum(y0 + 1, height - 1)
+    tx = (x - x0)[:, np.newaxis]
+    ty = (y - y0)[:, np.newaxis]
+
+    c00 = pixels[y0, x0]
+    c10 = pixels[y0, x1]
+    c01 = pixels[y1, x0]
+    c11 = pixels[y1, x1]
+    c0 = c00 * (1 - tx) + c10 * tx
+    c1 = c01 * (1 - tx) + c11 * tx
+    rgb = c0 * (1 - ty) + c1 * ty
+    return rgb @ np.array((0.2126, 0.7152, 0.0722), dtype=np.float64)
+
+
+def _texel_albedo(scene: Any, obj: Any, uv_at_texel: np.ndarray, texture_size: int) -> np.ndarray:
+    """Bilinear-sample ``obj``'s Cycles albedo bake at texel UV centers.
+
+    Reuses ``irradiance.bake_albedo_map`` - the same bake primitive
+    ``irradiance_kernel.get_or_bake_vertex_albedo`` reduces to per-vertex values - but
+    samples its ``(H, W, 3)`` pixel grid directly instead of averaging it down, so the
+    texel gets its own native-resolution albedo. On any bake failure every texel gets
+    albedo=0 (full absorption), the same fallback the per-vertex kernel path uses for a
+    missing bake.
+    """
+    k = int(uv_at_texel.shape[0])
+    if k == 0:
+        return np.zeros(0, dtype=np.float64)
+    try:
+        from visionsim.simulate.heatsim import irradiance
+
+        baked = irradiance.bake_albedo_map(scene, obj, texture_size)
+    except Exception as exc:  # pragma: no cover - defensive, mirrors irradiance.py's style
+        _log.warning("[heatsim.adapter] '%s': albedo bake failed for texel sampling: %s", obj.name, exc)
+        baked = None
+    if baked is None or getattr(baked, "pixels", None) is None:
+        return np.zeros(k, dtype=np.float64)
+    luma = _sample_bilinear(baked.pixels, int(baked.width), int(baked.height), uv_at_texel)
+    return np.clip(luma, 0.0, 1.0)
+
+
+def _compute_texel_irradiance(
+    scene: Any, sim_objects: list, atlas_plan: AtlasPlan, solver_cfg: dict, defaults: dict
+) -> dict:
+    """Per-texel Direct-Kernel irradiance for every atlas-participating object.
+
+    Returns ``{obj: (K,) float64 W/m^2 absorbed}``, keyed the same way as
+    :func:`_compute_irradiance`'s return value so both can feed the same
+    ``flux_by_obj`` dict into :func:`_combine`.
+    """
+    from visionsim.simulate.heatsim import irradiance_kernel
+
+    texture_size = int(solver_cfg.get("irradiance_texture_size", 512))
+    by_name = {o.name: o for o in sim_objects}
+    out: dict = {}
+    for name, tex in atlas_plan.texels.items():
+        obj = by_name.get(name)
+        if obj is None:
+            continue
+        if resolve_material(obj, defaults)["thermal_role"] == "DIRICHLET_SOURCE":
+            continue  # mirrors compute_per_vertex_irradiance's own Dirichlet skip
+        positions = np.asarray(tex["position_mm"], dtype=np.float64)
+        normals = np.asarray(tex["normal"], dtype=np.float64)
+        uv = np.asarray(tex["uv"], dtype=np.float64)
+        albedo = _texel_albedo(scene, obj, uv, texture_size)
+        flux = irradiance_kernel.compute_irradiance_at_points(scene, positions, normals, albedo)
+        out[obj] = np.asarray(flux, dtype=np.float64).reshape(-1)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Direct-Kernel irradiance
 # ---------------------------------------------------------------------------
 
@@ -314,12 +654,102 @@ def _compute_irradiance(scene: Any, sim_objects: list, solver_cfg: dict, default
 # ---------------------------------------------------------------------------
 
 
+def _combine_texel_object(
+    obj: Any,
+    tex: Dict[str, np.ndarray],
+    flux_by_obj: dict,
+    defaults: dict,
+    assignment: Optional[Any],
+    irradiance_scale: float,
+    verts_l: list,
+    irr_l: list,
+    t0_l: list,
+    alpha_l: list,
+    rho_l: list,
+    c_l: list,
+    eps_l: list,
+    bmask_l: list,
+    layout: list,
+    offset: int,
+) -> int:
+    """Append one atlas-participating object's texel points to :func:`_combine`'s
+    per-array accumulators and return the updated ``offset``.
+
+    Mirrors the per-vertex branch's material/Dirichlet-pinning logic exactly, just at
+    per-FACE resolution (:func:`materials.resolve_face_materials`, no seam averaging)
+    instead of per vertex, and reading position/normal from the rasterized tile instead
+    of :func:`_extract_geometry`.
+    """
+    positions = np.asarray(tex["position_mm"], dtype=np.float64).reshape(-1, 3)
+    k = int(positions.shape[0])
+    if k == 0:
+        return offset
+
+    mat = resolve_material(obj, defaults)
+    face_idx = np.asarray(tex["face"], dtype=np.int64)
+
+    per_face = None
+    if assignment is not None:
+        per_face = materials.resolve_face_materials(
+            obj, assignment, mat, np.asarray(tex["face_material_index"], dtype=np.int64)
+        )
+
+    flux = flux_by_obj.get(obj)
+    if flux is not None and int(np.asarray(flux).reshape(-1).shape[0]) == k:
+        irr = (np.asarray(flux, dtype=np.float64).reshape(-1) / _WM2_TO_WMM2) * irradiance_scale
+    else:
+        irr = np.zeros(k, dtype=np.float64)
+
+    if per_face is not None:
+        # Per-face resolution: every field is already (K,) via `face_idx` lookup.
+        # Dirichlet texels are pinned individually - alpha=0, no incident flux,
+        # excluded from the radiation/convection boundary - exactly what the
+        # per-vertex/object-level branches do. T0 for a non-pinned texel is the
+        # simulation's ambient initial condition, not resolve_face_materials'
+        # per-face value (which, for a face on a Dirichlet slot, IS the reservoir
+        # temperature) - mirrors the per-vertex branch's same reasoning.
+        rho = per_face["rho"][face_idx]
+        c_vec = per_face["c"][face_idx]
+        eps = per_face["eps"][face_idx]
+        dmask = per_face["dirichlet_mask"][face_idx]
+        t0 = np.where(dmask, per_face["t0"][face_idx], mat["initial_temperature_K"])
+        alpha = np.where(dmask, 0.0, per_face["alpha"][face_idx])
+        irr = np.where(dmask, 0.0, irr)
+        bmask = ~dmask
+    else:
+        rho = np.full(k, mat["density_kg_m3"], dtype=np.float64)
+        c_vec = np.full(k, mat["specific_heat_J_kgK"], dtype=np.float64)
+        eps = np.full(k, mat["emissivity"], dtype=np.float64)
+        if mat["thermal_role"] == "DIRICHLET_SOURCE":
+            t_dir = mat["dirichlet_temperature_K"] or mat["initial_temperature_K"]
+            t0 = np.full(k, float(t_dir), dtype=np.float64)
+            alpha = np.zeros(k, dtype=np.float64)
+            irr = np.zeros(k, dtype=np.float64)
+            bmask = np.zeros(k, dtype=bool)
+        else:
+            t0 = np.full(k, mat["initial_temperature_K"], dtype=np.float64)
+            alpha = np.full(k, mat["thermal_diffusivity_mm2_s"], dtype=np.float64)
+            bmask = np.ones(k, dtype=bool)
+
+    verts_l.append(positions)
+    irr_l.append(irr)
+    t0_l.append(t0)
+    alpha_l.append(alpha)
+    rho_l.append(rho)
+    c_l.append(c_vec)
+    eps_l.append(eps)
+    bmask_l.append(bmask)
+    layout.append((obj.name, offset, k, "TEXEL"))
+    return offset + k
+
+
 def _combine(
     sim_objects: list,
     flux_by_obj: dict,
     defaults: dict,
     solver_cfg: dict,
     assignment: Optional[Any] = None,
+    atlas_plan: Optional[AtlasPlan] = None,
 ) -> Optional[SimpleNamespace]:
     """Stack per-object geometry + material vectors into one solver-ready system.
 
@@ -334,16 +764,35 @@ def _combine(
     object-level constant. ``resolve_material`` still supplies the per-object
     fallback for unassigned slots, so addon-authored blends are unaffected. With
     ``assignment=None`` this function behaves exactly as before.
+
+    When *atlas_plan* is supplied, any object with an entry in ``atlas_plan.texels``
+    contributes its **texel points** instead of its mesh vertices: position/normal come
+    straight from the rasterized tile, and materials are resolved **per face**
+    (:func:`materials.resolve_face_materials`, exact - no seam averaging) instead of
+    per vertex. Every other object (absent from ``atlas_plan.texels``, or
+    ``atlas_plan=None`` entirely) contributes exactly as today. ``layout`` entries gain
+    a trailing ``kind`` tag (``"VERTEX"`` or ``"TEXEL"``) so callers can tell the two
+    apart; with ``atlas_plan=None`` every entry is ``"VERTEX"`` and every other array is
+    byte-identical to before this parameter existed.
     """
     irradiance_scale = float(defaults.get("irradiance_scale", 1.0))
 
     verts_l, faces_l = [], []
     irr_l, t0_l, alpha_l, rho_l, c_l, eps_l, bmask_l = [], [], [], [], [], [], []
-    layout: list = []  # (name, offset, n_verts) over the surface vertices
+    layout: list = []  # (name, offset, n, kind) over the surface points
     geom_by_obj: dict = {}
     offset = 0
+    atlas_texels = atlas_plan.texels if atlas_plan is not None else {}
 
     for obj in sim_objects:
+        tex = atlas_texels.get(obj.name)
+        if tex is not None:
+            offset = _combine_texel_object(
+                obj, tex, flux_by_obj, defaults, assignment, irradiance_scale,
+                verts_l, irr_l, t0_l, alpha_l, rho_l, c_l, eps_l, bmask_l, layout, offset,
+            )
+            continue
+
         geom = _extract_geometry(obj)
         if geom is None:
             continue
@@ -420,15 +869,16 @@ def _combine(
         c_l.append(c_vec)
         eps_l.append(eps)
         bmask_l.append(bmask)
-        layout.append((obj.name, offset, n))
+        layout.append((obj.name, offset, n, "VERTEX"))
         offset += n
 
     if not verts_l:
         return None
 
+    faces_arr = np.vstack(faces_l).astype(np.int32) if faces_l else np.zeros((0, 3), dtype=np.int32)
     combined = SimpleNamespace(
         verts=np.vstack(verts_l),
-        faces=np.vstack(faces_l).astype(np.int32),
+        faces=faces_arr,
         irradiance=np.concatenate(irr_l),
         t0=np.concatenate(t0_l),
         alpha=np.concatenate(alpha_l),
@@ -634,7 +1084,7 @@ def _split_history(history: np.ndarray, combined: SimpleNamespace) -> dict:
     if combined.surface_count > 0 and u.ndim == 2 and u.shape[1] > combined.surface_count:
         u = u[:, : combined.surface_count]
     out: dict = {}
-    for name, off, n in combined.layout:
+    for name, off, n, _kind in combined.layout:
         out[name] = np.ascontiguousarray(u[:, off : off + n])
     return out
 
@@ -645,7 +1095,13 @@ def _split_history(history: np.ndarray, combined: SimpleNamespace) -> dict:
 
 
 def solve_scene(
-    scene: Any, *, defaults: dict, solver_cfg: dict, cache_root: Path, assignment: Optional[Any] = None
+    scene: Any,
+    *,
+    defaults: dict,
+    solver_cfg: dict,
+    cache_root: Path,
+    assignment: Optional[Any] = None,
+    atlas_plan: Optional[AtlasPlan] = None,
 ) -> dict:
     """Cache-aware FEM heat solve for ``scene``.
 
@@ -653,6 +1109,13 @@ def solve_scene(
     returned untouched. On a miss: gather meshes -> Direct-Kernel irradiance
     (W/m^2 -> W/mm^2) -> combine -> ``HeatSimFEM.perform_gt_heat_simulation`` ->
     split the combined history back per object -> write the cache.
+
+    When *atlas_plan* (from :func:`build_atlas_plan`) is supplied, its
+    atlas-participating objects additionally get per-texel irradiance
+    (:func:`_compute_texel_irradiance`) merged into the same ``flux_by_obj`` the
+    per-vertex path already builds, and it is threaded through to :func:`_combine`'s
+    TEXEL branch. ``atlas_plan=None`` (the default) reproduces today's behaviour
+    exactly, including the cache key.
 
     Returns ``{obj_name: (timesteps, vertices) ndarray}``.
     """
@@ -665,6 +1128,13 @@ def solve_scene(
         "defaults": dict(defaults),
         "objects": sorted(o.name for o in sim_objects),
         "assignments": None if assignment is None else assignment.digest,
+        "atlas": None if atlas_plan is None else {
+            "density": atlas_plan.density,
+            "tile_min": atlas_plan.tile_min,
+            "tile_max": atlas_plan.tile_max,
+            "soft_max": atlas_plan.soft_max,
+            "layout_digest": atlas_plan.digest,
+        },
     }
     key = cache.cache_key(blend_path, key_cfg)
 
@@ -678,7 +1148,9 @@ def solve_scene(
         return {}
 
     flux_by_obj = _compute_irradiance(scene, sim_objects, solver_cfg, defaults)
-    combined = _combine(sim_objects, flux_by_obj, defaults, solver_cfg, assignment=assignment)
+    if atlas_plan is not None and atlas_plan.texels:
+        flux_by_obj.update(_compute_texel_irradiance(scene, sim_objects, atlas_plan, solver_cfg, defaults))
+    combined = _combine(sim_objects, flux_by_obj, defaults, solver_cfg, assignment=assignment, atlas_plan=atlas_plan)
     if combined is None:
         cache.write_temperatures(cache_root, key, {}, {"objects": []})
         return {}
@@ -688,7 +1160,7 @@ def solve_scene(
 
     meta = {
         "solver_cfg": dict(solver_cfg),
-        "objects": [name for name, _, _ in combined.layout],
+        "objects": [name for name, _, _, _ in combined.layout],
         "timesteps": int(history.shape[0]) if history.ndim == 2 else 0,
         "surface_count": int(combined.surface_count),
     }
@@ -924,7 +1396,9 @@ def solve_scene_animated(
                     "(all sim objects vanished mid-run)."
                 )
 
-            fem_entries = [(name, off, n) for name, off, n in combined.layout if name not in dirichlet_names]
+            fem_entries = [
+                (name, off, n) for name, off, n, _kind in combined.layout if name not in dirichlet_names
+            ]
             cur_n_fem_surface = sum(n for _, _, n in fem_entries)
 
             if u_prev is None:
@@ -954,7 +1428,7 @@ def solve_scene_animated(
             # further as substeps_per_frame grows).
             dir_idx: list[int] = []
             dir_val: list[float] = []
-            for name, off, n in combined.layout:
+            for name, off, n, _kind in combined.layout:
                 if name in dirichlet_names:
                     mat = resolve_material(objects_by_name[name], defaults)
                     t_target = mat["dirichlet_temperature_K"] or mat["initial_temperature_K"]

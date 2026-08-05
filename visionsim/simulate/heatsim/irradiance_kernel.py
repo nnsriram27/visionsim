@@ -388,6 +388,22 @@ def invalidate_sky_cache() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Shared points->irradiance core (used by both the per-vertex and texel paths)
+# ---------------------------------------------------------------------------
+
+
+def _sky_irradiance_plain(normals: np.ndarray, sky_coeffs: np.ndarray, sky_has_energy: bool) -> np.ndarray:
+    """Unoccluded SH9 sky irradiance at ``normals`` - (N,) W/m².
+
+    No per-point bent-normal/AO occlusion: this is what the per-vertex path already
+    falls back to when sky occlusion is disabled or unavailable for a vertex, and it is
+    the ONLY sky term the texel path uses (texels have no baked per-point AO)."""
+    if not sky_has_energy:
+        return np.zeros((int(normals.shape[0]),), dtype=np.float64)
+    return sh9_sky.eval_per_vertex(normals, sky_coeffs)
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -488,21 +504,18 @@ def compute_per_vertex_irradiance(
         # normal and attenuate by AO. When AO falls below the floor the
         # bent normal is unreliable (very few visible rays) — fall back
         # to the surface normal.
-        if sky_has_energy:
-            sv = sky_vis_map.get(obj.name)
-            if enable_sky_occ and sv is not None:
-                bn = np.asarray(sv["bent_normal"], dtype=np.float64)
-                ao = np.asarray(sv["ao"], dtype=np.float64)
-                if int(bn.shape[0]) == Nv and int(ao.shape[0]) == Nv:
-                    use_bent = (ao >= ao_floor)[:, None]
-                    eval_normals = np.where(use_bent, bn, world_normals)
-                    sky_irr = sh9_sky.eval_per_vertex(eval_normals, sky_coeffs) * ao
-                else:
-                    sky_irr = sh9_sky.eval_per_vertex(world_normals, sky_coeffs)
+        sv = sky_vis_map.get(obj.name) if sky_has_energy else None
+        if sky_has_energy and enable_sky_occ and sv is not None:
+            bn = np.asarray(sv["bent_normal"], dtype=np.float64)
+            ao = np.asarray(sv["ao"], dtype=np.float64)
+            if int(bn.shape[0]) == Nv and int(ao.shape[0]) == Nv:
+                use_bent = (ao >= ao_floor)[:, None]
+                eval_normals = np.where(use_bent, bn, world_normals)
+                sky_irr = sh9_sky.eval_per_vertex(eval_normals, sky_coeffs) * ao
             else:
-                sky_irr = sh9_sky.eval_per_vertex(world_normals, sky_coeffs)
+                sky_irr = _sky_irradiance_plain(world_normals, sky_coeffs, sky_has_energy)
         else:
-            sky_irr = np.zeros((Nv,), dtype=np.float64)
+            sky_irr = _sky_irradiance_plain(world_normals, sky_coeffs, sky_has_energy)
 
         e_total = direct + sky_irr  # (N,) W/m²
 
@@ -535,3 +548,76 @@ def compute_per_vertex_irradiance(
         len(out), len(objects_to_compute), dt, backend.name,
     )
     return out
+
+
+# ---------------------------------------------------------------------------
+# Texel-sim entry point (Task 2 / thermal atlas)
+# ---------------------------------------------------------------------------
+
+
+def compute_irradiance_at_points(
+    scene: bpy.types.Scene,
+    positions_mm: np.ndarray,
+    normals: np.ndarray,
+    albedo: np.ndarray,
+) -> np.ndarray:
+    """Direct-Kernel irradiance at arbitrary world-space points - the texel-sim entry point.
+
+    Factored from :func:`compute_per_vertex_irradiance`'s per-object core
+    (:func:`_accumulate_light_contributions` + :func:`_sky_irradiance_plain`) so the two
+    paths cannot silently diverge; this function does not change what
+    :func:`compute_per_vertex_irradiance` computes for a mesh's own vertices - it is a new,
+    additional entry point for point clouds that aren't a mesh's vertex set (e.g. a
+    thermal-atlas tile's texel centers from ``atlas.rasterize_tile``).
+
+    Returns ``(K,) W/m²`` ABSORBED flux (post-``(1 - albedo)``), matching
+    :func:`compute_per_vertex_irradiance`'s ``vertex_flux`` contract.
+
+    Unlike the per-vertex path this has no baked per-point sky-occlusion (bent normal /
+    AO) - every point uses its own surface normal for the (unoccluded) SH9 sky term, the
+    same fallback the per-vertex path takes when sky occlusion is disabled or unavailable
+    for a given vertex.
+
+    Args:
+        scene: The Blender scene (for lights, occluders and the world/sky).
+        positions_mm: ``(K, 3)`` world-space positions in **millimetres** (the adapter's
+            native unit, e.g. ``atlas.rasterize_tile``'s ``position_mm``); converted to
+            metres internally to match the light/BVH pipeline's units
+            (``_extract_world_geometry`` works in metres).
+        normals: ``(K, 3)`` world-space unit normals.
+        albedo: ``(K,)`` per-point albedo in ``[0, 1]``. A shape mismatch against
+            ``positions_mm`` is treated as "no albedo" (full absorption), matching
+            :func:`compute_per_vertex_irradiance`'s missing-albedo fallback.
+    """
+    positions_mm = np.asarray(positions_mm, dtype=np.float64).reshape(-1, 3)
+    normals = np.asarray(normals, dtype=np.float64).reshape(-1, 3)
+    albedo = np.asarray(albedo, dtype=np.float64).reshape(-1)
+    k = int(positions_mm.shape[0])
+    if k == 0:
+        return np.zeros((0,), dtype=np.float64)
+
+    positions_m = positions_mm / 1000.0
+
+    light_objs = [
+        o for o in scene.objects
+        if getattr(o, "type", None) == "LIGHT" and not o.hide_render and o.visible_get()
+    ]
+    scene_meshes = _collect_scene_meshes_world(scene)
+    backend = bvh_backend.best_available()
+    backend.build_for_meshes(scene_meshes)
+
+    sky_coeffs = _get_sky_coefficients(getattr(scene, "world", None))
+    sky_has_energy = sh9_sky.coeffs_have_energy(sky_coeffs)
+
+    # Matches compute_per_vertex_irradiance's settings default (direct_kernel_soft_shadow_rays).
+    n_samples_for_area = 8
+    rng = np.random.default_rng(0)
+
+    direct = _accumulate_light_contributions(light_objs, positions_m, normals, backend, n_samples_for_area, rng)
+    sky_irr = _sky_irradiance_plain(normals, sky_coeffs, sky_has_energy)
+    e_total = direct + sky_irr
+
+    if albedo.shape[0] != k:
+        albedo = np.zeros(k, dtype=np.float64)
+    absorbed = e_total * (1.0 - np.clip(albedo, 0.0, 1.0))
+    return absorbed.astype(np.float64)

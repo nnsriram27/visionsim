@@ -6,6 +6,7 @@ THERMAL_MATERIAL_NAME = "HeatSim_Thermal_Override"
 IRRADIANCE_LAYER_NAME = "HeatSim_Irradiance"
 ALBEDO_LAYER_NAME = "HeatSim_Albedo"
 BAKE_UV_LAYER_NAME = "HeatSim_Bake_UV"
+ATLAS_UV_LAYER_NAME = "HeatSim_Atlas_UV"
 
 
 CAMERA = 'Boson'
