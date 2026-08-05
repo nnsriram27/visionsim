@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import subprocess
 
+import Imath
 import numpy as np
+import OpenEXR
 import pytest
 
 from visionsim.simulate.heatsim import adapter, atlas
@@ -79,6 +81,24 @@ print('WRITE_ATLAS_OK')
 """
     out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
     assert "WRITE_ATLAS_OK" in out.stdout, out.stdout + "\n" + out.stderr
+
+    # Absolute-value check: read the EXR with the standalone OpenEXR package (never bpy --
+    # bpy's load applies the same colorspace-tagged decode as the write's encode, so a
+    # write->bpy-load round trip only proves symmetry, not that the file holds the true
+    # Kelvin values). This is the assertion that catches a Non-Color tag regression: an
+    # untagged write would land here as ~11.2 (sRGB-OETF-encoded 310.0), not 310.0.
+    exr_path = tmp_path / "atlas_rt" / "atlas_temperature.exr"
+    assert exr_path.exists(), exr_path
+    exr = OpenEXR.InputFile(str(exr_path))
+    dw = exr.header()["dataWindow"]
+    w = dw.max.x - dw.min.x + 1
+    h = dw.max.y - dw.min.y + 1
+    float_t = Imath.PixelType(Imath.PixelType.FLOAT)
+    r_raw = np.frombuffer(exr.channel("R", float_t), dtype=np.float32).reshape(h, w)
+    # OpenEXR rows are top-down while Blender's Image.pixels buffer (and the (x, y) texel
+    # coordinates used above) are bottom-up, so the on-disk row is (h - 1 - y).
+    assert abs(float(r_raw[h - 1 - 1, 1]) - 310.0) < 1e-2, r_raw[h - 1 - 1, 1]
+    assert abs(float(r_raw[h - 1 - 4, 4]) - 320.0) < 1e-2, r_raw[h - 1 - 4, 4]
 
 
 def test_write_atlas_no_texels_writes_empty_placeholder(executable, tmp_path):

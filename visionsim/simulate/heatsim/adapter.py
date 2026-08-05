@@ -655,6 +655,16 @@ def write_atlas(history: dict, atlas_plan: AtlasPlan, cache_root: Path) -> Path:
     if existing is not None:
         bpy.data.images.remove(existing)
     image = bpy.data.images.new(write_image_name, width=width, height=height, alpha=True, float_buffer=True)
+    # Temperatures are data, not color: bpy.data.images.new()'s default colorspace tag
+    # (here, effectively a non-identity "Linear Rec.709" role under this OCIO config --
+    # empirically confirmed to apply the sRGB-like OETF on save) makes Image.save() treat
+    # the raw Kelvin values as scene-linear color and re-encode them, corrupting the
+    # written EXR's absolute values (295.0 K -> ~11.23 in the file). Tag Non-Color so
+    # save()/load() are the identity transform and the file holds the literal float value.
+    try:
+        image.colorspace_settings.name = "Non-Color"
+    except Exception:  # pragma: no cover - defensive, mirrors irradiance.py's style
+        pass
     image.pixels.foreach_set(rgba.ravel())
     image.filepath_raw = str(out_path)
     image.file_format = "OPEN_EXR"
