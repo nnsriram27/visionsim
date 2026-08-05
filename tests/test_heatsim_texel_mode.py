@@ -279,7 +279,7 @@ def test_uv_failure_demotes_to_vertex_path_with_warning(monkeypatch, caplog):
         face_material_index = np.array([0, 0], dtype=np.int32)
         return loop_uv, face_material_index
 
-    monkeypatch.setattr(adapter, "_extract_face_uv_and_slots", fake_uv)
+    monkeypatch.setattr(adapter, "_extract_evaluated_face_uv_and_slots", fake_uv)
     monkeypatch.setattr(adapter, "_write_atlas_uv_layer", lambda *a, **kw: None)
 
     with caplog.at_level(logging.WARNING):
@@ -293,22 +293,57 @@ def test_uv_failure_demotes_to_vertex_path_with_warning(monkeypatch, caplog):
     assert any("bad" in m and "demoted" in m for m in messages)
 
 
-def test_build_atlas_plan_topology_mismatch_demotes_with_warning(monkeypatch, caplog):
-    """Base mesh vertex count != evaluated vertex count -> demoted before UV is even tried."""
+def test_build_atlas_plan_vertex_count_mismatch_no_longer_demotes(monkeypatch):
+    """Regression for the evaluated-mesh rasterization fix: a base/evaluated vertex-count
+    mismatch (the hallmark of a topology-changing modifier, e.g. Bevel or Geometry Nodes)
+    must NOT demote the object anymore. A temperature atlas is UV-addressed, not
+    vertex-addressed: :func:`build_atlas_plan` reads both geometry and UVs from the
+    evaluated mesh, so it no longer cares that the base mesh disagrees on vertex count.
+
+    Simulates the write-then-read-back round trip _write_atlas_uv_layer/
+    _extract_evaluated_face_uv_and_slots perform: a spy captures the (tile, atlas_size)
+    the real write call would have used, and the fake evaluated-UV reader applies the
+    exact same forward remap _write_atlas_uv_layer does, so build_atlas_plan's inverse
+    remap round-trips back to the original tile-local UV.
+    """
     obj = _AtlasObj("mod_obj", n_verts=6)  # base mesh reports 6 verts
     evaluated = _big_plane_geom()  # evaluated geometry has 4 verts
 
     monkeypatch.setattr(adapter, "_extract_geometry", lambda o: evaluated)
-    calls = []
-    monkeypatch.setattr(adapter, "_prepare_bake_uv", lambda o: calls.append(o.name))
+    prep_calls = []
+    monkeypatch.setattr(adapter, "_prepare_bake_uv", lambda o: prep_calls.append(o.name))
 
-    with caplog.at_level(logging.WARNING):
-        plan = adapter.build_atlas_plan(scene=None, sim_objects=[obj], cfg=_ATLAS_CFG)
+    captured = {}
 
-    assert "mod_obj" not in plan.texels
-    assert calls == []  # never even attempted the UV prep
-    messages = [rec.getMessage() for rec in caplog.records]
-    assert any("mod_obj" in m and "modifier" in m for m in messages)
+    def spy_write(o, tile, atlas_size, src_layer_name):
+        captured["tile"] = tile
+        captured["atlas_size"] = atlas_size
+
+    monkeypatch.setattr(adapter, "_write_atlas_uv_layer", spy_write)
+
+    raw_uv = np.array([
+        [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+        [[0.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+    ])
+
+    def fake_evaluated_uv(o, layer_name):
+        tile = captured["tile"]
+        aw, ah = captured["atlas_size"]
+        tw, th = tile.size
+        tx, ty = tile.offset
+        atlas_uv = np.empty_like(raw_uv)
+        atlas_uv[..., 0] = (tx + raw_uv[..., 0] * tw) / aw
+        atlas_uv[..., 1] = (ty + raw_uv[..., 1] * th) / ah
+        face_material_index = np.array([0, 0], dtype=np.int32)
+        return atlas_uv, face_material_index
+
+    monkeypatch.setattr(adapter, "_extract_evaluated_face_uv_and_slots", fake_evaluated_uv)
+
+    plan = adapter.build_atlas_plan(scene=None, sim_objects=[obj], cfg=_ATLAS_CFG)
+
+    assert "mod_obj" in plan.texels
+    assert prep_calls == ["mod_obj"]  # bake UV prep still runs before the atlas UV write
+    assert plan.texels["mod_obj"]["position_mm"].shape[0] > 0
 
 
 def test_build_atlas_plan_excludes_dense_objects(monkeypatch):
@@ -633,3 +668,91 @@ print('TEXEL_PIPELINE_OK', n_texels, len(plane.data.vertices))
 """
     out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
     assert "TEXEL_PIPELINE_OK" in out.stdout, out.stdout + "\n" + out.stderr
+
+
+# ---------------------------------------------------------------------------
+# Real-bpy regression: topology-changing modifiers no longer demote an object
+# from the atlas (evaluated-mesh rasterization fix).
+# ---------------------------------------------------------------------------
+
+
+def test_build_atlas_plan_promotes_object_with_topology_changing_modifier(executable):
+    """Before the fix, an object whose evaluated (post-modifier) vertex count
+    disagreed with its base mesh's was unconditionally demoted from the atlas -
+    and, since the per-vertex write-back path also can't handle a shape mismatch,
+    its solved temperatures were silently discarded (flat ambient at render time).
+
+    A Subdivision Surface modifier reliably changes a plane's vertex count
+    headless (4 base verts -> many more evaluated verts), so it stands in for the
+    Bevel/Geometry-Nodes/EdgeSplit modifiers the design doc calls out. Asserts the
+    object IS an atlas participant with a nonzero texel count, and that every
+    rasterized texel position lies within the object's evaluated world-space
+    bounding box - a coordinate-convention regression (e.g. mixing up tile-local
+    and atlas-global UV space) would place texels far outside this box.
+    """
+    code = r"""
+import bpy, numpy as np
+from visionsim.simulate.heatsim import register, adapter
+from visionsim.simulate.heatsim.constants import ATLAS_UV_LAYER_NAME
+
+register()
+bpy.ops.object.select_all(action='SELECT')
+bpy.ops.object.delete()
+
+bpy.ops.mesh.primitive_plane_add(size=2.0)
+plane = bpy.context.active_object
+plane.name = 'ModPlane'
+plane.heat_simulation_enabled = True
+
+mat = bpy.data.materials.new('plane_mat')
+mat.use_nodes = True
+plane.data.materials.append(mat)
+
+subsurf = plane.modifiers.new(name='Subsurf', type='SUBSURF')
+subsurf.levels = 2
+subsurf.render_levels = 2
+
+bpy.ops.object.light_add(type='SUN')
+bpy.context.active_object.data.energy = 10.0
+world = bpy.context.scene.world
+world.use_nodes = True
+bg = world.node_tree.nodes.get('Background')
+bg.inputs['Strength'].default_value = 1.0
+
+base_n_verts = len(plane.data.vertices)
+
+depsgraph = bpy.context.evaluated_depsgraph_get()
+eval_mesh = plane.evaluated_get(depsgraph).data
+eval_n_verts = len(eval_mesh.vertices)
+# Sanity check on the test setup itself: the modifier must actually change the
+# vertex count, or this test would not exercise the bug at all.
+assert eval_n_verts != base_n_verts, (base_n_verts, eval_n_verts)
+
+verts_local = np.array([tuple(v.co) for v in eval_mesh.vertices], dtype=np.float64)
+mw = np.array(plane.matrix_world, dtype=np.float64)
+verts_world_mm = ((verts_local @ mw[:3, :3].T) + mw[:3, 3]) * 1000.0
+bbox_lo = verts_world_mm.min(axis=0) - 1.0e-3
+bbox_hi = verts_world_mm.max(axis=0) + 1.0e-3
+
+atlas_cfg = dict(atlas_texel_density=64.0, atlas_tile_min=16, atlas_tile_max=64,
+                  atlas_texel_soft_max=500_000)
+sim_objects = adapter.gather_meshes(bpy.context.scene)
+plan = adapter.build_atlas_plan(bpy.context.scene, sim_objects, atlas_cfg)
+
+assert 'ModPlane' in plan.texels, 'topology-changing-modifier object was demoted from the atlas'
+pos_mm = plan.texels['ModPlane']['position_mm']
+n_texels = pos_mm.shape[0]
+assert n_texels > 0, n_texels
+
+assert np.all(pos_mm >= bbox_lo) and np.all(pos_mm <= bbox_hi), (
+    pos_mm.min(axis=0), pos_mm.max(axis=0), bbox_lo, bbox_hi,
+)
+
+# The atlas UV layer must have landed on the BASE mesh (so both the modifier
+# stack and the render-time shader can see it), not just the evaluated copy.
+assert ATLAS_UV_LAYER_NAME in plane.data.uv_layers
+
+print('TOPOLOGY_MODIFIER_ATLAS_PROMOTED_OK', n_texels, base_n_verts, eval_n_verts)
+"""
+    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
+    assert "TOPOLOGY_MODIFIER_ATLAS_PROMOTED_OK" in out.stdout, out.stdout + "\n" + out.stderr

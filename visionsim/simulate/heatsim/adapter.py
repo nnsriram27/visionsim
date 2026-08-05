@@ -343,16 +343,19 @@ def _prepare_bake_uv(obj: Any) -> None:
     irradiance.prepare_object_bake_uv(obj)
 
 
-def _extract_face_uv_and_slots(obj: Any, uv_layer_name: str) -> Optional[tuple]:
-    """``(loop_uv (M,3,2) float64 in [0,1], face_material_index (M,) int32)`` for
-    ``obj.data``, triangulated identically to :func:`_extract_geometry` (all
-    triangle-polygons first, then each quad's two triangles in ``(v0,v1,v2)`` /
-    ``(v0,v2,v3)`` order) so a texel's ``face`` index from ``atlas.rasterize_tile``
-    lines up with the same triangle in both this function's output and
-    :func:`_extract_geometry`'s ``faces``. Reads UVs from the named UV layer on
+def _face_uv_and_slots_from_mesh(mesh: Any, uv_layer_name: str) -> Optional[tuple]:
+    """``(loop_uv (M,3,2) float64 in [0,1], face_material_index (M,) int32)`` for an
+    arbitrary Blender mesh datablock, triangulated identically to
+    :func:`_extract_geometry` (all triangle-polygons first, then each quad's two
+    triangles in ``(v0,v1,v2)`` / ``(v0,v2,v3)`` order) so a texel's ``face`` index
+    from ``atlas.rasterize_tile`` lines up with the same triangle in both this
+    function's output and :func:`_extract_geometry`'s ``faces`` (when both are read
+    from the SAME mesh - base or evaluated). Reads UVs from the named UV layer on
     ``mesh.loops``. Returns ``None`` if the mesh has no polygons or lacks that UV layer.
+
+    Shared core for :func:`_extract_face_uv_and_slots` (base mesh) and
+    :func:`_extract_evaluated_face_uv_and_slots` (evaluated mesh).
     """
-    mesh = getattr(obj, "data", None)
     if mesh is None:
         return None
     uv_layers = getattr(mesh, "uv_layers", None)
@@ -402,12 +405,39 @@ def _extract_face_uv_and_slots(obj: Any, uv_layer_name: str) -> Optional[tuple]:
     return loop_uv, face_material_index
 
 
+def _extract_face_uv_and_slots(obj: Any, uv_layer_name: str) -> Optional[tuple]:
+    """:func:`_face_uv_and_slots_from_mesh` for ``obj``'s BASE mesh (``obj.data``)."""
+    return _face_uv_and_slots_from_mesh(getattr(obj, "data", None), uv_layer_name)
+
+
+def _extract_evaluated_face_uv_and_slots(obj: Any, uv_layer_name: str) -> Optional[tuple]:
+    """:func:`_face_uv_and_slots_from_mesh` for ``obj``'s EVALUATED mesh (post-modifier).
+
+    Used to read back a UV layer (e.g. ``ATLAS_UV_LAYER_NAME``) that was written to the
+    base mesh and has since propagated through the modifier stack - Bevel interpolates
+    named UV layers onto new geometry, EdgeSplit duplicates them, and most Geometry
+    Nodes setups preserve them, so this is how atlas participants with topology-changing
+    modifiers get UVs that correspond 1:1 with :func:`_extract_geometry`'s evaluated
+    ``faces`` for the SAME object. Returns ``None`` if the evaluated mesh has no polygons
+    or the modifier stack dropped the named layer (some Geometry Nodes setups do).
+    """
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    mesh = obj.evaluated_get(depsgraph).data
+    return _face_uv_and_slots_from_mesh(mesh, uv_layer_name)
+
+
 def _write_atlas_uv_layer(obj: Any, tile: "atlas.TileSpec", atlas_size: tuple, src_layer_name: str) -> None:
     """Remap ``src_layer_name``'s per-loop UVs into ``tile``'s placement inside the
     shared atlas image and store the result as a fresh ``ATLAS_UV_LAYER_NAME`` UV layer
-    (per spec ``4.1`` - the thermal AOV shader samples the atlas image through this
-    layer). Best-effort: never raises, since a failure here must not abort the solve
-    (the texel sim-input assembly in ``_combine`` does not depend on this layer at all).
+    on ``obj``'s BASE mesh (per spec ``4.1`` - the thermal AOV shader samples the atlas
+    image through this layer at render time). It must land on the base mesh, not a
+    to_mesh() copy, so the modifier stack propagates it (Bevel interpolates named UV
+    layers onto new geometry, EdgeSplit duplicates them, most Geometry Nodes setups
+    preserve them) - :func:`build_atlas_plan` then forces a depsgraph update and reads
+    it back via :func:`_extract_evaluated_face_uv_and_slots` to rasterize from geometry
+    that matches what the solver actually used. Best-effort: never raises, since a
+    failure here must not abort the solve - it degrades to the per-vertex path via the
+    caller's own "evaluated mesh lacks the atlas UV layer" check.
     """
     mesh = getattr(obj, "data", None)
     uv_layers = getattr(mesh, "uv_layers", None) if mesh is not None else None
@@ -436,6 +466,11 @@ def _write_atlas_uv_layer(obj: Any, tile: "atlas.TileSpec", atlas_size: tuple, s
         dst = uv_layers.new(name=ATLAS_UV_LAYER_NAME)
         dst.data.foreach_set("uv", atlas_uv.ravel())
         mesh.update()
+        # Force the depsgraph to re-evaluate the modifier stack with the new UV layer
+        # in place, so the very next evaluated-mesh access (build_atlas_plan's read-back)
+        # sees it instead of a stale cached evaluation from before this write.
+        if bpy is not None:
+            bpy.context.view_layer.update()
     except Exception as exc:  # pragma: no cover - defensive, mirrors irradiance.py's style
         _log.warning("[heatsim.adapter] '%s': failed to write %s: %s", obj.name, ATLAS_UV_LAYER_NAME, exc)
 
@@ -450,13 +485,22 @@ def build_atlas_plan(scene: Any, sim_objects: list, cfg: dict) -> AtlasPlan:
     object's bake UV (created/unwrapped by the existing hardened
     ``irradiance.prepare_object_bake_uv`` machinery).
 
+    Rasterization is fully EVALUATED-mesh based: the atlas UV layer is written to the
+    BASE mesh (so Bevel/EdgeSplit/Geometry-Nodes modifier stacks propagate it), the
+    depsgraph is forced to re-evaluate, and both the triangle geometry (from
+    :func:`_extract_geometry`) and the UVs/material indices used to rasterize (from
+    :func:`_extract_evaluated_face_uv_and_slots`) are read from that SAME evaluated
+    mesh - so a mismatch between the base mesh's vertex count and the evaluated
+    geometry's (Bevel, Geometry Nodes, EdgeSplit, ...) is no longer meaningful and no
+    longer demotes the object. A temperature atlas is UV-addressed, not
+    vertex-addressed, so it does not care how many vertices the base mesh has.
+
     An object is demoted to the vertex path (excluded from the returned plan's
-    ``texels``, with a warning - never raised) when: its evaluated vertex count
-    doesn't match its base mesh's vertex count (the same modifier hazard
-    ``materials.resolve_vertex_materials`` already guards against elsewhere), its
-    bake-UV prep fails to produce a usable UV layer, or its UV triangulation doesn't
-    match the evaluated geometry's triangle count. Every check degrades gracefully;
-    this function never raises for a per-object failure.
+    ``texels``, with a warning - never raised) when: its bake-UV prep fails to produce
+    a usable UV layer, the modifier stack drops the atlas UV layer entirely (some
+    Geometry Nodes setups do), or its UV triangulation doesn't match the evaluated
+    geometry's triangle count. Every check degrades gracefully; this function never
+    raises for a per-object failure.
     """
     density = float(cfg.get("atlas_texel_density", 1500.0))  # keep in sync with ThermalConfig.atlas_texel_density
     tile_min = int(cfg.get("atlas_tile_min", 16))
@@ -485,37 +529,45 @@ def build_atlas_plan(scene: Any, sim_objects: list, cfg: dict) -> AtlasPlan:
 
     texels: Dict[str, Dict[str, np.ndarray]] = {}
     for name in areas:
-        obj, verts, faces, n = geoms[name]
+        obj, verts, faces, _n = geoms[name]
         tile = layout.tiles.get(name)
         if tile is None:
             continue
 
-        base_mesh = getattr(obj, "data", None)
-        base_n_verts = len(getattr(base_mesh, "vertices", [])) if base_mesh is not None else 0
-        if base_n_verts != n:
-            _log.warning(
-                "[heatsim.adapter] '%s': base mesh has %d verts but evaluated geometry has %d "
-                "(topology-changing modifier); demoted from the atlas to the per-vertex path.",
-                name, base_n_verts, n,
-            )
-            continue
-
+        # Write the atlas UV layer onto the BASE mesh first (so Bevel/EdgeSplit/GN
+        # modifiers propagate it) and force a depsgraph update, then read triangles'
+        # UVs + material indices back from the EVALUATED mesh - the same mesh
+        # `verts`/`faces` above came from - so face indices line up 1:1 regardless of
+        # whether the base and evaluated vertex counts agree.
         _prepare_bake_uv(obj)
-        uv_result = _extract_face_uv_and_slots(obj, BAKE_UV_LAYER_NAME)
+        _write_atlas_uv_layer(obj, tile, layout.atlas_size, BAKE_UV_LAYER_NAME)
+        uv_result = _extract_evaluated_face_uv_and_slots(obj, ATLAS_UV_LAYER_NAME)
         if uv_result is None:
             _log.warning(
-                "[heatsim.adapter] '%s': bake UV unavailable after unwrap attempt; "
-                "demoted from the atlas to the per-vertex path.", name,
+                "[heatsim.adapter] '%s': %s unavailable on the evaluated mesh (bake-UV unwrap "
+                "failed, or the modifier stack dropped the named layer); demoted from the atlas "
+                "to the per-vertex path.", name, ATLAS_UV_LAYER_NAME,
             )
             continue
-        loop_uv, face_material_index = uv_result
-        if loop_uv.shape[0] != faces.shape[0]:
+        atlas_loop_uv, face_material_index = uv_result
+        if atlas_loop_uv.shape[0] != faces.shape[0]:
             _log.warning(
                 "[heatsim.adapter] '%s': UV triangulation (%d tris) does not match evaluated "
                 "geometry (%d tris); demoted from the atlas to the per-vertex path.",
-                name, loop_uv.shape[0], faces.shape[0],
+                name, atlas_loop_uv.shape[0], faces.shape[0],
             )
             continue
+
+        # `atlas_loop_uv` is already atlas-global [0,1] (written by _write_atlas_uv_layer
+        # as `(tile.offset + bake_uv * tile.size) / atlas_size`); invert that remap back to
+        # tile-local [0,1] here so `atlas.rasterize_tile` keeps its existing tile-local
+        # contract unchanged.
+        tw, th = tile.size
+        tx, ty = tile.offset
+        aw, ah = layout.atlas_size
+        loop_uv = np.empty_like(atlas_loop_uv)
+        loop_uv[..., 0] = (atlas_loop_uv[..., 0] * aw - tx) / tw
+        loop_uv[..., 1] = (atlas_loop_uv[..., 1] * ah - ty) / th
 
         raster = atlas.rasterize_tile(verts, faces, loop_uv, tile.size)
         if raster["xy"].shape[0] == 0:
@@ -525,7 +577,6 @@ def build_atlas_plan(scene: Any, sim_objects: list, cfg: dict) -> AtlasPlan:
             )
             continue
 
-        tw, th = tile.size
         uv_at_texel = np.empty((raster["xy"].shape[0], 2), dtype=np.float64)
         uv_at_texel[:, 0] = (raster["xy"][:, 0].astype(np.float64) + 0.5) / tw
         uv_at_texel[:, 1] = (raster["xy"][:, 1].astype(np.float64) + 0.5) / th
@@ -538,7 +589,6 @@ def build_atlas_plan(scene: Any, sim_objects: list, cfg: dict) -> AtlasPlan:
             "face": raster["face"],
             "face_material_index": face_material_index,
         }
-        _write_atlas_uv_layer(obj, tile, layout.atlas_size, BAKE_UV_LAYER_NAME)
 
     digest = _atlas_digest(layout, tile_min, tile_max, soft_max)
     return AtlasPlan(
