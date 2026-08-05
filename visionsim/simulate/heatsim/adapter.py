@@ -36,7 +36,7 @@ from typing import Any, Dict, Optional
 import numpy as np
 
 from visionsim.simulate.heatsim import atlas, cache, materials
-from visionsim.simulate.heatsim.constants import ATLAS_UV_LAYER_NAME, BAKE_UV_LAYER_NAME
+from visionsim.simulate.heatsim.constants import ATLAS_COVERAGE_PROP, ATLAS_UV_LAYER_NAME, BAKE_UV_LAYER_NAME
 
 try:
     import bpy  # type: ignore
@@ -298,10 +298,14 @@ class AtlasPlan:
     the solve cache key).
 
     ``texels`` maps object name -> ``{"position_mm" (K,3), "normal" (K,3), "uv" (K,2),
-    "face" (K,) int64, "face_material_index" (M,) int32}``. Only objects that made it
-    all the way through selection, UV prep and rasterization appear here; every other
-    sim object (excluded by :func:`atlas.select_for_atlas`, or demoted after a UV/vertex-
-    count failure) is simply absent and keeps the per-vertex path in ``_combine``.
+    "xy" (K,2) int64, "face" (K,) int64, "face_material_index" (M,) int32}``. ``"xy"`` is
+    the tile-LOCAL integer texel coordinate (before the tile's ``AtlasLayout`` offset is
+    added) - :func:`write_atlas` (Task 3) uses it together with ``layout.tiles[name].offset``
+    to scatter this object's solved texel temperatures into the shared atlas image. Only
+    objects that made it all the way through selection, UV prep and rasterization appear
+    here; every other sim object (excluded by :func:`atlas.select_for_atlas`, or demoted
+    after a UV/vertex-count failure) is simply absent and keeps the per-vertex path in
+    ``_combine``.
     """
 
     layout: "atlas.AtlasLayout"
@@ -530,6 +534,7 @@ def build_atlas_plan(scene: Any, sim_objects: list, cfg: dict) -> AtlasPlan:
             "position_mm": raster["position_mm"],
             "normal": raster["normal"],
             "uv": uv_at_texel,
+            "xy": raster["xy"],
             "face": raster["face"],
             "face_material_index": face_material_index,
         }
@@ -540,6 +545,121 @@ def build_atlas_plan(scene: Any, sim_objects: list, cfg: dict) -> AtlasPlan:
         layout=layout, texels=texels, density=layout.effective_density,
         tile_min=tile_min, tile_max=tile_max, soft_max=soft_max, digest=digest,
     )
+
+
+# Push-out margin dilation, in texels. Kept <= atlas.allocate's default inter-tile
+# `padding` (2px) so a single dilate pass cannot bridge the gap and blend two
+# unrelated objects' tiles together; see the design spec's "seam bleeding" risk note.
+_ATLAS_DILATE_ITERATIONS = 2
+
+
+def _scatter_atlas_arrays(history: dict, atlas_plan: AtlasPlan) -> tuple[np.ndarray, np.ndarray]:
+    """Pure-numpy core of :func:`write_atlas`: scatter + dilate, no ``bpy``.
+
+    Returns ``(temperature, alpha)``, both ``(H, W)`` float64/bool-as-float64 arrays sized
+    to ``atlas_plan.layout.atlas_size``. ``temperature`` is dilated so bilinear sampling
+    never reads an untouched (zero) texel; ``alpha`` is 1.0 wherever the dilation actually
+    reached (originally-solved texels AND their filled margin), 0.0 everywhere else
+    (never-covered tile interior, inter-tile padding, and any unused atlas margin).
+    """
+    width, height = atlas_plan.layout.atlas_size
+    temp = np.zeros((height, width), dtype=np.float64)
+    valid = np.zeros((height, width), dtype=bool)
+
+    for name, tex in atlas_plan.texels.items():
+        tile = atlas_plan.layout.tiles.get(name)
+        hist = history.get(name)
+        if tile is None or hist is None:
+            continue
+        arr = np.asarray(hist, dtype=np.float64)
+        xy = tex.get("xy")
+        xy = np.asarray(xy, dtype=np.int64) if xy is not None else None
+        if arr.ndim != 2 or arr.shape[0] == 0 or xy is None or xy.shape[0] != arr.shape[1]:
+            _log.warning(
+                "[heatsim.adapter] write_atlas: '%s' history shape %s does not match its "
+                "texel table (%s); skipped -- that object's tile stays unsolved (dilated "
+                "from neighbours, or zero/invalid if isolated).",
+                name, arr.shape, None if xy is None else xy.shape,
+            )
+            continue
+
+        final = arr[-1]
+        tx, ty = tile.offset
+        px = xy[:, 0] + tx
+        py = xy[:, 1] + ty
+        temp[py, px] = final
+        valid[py, px] = True
+
+    # Dilate the temperature field, then dilate a {0,1} "alpha image" seeded with the SAME
+    # `valid` mask and iteration count: every fillable pixel there is a weighted mean of
+    # neighbours that are each exactly 1.0 (valid texels always hold 1.0 in this second
+    # array), so the result is exactly 1.0 wherever the real dilation above reached, and
+    # exactly 0.0 wherever it didn't -- i.e. the post-dilation validity mask, with no new
+    # atlas.py API needed.
+    temp_dilated = atlas.dilate(temp, valid, iterations=_ATLAS_DILATE_ITERATIONS)
+    alpha_dilated = atlas.dilate(valid.astype(np.float64), valid, iterations=_ATLAS_DILATE_ITERATIONS)
+    alpha = (alpha_dilated > 0.5).astype(np.float64)
+    return temp_dilated, alpha
+
+
+def write_atlas(history: dict, atlas_plan: AtlasPlan, cache_root: Path) -> Path:
+    """Write the final-timestep texel temperatures to a 32-bit float EXR atlas image.
+
+    Scatters every atlas-participating object's LAST solved timestep into the shared atlas
+    array at its tile's texels (:func:`_scatter_atlas_arrays`), push-out dilates across the
+    invalid margin so render-time bilinear filtering never samples an untouched texel, and
+    saves an RGBA float EXR (R=G=B=temperature in Kelvin, A=1 where valid/dilated coverage
+    exists, 0 elsewhere) to ``<cache_root>/atlas_<digest>/atlas_temperature.exr``. The caller
+    (``blender.py``) is expected to load and pack the result as the ``HeatSim_Temperature_Atlas``
+    Blender image before wiring the shader (:mod:`thermal_shader`) or rendering.
+
+    Args:
+        history: ``{obj_name: (timesteps, K) array}`` as returned by :func:`solve_scene`
+            (called with this same ``atlas_plan``); ``K`` must match each atlas object's
+            texel count for its temperatures to be scattered (a mismatch is logged and that
+            object's tile is left to dilation/zero).
+        atlas_plan: The plan from :func:`build_atlas_plan` that produced ``history``'s
+            TEXEL-mode objects.
+        cache_root: Root directory for thermal caches (same one passed to :func:`solve_scene`).
+
+    Returns:
+        Path to the written EXR file.
+    """
+    cache_root = Path(cache_root)
+    out_dir = cache_root / f"atlas_{atlas_plan.digest or 'noatlas'}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "atlas_temperature.exr"
+
+    width, height = atlas_plan.layout.atlas_size
+    width, height = max(int(width), 1), max(int(height), 1)
+    if atlas_plan.layout.atlas_size == (0, 0) or not atlas_plan.texels:
+        temp_dilated = np.zeros((height, width), dtype=np.float64)
+        alpha = np.zeros((height, width), dtype=np.float64)
+    else:
+        temp_dilated, alpha = _scatter_atlas_arrays(history, atlas_plan)
+
+    rgba = np.zeros((height, width, 4), dtype=np.float32)
+    rgba[..., 0] = temp_dilated
+    rgba[..., 1] = temp_dilated
+    rgba[..., 2] = temp_dilated
+    rgba[..., 3] = alpha
+
+    write_image_name = "HeatSim_Temperature_Atlas_Write"
+    existing = bpy.data.images.get(write_image_name)
+    if existing is not None:
+        bpy.data.images.remove(existing)
+    image = bpy.data.images.new(write_image_name, width=width, height=height, alpha=True, float_buffer=True)
+    image.pixels.foreach_set(rgba.ravel())
+    image.filepath_raw = str(out_path)
+    image.file_format = "OPEN_EXR"
+    image.save()
+    bpy.data.images.remove(image)
+
+    _log.debug(
+        "[heatsim.adapter] write_atlas: wrote %s (%dx%d, %d object(s))",
+        out_path, width, height, len(atlas_plan.texels),
+    )
+    return out_path
 
 
 def _sample_bilinear(pixels: np.ndarray, width: int, height: int, uv: np.ndarray) -> np.ndarray:
@@ -1500,7 +1620,12 @@ def _fallback_temperature_K(obj: Any, defaults: dict, default_T: float) -> float
 
 
 def write_frame_attributes(
-    scene: Any, history: dict, timestep: int, defaults: dict, assignment: Optional[Any] = None
+    scene: Any,
+    history: dict,
+    timestep: int,
+    defaults: dict,
+    assignment: Optional[Any] = None,
+    atlas_plan: Optional[AtlasPlan] = None,
 ) -> None:
     """Write per-vertex temperatures for the chosen ``timestep`` (use ``-1`` for last).
 
@@ -1519,13 +1644,36 @@ def write_frame_attributes(
     object-level constant, so per-slot emissivity reaches the gray-body radiance
     shader. In LWIR that difference (polished metal ~0.05 vs painted ~0.9)
     dominates how the rendered frame looks.
+
+    When *atlas_plan* is supplied (TEXEL render domain), objects present in
+    ``atlas_plan.texels`` are atlas participants: their per-pixel signal comes from the
+    rendered atlas image (:func:`write_atlas`) sampled by the shader, not from a per-vertex
+    mesh attribute, so this function writes ONLY their ``heatsim_default_temperature``
+    fallback (used where the atlas mix factor is 0, e.g. margin the dilation never reached)
+    and skips the ``sim_temperature``/``emissivity`` point-attribute write entirely -- even
+    if ``history[obj.name]``'s texel count happens to equal the mesh's vertex count.  Every
+    mesh also gets an explicit ``ATLAS_COVERAGE_PROP`` OBJECT-domain float (1.0 for atlas
+    participants, 0.0 otherwise); the shader multiplies this into its atlas mix factor so a
+    non-participant object can never pick up stray atlas coverage through the default (0,0,0)
+    vector a missing ``HeatSim_Atlas_UV`` attribute produces. Non-atlas objects are written
+    exactly as when ``atlas_plan=None``.
     """
     default_T = float(defaults["initial_temperature_K"])
+    atlas_names = set(atlas_plan.texels) if atlas_plan is not None else set()
     for obj in scene.objects:
         if getattr(obj, "type", None) != "MESH":
             continue
         mesh = getattr(obj, "data", None)
         if mesh is None:
+            continue
+
+        if atlas_plan is not None:
+            obj[ATLAS_COVERAGE_PROP] = 1.0 if obj.name in atlas_names else 0.0
+
+        if obj.name in atlas_names:
+            # TEXEL: this object's field lives in the atlas image, not on its mesh --
+            # only the fallback (used wherever the atlas mix factor is 0) is written.
+            obj["heatsim_default_temperature"] = _fallback_temperature_K(obj, defaults, default_T)
             continue
 
         hist = history.get(obj.name)

@@ -464,6 +464,9 @@ class BlenderService(rpyc.Service):
         self._thermal_animated_frames: list[int] | None = None
         self._thermal_animated_defaults: dict[str, Any] | None = None
         self._thermal_assignment: Any | None = None
+        # TEXEL render domain: the AtlasPlan from the most recent exposed_prepare_thermal
+        # call (None in VERTEX mode, or if TEXEL mode found nothing atlas-eligible).
+        self._thermal_atlas_plan: Any | None = None
 
     def _clear_cached_properties(self) -> None:
         # Based on: https://stackoverflow.com/a/71579485
@@ -511,6 +514,7 @@ class BlenderService(rpyc.Service):
         self._thermal_animated_frames = None
         self._thermal_animated_defaults = None
         self._thermal_assignment = None
+        self._thermal_atlas_plan = None
 
     def register_output_type(
         self,
@@ -1581,7 +1585,12 @@ class BlenderService(rpyc.Service):
         laplacian_backend: Literal["ROBUST", "IGL"],
         device: Literal["cuda", "cpu"],
         assignments: str | None = None,
-    ) -> dict:
+        render_domain: Literal["VERTEX", "TEXEL"] = "VERTEX",
+        atlas_texel_density: float = 1500.0,
+        atlas_tile_min: int = 16,
+        atlas_tile_max: int = 512,
+        atlas_texel_soft_max: int = 500_000,
+    ) -> tuple[dict, Any, Path]:
         """Shared FEM-solve core used by :meth:`exposed_prepare_thermal` and
         :meth:`exposed_heatsim_solve`.
 
@@ -1591,8 +1600,17 @@ class BlenderService(rpyc.Service):
         ``adapter.solve_scene``.  Both callers produce identical cache keys
         because they share this single code path.
 
+        When ``render_domain="TEXEL"``, builds an ``adapter.AtlasPlan`` (``adapter.
+        build_atlas_plan``) from the 4 ``atlas_*`` knobs BEFORE solving and threads it
+        through to ``adapter.solve_scene``, which folds the plan's effective density/tile
+        bounds/layout digest into the solve cache key (Task 2's existing ``"atlas"`` key
+        field). ``render_domain="VERTEX"`` (the default) never builds a plan, so the solve
+        cache key and ``adapter.solve_scene``/``adapter._combine`` code path are exactly
+        what they were before the atlas existed.
+
         Returns:
-            dict: Per-object temperature history as returned by ``adapter.solve_scene``.
+            tuple[dict, Any, Path]: ``(history, atlas_plan, cache_root)`` -- ``atlas_plan``
+            is ``None`` in VERTEX mode (or when TEXEL mode found nothing eligible).
         """
         from visionsim.simulate.heatsim import adapter
 
@@ -1611,9 +1629,48 @@ class BlenderService(rpyc.Service):
             assignments=assignments,
         )
         self._thermal_assignment = assignment
-        return adapter.solve_scene(
-            self.scene, defaults=defaults, solver_cfg=solver_cfg, cache_root=cache_root, assignment=assignment
+
+        atlas_plan = None
+        if render_domain == "TEXEL":
+            sim_objects = adapter.gather_meshes(self.scene)
+            atlas_cfg = {
+                "atlas_texel_density": atlas_texel_density,
+                "atlas_tile_min": atlas_tile_min,
+                "atlas_tile_max": atlas_tile_max,
+                "atlas_texel_soft_max": atlas_texel_soft_max,
+            }
+            atlas_plan = adapter.build_atlas_plan(self.scene, sim_objects, atlas_cfg)
+
+        history = adapter.solve_scene(
+            self.scene,
+            defaults=defaults,
+            solver_cfg=solver_cfg,
+            cache_root=cache_root,
+            assignment=assignment,
+            atlas_plan=atlas_plan,
         )
+        return history, atlas_plan, cache_root
+
+    def _thermal_load_pack_atlas_image(self, atlas_path: Path) -> None:
+        """Load the EXR :func:`adapter.write_atlas` wrote and (re)register it as the
+        ``HeatSim_Temperature_Atlas`` Blender image, packed so the shader (built right
+        after this call, by ``thermal_shader.setup_temperature_aov``, and later at render
+        time by ``thermal_shader.enter_thermal_scene``) can find it by name -- and so it
+        keeps working even if the source EXR under the ``.heatsim`` cache directory later
+        moves or is cleaned up.
+        """
+        from visionsim.simulate.heatsim.constants import ATLAS_IMAGE_NAME
+
+        existing = bpy.data.images.get(ATLAS_IMAGE_NAME)
+        if existing is not None:
+            bpy.data.images.remove(existing)
+        image = bpy.data.images.load(str(atlas_path))
+        image.name = ATLAS_IMAGE_NAME
+        try:
+            image.colorspace_settings.name = "Non-Color"
+        except Exception:  # pragma: no cover - defensive, mirrors irradiance.py's style
+            pass
+        image.pack()
 
     @require_initialized_service
     def exposed_prepare_thermal(
@@ -1631,6 +1688,11 @@ class BlenderService(rpyc.Service):
         domain: Literal["POINTS", "MESH"] = "POINTS",
         laplacian_backend: Literal["ROBUST", "IGL"] = "ROBUST",
         device: Literal["cuda", "cpu"] = "cuda",
+        render_domain: Literal["VERTEX", "TEXEL"] = "VERTEX",
+        atlas_texel_density: float = 1500.0,
+        atlas_tile_min: int = 16,
+        atlas_tile_max: int = 512,
+        atlas_texel_soft_max: int = 500_000,
         radiance_scale: float = 1.0,
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[16, 32] = 32,
@@ -1657,7 +1719,14 @@ class BlenderService(rpyc.Service):
             initial render is correct; subsequent frames are written by :meth:`exposed_render_frame`'s per-frame
             hook. Requesting ``animated`` with ``domain="MESH"`` logs a warning and falls back to the static solve.
             The full ``ThermalConfig`` field set is accepted so a single ``**asdict(config.thermal)`` dispatch can
-            drive this method; the output-only fields are ignored.
+            drive this method; the output-only fields are ignored. When ``render_domain="TEXEL"``, atlas-eligible
+            objects (see ``atlas_texel_density``) are additionally solved at texel resolution and their final
+            temperatures are written to an EXR atlas image (``adapter.write_atlas``), loaded/packed as the
+            ``HeatSim_Temperature_Atlas`` Blender image before the AOV is registered so the shader can sample it;
+            those objects get only the OBJECT-level fallback temperature written to their mesh (their per-pixel
+            signal comes from the atlas at render time), not a per-vertex ``sim_temperature`` attribute. Requesting
+            ``animated`` with ``render_domain="TEXEL"`` logs a warning and falls back to ``render_domain="VERTEX"``
+            for that solve (the atlas is a static-solve-only feature; M2/TEXEL is out of scope).
 
         Args:
             radiance (bool, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
@@ -1679,6 +1748,15 @@ class BlenderService(rpyc.Service):
             laplacian_backend (str, optional): Laplacian backend, either ``"ROBUST"`` or ``"IGL"``. Defaults to ``"ROBUST"``.
             device (str, optional): Torch device for the solve, either ``"cuda"`` or ``"cpu"``; falls back to ``"cpu"``
                 if cuda is unavailable. Defaults to ``"cuda"``.
+            render_domain (str, optional): Where solved temperatures live for rendering: ``"VERTEX"`` (per-vertex,
+                byte-identical to before the atlas existed) or ``"TEXEL"`` (a shared texture atlas, sampled per-pixel
+                by the shader). Defaults to ``"VERTEX"``.
+            atlas_texel_density (float, optional): Target texels/m^2 for atlas-eligible objects (TEXEL mode only).
+                Defaults to 1500.0.
+            atlas_tile_min (int, optional): Minimum atlas tile side, in texels (TEXEL mode only). Defaults to 16.
+            atlas_tile_max (int, optional): Maximum atlas tile side, in texels (TEXEL mode only). Defaults to 512.
+            atlas_texel_soft_max (int, optional): Soft ceiling on total atlas texels + retained vertices (TEXEL mode
+                only); exceeding it rescales the effective density down uniformly and warns. Defaults to 500000.
             radiance_scale (float, optional): Accepted for uniform thermal-config dispatch; not used by this method
                 (consumed by ``include_thermal`` / the radiance render). Defaults to 1.0.
             exr_codec (str, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
@@ -1703,6 +1781,7 @@ class BlenderService(rpyc.Service):
         self._thermal_animated_history = None
         self._thermal_animated_frames = None
         self._thermal_animated_defaults = None
+        self._thermal_atlas_plan = None
 
         if animated and domain == "MESH":
             self.log.warning(
@@ -1710,6 +1789,13 @@ class BlenderService(rpyc.Service):
                 "to the static solve for this scene."
             )
             animated = False
+
+        if animated and render_domain == "TEXEL":
+            self.log.warning(
+                "thermal: the texel atlas is a static-solve-only feature (M2/animated + TEXEL "
+                "is out of scope); falling back to render_domain='VERTEX' for this solve."
+            )
+            render_domain = "VERTEX"
 
         if animated:
             defaults, solver_cfg, cache_root, assignment = self._thermal_config(
@@ -1761,7 +1847,7 @@ class BlenderService(rpyc.Service):
                 self._thermal_write_frame(frames[0])
             return
 
-        history = self._thermal_solve(
+        history, atlas_plan, cache_root = self._thermal_solve(
             initial_temperature_K=initial_temperature_K,
             thermal_diffusivity_mm2_s=thermal_diffusivity_mm2_s,
             density_kg_m3=density_kg_m3,
@@ -1774,7 +1860,13 @@ class BlenderService(rpyc.Service):
             laplacian_backend=laplacian_backend,
             device=device,
             assignments=assignments,
+            render_domain=render_domain,
+            atlas_texel_density=atlas_texel_density,
+            atlas_tile_min=atlas_tile_min,
+            atlas_tile_max=atlas_tile_max,
+            atlas_texel_soft_max=atlas_texel_soft_max,
         )
+        self._thermal_atlas_plan = atlas_plan
         # Pass the FULL global material defaults: post-I1 ``resolve_material`` reads
         # these as the fallback for any per-object property that was not explicitly
         # set (e.g. emissivity), so a partial dict would KeyError on unset meshes.
@@ -1790,11 +1882,19 @@ class BlenderService(rpyc.Service):
                 "emissivity": emissivity,
             },
             assignment=self._thermal_assignment,
+            atlas_plan=atlas_plan,
         )
         # Global temperature range for the preview colormap, spanning the solved
-        # scene's actual data instead of a fixed band. Stashed on the service so
+        # scene's actual data instead of a fixed band -- already pools TEXEL objects'
+        # texel temperatures the same way as VERTEX objects' vertex temperatures, since
+        # `history` doesn't distinguish the two. Stashed on the service so
         # ``include_thermal`` (a separate call on the same instance) can read it.
         self._thermal_temp_range = adapter.global_temperature_range(history, initial_temperature_K)
+
+        if atlas_plan is not None and atlas_plan.texels:
+            atlas_path = adapter.write_atlas(history, atlas_plan, cache_root)
+            self._thermal_load_pack_atlas_image(atlas_path)
+
         thermal_shader.stamp_default_temperatures(self.scene, default_K=initial_temperature_K)
         thermal_shader.setup_temperature_aov(self.scene, self.view_layer)
 
@@ -1841,6 +1941,11 @@ class BlenderService(rpyc.Service):
         domain: Literal["POINTS", "MESH"] = "POINTS",
         laplacian_backend: Literal["ROBUST", "IGL"] = "ROBUST",
         device: Literal["cuda", "cpu"] = "cuda",
+        render_domain: Literal["VERTEX", "TEXEL"] = "VERTEX",
+        atlas_texel_density: float = 1500.0,
+        atlas_tile_min: int = 16,
+        atlas_tile_max: int = 512,
+        atlas_texel_soft_max: int = 500_000,
         radiance_scale: float = 1.0,
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[16, 32] = 32,
@@ -1859,7 +1964,9 @@ class BlenderService(rpyc.Service):
         stamp default temperatures, or register the ``temperature`` AOV. It exists for the optional standalone
         solve command, letting an expensive solve be primed ahead of rendering. The full ``ThermalConfig`` field set
         is accepted so a single ``**asdict(config.thermal)`` dispatch can drive this method; the output-only fields
-        are ignored.
+        are ignored. When ``render_domain="TEXEL"``, this also primes the atlas-eligible objects' texel solve (via
+        the same cache key ``prepare_thermal`` would use), but does NOT write the atlas EXR image -- that happens
+        in ``prepare_thermal``, which needs the loaded/packed image to wire the shader.
 
         Note:
             The ``animated``/``substeps_per_frame``/``frame_start``/``frame_end``/``every_n_frames`` fields (M2) are
@@ -1886,6 +1993,15 @@ class BlenderService(rpyc.Service):
             laplacian_backend (str, optional): Laplacian backend, either ``"ROBUST"`` or ``"IGL"``. Defaults to ``"ROBUST"``.
             device (str, optional): Torch device for the solve, either ``"cuda"`` or ``"cpu"``; falls back to ``"cpu"``
                 if cuda is unavailable. Defaults to ``"cuda"``.
+            render_domain (str, optional): Where solved temperatures live for rendering: ``"VERTEX"`` (per-vertex,
+                byte-identical to before the atlas existed) or ``"TEXEL"`` (a shared texture atlas, sampled per-pixel
+                by the shader). Defaults to ``"VERTEX"``.
+            atlas_texel_density (float, optional): Target texels/m^2 for atlas-eligible objects (TEXEL mode only).
+                Defaults to 1500.0.
+            atlas_tile_min (int, optional): Minimum atlas tile side, in texels (TEXEL mode only). Defaults to 16.
+            atlas_tile_max (int, optional): Maximum atlas tile side, in texels (TEXEL mode only). Defaults to 512.
+            atlas_texel_soft_max (int, optional): Soft ceiling on total atlas texels + retained vertices (TEXEL mode
+                only); exceeding it rescales the effective density down uniformly and warns. Defaults to 500000.
             radiance_scale (float, optional): Accepted for uniform thermal-config dispatch; not used by this method
                 (consumed by ``include_thermal`` / the radiance render). Defaults to 1.0.
             exr_codec (str, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
@@ -1919,6 +2035,11 @@ class BlenderService(rpyc.Service):
             laplacian_backend=laplacian_backend,
             device=device,
             assignments=assignments,
+            render_domain=render_domain,
+            atlas_texel_density=atlas_texel_density,
+            atlas_tile_min=atlas_tile_min,
+            atlas_tile_max=atlas_tile_max,
+            atlas_texel_soft_max=atlas_texel_soft_max,
         )
 
     @require_initialized_service
@@ -1937,6 +2058,11 @@ class BlenderService(rpyc.Service):
         domain: Literal["POINTS", "MESH"] = "POINTS",
         laplacian_backend: Literal["ROBUST", "IGL"] = "ROBUST",
         device: Literal["cuda", "cpu"] = "cuda",
+        render_domain: Literal["VERTEX", "TEXEL"] = "VERTEX",
+        atlas_texel_density: float = 1500.0,
+        atlas_tile_min: int = 16,
+        atlas_tile_max: int = 512,
+        atlas_texel_soft_max: int = 500_000,
         radiance_scale: float = 1.0,
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[16, 32] = 32,
@@ -1956,9 +2082,10 @@ class BlenderService(rpyc.Service):
         :meth:`render_current_frame <visionsim.simulate.blender.BlenderService.exposed_render_current_frame>`).
 
         Note:
-            This must be called after ``prepare_thermal``, which registers the ``temperature`` AOV and exposes the
-            matching render-layer output socket. The solver and material parameters
-            (``initial_temperature_K`` through ``device``, ``assignments``, and the ``animated``/
+            This must be called after ``prepare_thermal``, which registers the ``temperature`` AOV (and, in TEXEL
+            mode, loads/packs the ``HeatSim_Temperature_Atlas`` image the shader samples) and exposes the matching
+            render-layer output socket. The solver and material parameters (``initial_temperature_K`` through
+            ``device``, the ``render_domain``/``atlas_*`` fields, ``assignments``, and the ``animated``/
             ``substeps_per_frame``/``frame_start``/``frame_end``/``every_n_frames`` M2 fields) are accepted only to
             mirror ``ThermalConfig`` and are consumed by ``prepare_thermal``; ``include_thermal`` itself ignores them.
             For animated scenes, the per-frame field update happens later, in
@@ -1992,6 +2119,17 @@ class BlenderService(rpyc.Service):
                 ignored here. Laplacian backend, either ``"ROBUST"`` or ``"IGL"``. Defaults to ``"ROBUST"``.
             device (str, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored here.
                 Torch device, either ``"cuda"`` or ``"cpu"``. Defaults to ``"cuda"``.
+            render_domain (str, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
+                here. Where solved temperatures live for rendering, ``"VERTEX"`` or ``"TEXEL"``. Defaults to
+                ``"VERTEX"``.
+            atlas_texel_density (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
+                ignored here. Target texels/m^2 for atlas-eligible objects. Defaults to 1500.0.
+            atlas_tile_min (int, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
+                here. Minimum atlas tile side, in texels. Defaults to 16.
+            atlas_tile_max (int, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
+                here. Maximum atlas tile side, in texels. Defaults to 512.
+            atlas_texel_soft_max (int, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
+                ignored here. Soft ceiling on total atlas texels + retained vertices. Defaults to 500000.
             radiance_scale (float, optional): Gray-body emission magnitude knob for the ``thermal_radiance`` render.
                 Defaults to 1.0.
             exr_codec (str, optional): Codec used to compress the temperature and radiance EXR files. Options vary

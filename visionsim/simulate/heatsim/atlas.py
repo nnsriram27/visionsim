@@ -339,9 +339,16 @@ def dilate(image: np.ndarray, valid: np.ndarray, iterations: int = 4) -> np.ndar
     Repeated for `iterations` passes; a texel filled on one pass becomes a valid source for the
     next (so the filled region grows outward by up to one texel per pass), but once a texel is
     valid - originally or newly filled - its value is never touched again.
+
+    `valid` must be 2D (``(H, W)``) regardless of whether `image` is single- or multi-channel
+    (``(H, W)`` or ``(H, W, C)``) - one validity bit per texel, not per channel.
     """
+    valid_arr = np.asarray(valid)
+    if valid_arr.ndim != 2:
+        raise ValueError(f"dilate: `valid` must be 2D (H, W), got shape {valid_arr.shape}")
+
     out = np.array(image, dtype=np.float64, copy=True)
-    valid_mask = np.array(valid, dtype=bool, copy=True)
+    valid_mask = np.array(valid_arr, dtype=bool, copy=True)
 
     for _ in range(iterations):
         if valid_mask.all():

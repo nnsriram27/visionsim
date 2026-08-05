@@ -7,7 +7,6 @@ import pytest
 
 from visionsim.simulate.heatsim import atlas
 
-
 # ---------------------------------------------------------------------------
 # surface_area_m2
 # ---------------------------------------------------------------------------
@@ -438,6 +437,16 @@ def test_dilate_preserves_valid_and_is_noop_when_all_valid():
     valid = np.ones((3, 3), dtype=bool)
     out = atlas.dilate(image, valid, iterations=4)
     assert np.array_equal(out, image)
+
+
+def test_dilate_rejects_non_2d_valid():
+    # `valid` must be a single 2D validity mask even when `image` is multi-channel
+    # (e.g. an (H, W, 3) RGB atlas) - a caller passing a (H, W, 3) `valid` by mistake
+    # must get a clear error, not a silent shape-broadcast bug.
+    image = np.zeros((4, 4, 3), dtype=np.float64)
+    valid = np.zeros((4, 4, 3), dtype=bool)
+    with pytest.raises(ValueError):
+        atlas.dilate(image, valid, iterations=2)
 
 
 def test_dilate_zero_iterations_is_noop():

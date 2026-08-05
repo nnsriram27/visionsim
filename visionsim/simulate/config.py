@@ -190,6 +190,22 @@ class ThermalConfig:
     """Laplacian backend"""
     device: Literal["cuda", "cpu"] = "cuda"
     """Torch device for the solve; falls back to cpu if cuda is unavailable"""
+    # --- thermal atlas (texel-domain render) ---
+    render_domain: Literal["VERTEX", "TEXEL"] = "VERTEX"
+    """Where solved temperatures live for rendering: per-vertex (today's behavior, byte-identical)
+    or in a shared texture atlas sampled per-pixel by the shader (denser surfaces, no reliance on
+    mesh vertex density)."""
+    atlas_texel_density: float = 1500.0
+    """Target texels/m^2 for atlas-eligible objects (those whose native vertex density is below
+    this). Provisional default pending an in-render timing benchmark (see the design spec's
+    validation plan); tune down for large/slow scenes."""
+    atlas_tile_min: int = 16
+    """Minimum atlas tile side, in texels (per object)."""
+    atlas_tile_max: int = 512
+    """Maximum atlas tile side, in texels (per object)."""
+    atlas_texel_soft_max: int = 500_000
+    """Soft ceiling on total atlas texels + retained vertices; exceeding it rescales the
+    effective density down uniformly and warns, rather than allocating an unbounded solve."""
     # --- radiance render ---
     radiance_scale: float = 1.0
     """Gray-body emission magnitude knob for the thermal_radiance render"""

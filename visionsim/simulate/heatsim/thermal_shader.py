@@ -20,6 +20,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from visionsim.simulate.heatsim.constants import ATLAS_COVERAGE_PROP, ATLAS_IMAGE_NAME, ATLAS_UV_LAYER_NAME
+
 try:
     import bpy  # type: ignore
 except ImportError:
@@ -46,6 +48,140 @@ _KEY_LIGHT_HIDE_VIEWPORT: str = "light_hide_viewport"
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _build_temperature_source_chain(nodes: Any, links: Any, new_node: Any = None, x0: float = -800.0, y0: float = 300.0) -> Any:
+    """Build the shared temperature-source node chain: today's per-vertex
+    ``sim_temperature`` -> ``heatsim_default_temperature`` fallback chain, extended with an
+    optional texture-atlas sample mixed in by validity.
+
+    This is the single place both the gray-body radiance shader (:func:`_build_gray_body_material`)
+    and the ``temperature`` AOV (:func:`_append_temperature_aov_nodes`) read ``T_effective``
+    from, per the design spec's "extend at the source" requirement -- both consumers benefit
+    from the atlas without duplicating the mix logic.
+
+    Vertex-path chain (unchanged from before the atlas existed)::
+
+        T_vertex = default_T + (sim_temperature > 1) * (sim_temperature - default_T)
+
+    Atlas extension::
+
+        UVMap("HeatSim_Atlas_UV") -> ImageTexture(HeatSim_Temperature_Atlas, Non-Color,
+            Linear, CLIP) -> SeparateColor.Red = atlas temperature (Kelvin)
+        gate = ImageTexture.Alpha * Attribute(OBJECT, ATLAS_COVERAGE_PROP).Fac
+        T_effective = Mix(Factor=gate, A=T_vertex, B=atlas temperature)
+
+    ``gate`` is an explicit product of two independent zero-by-default signals: the atlas's
+    own per-texel validity (its alpha channel) AND an OBJECT-domain custom property this
+    module's callers stamp 1.0/0.0 on atlas-participant/non-participant meshes
+    (``adapter.write_frame_attributes``). Multiplying both in is deliberate belt-and-suspenders:
+    an object with no ``HeatSim_Atlas_UV`` UV layer at all makes the Attribute node fall back to
+    its type default ``(0, 0, 0)``, which samples the atlas image's origin texel -- if that
+    happened to be valid (alpha=1, real coverage for some OTHER object's tile), gating on alpha
+    alone would leak that neighbour's temperature onto this unrelated object. Gating on the
+    object-level property too keeps the mix factor exactly 0 for any non-participant regardless
+    of what pixel (0, 0) contains, and it is exactly 0 for every mesh whenever ``render_domain``
+    is ``"VERTEX"`` (the atlas is never built, so the property is never stamped and defaults to
+    0), which is what keeps that mode byte-identical to before the atlas existed.
+
+    Args:
+        nodes: The material node tree's ``.nodes`` collection.
+        links: The material node tree's ``.links`` collection.
+        new_node: Node-creation callable (``nodes.new`` by default); callers that need to
+            track newly-added nodes for rollback (see :func:`_append_temperature_aov_nodes`)
+            pass their own wrapper.
+        x0: X location of the leftmost (vertex-path) nodes.
+        y0: Y location of the vertex-path attribute nodes; the atlas extension is laid out
+            below it (more negative Y) so the two chains don't visually overlap.
+
+    Returns:
+        The output socket (float ``Value``) carrying the final, per-pixel ``T_effective``.
+    """
+    _new = new_node or nodes.new
+
+    # -- Per-vertex temperature (zero when attribute absent) --------------------
+    temp_attr = _new("ShaderNodeAttribute")
+    temp_attr.attribute_name = "sim_temperature"
+    temp_attr.attribute_type = "GEOMETRY"
+    temp_attr.location = (x0, y0)
+
+    # -- Per-object fallback temperature (stamped by stamp_default_temperatures) -
+    default_temp_attr = _new("ShaderNodeAttribute")
+    default_temp_attr.attribute_name = "heatsim_default_temperature"
+    default_temp_attr.attribute_type = "OBJECT"
+    default_temp_attr.location = (x0, y0 + 200.0)
+
+    # is_valid = sim_temperature > 1.0  (a real physical Kelvin value)
+    temp_is_valid = _new("ShaderNodeMath")
+    temp_is_valid.operation = "GREATER_THAN"
+    temp_is_valid.location = (x0 + 200.0, y0 + 100.0)
+    temp_is_valid.inputs[1].default_value = 1.0
+    links.new(temp_attr.outputs["Fac"], temp_is_valid.inputs[0])
+
+    # delta = sim_temperature - default_T
+    temp_delta = _new("ShaderNodeMath")
+    temp_delta.operation = "SUBTRACT"
+    temp_delta.location = (x0 + 200.0, y0 - 40.0)
+    links.new(temp_attr.outputs["Fac"], temp_delta.inputs[0])
+    links.new(default_temp_attr.outputs["Fac"], temp_delta.inputs[1])
+
+    # scaled = is_valid × delta  (zero when the per-vertex attr is absent)
+    temp_scaled = _new("ShaderNodeMath")
+    temp_scaled.operation = "MULTIPLY"
+    temp_scaled.location = (x0 + 360.0, y0 + 30.0)
+    links.new(temp_is_valid.outputs["Value"], temp_scaled.inputs[0])
+    links.new(temp_delta.outputs["Value"], temp_scaled.inputs[1])
+
+    # T_vertex = default_T + scaled  (= sim_temperature when valid, else default_T)
+    temp_vertex = _new("ShaderNodeMath")
+    temp_vertex.operation = "ADD"
+    temp_vertex.location = (x0 + 520.0, y0 + 130.0)
+    links.new(default_temp_attr.outputs["Fac"], temp_vertex.inputs[0])
+    links.new(temp_scaled.outputs["Value"], temp_vertex.inputs[1])
+
+    # -- Atlas extension: UV -> Image Texture -> (Red, Alpha) --------------------
+    atlas_uv_attr = _new("ShaderNodeAttribute")
+    atlas_uv_attr.attribute_name = ATLAS_UV_LAYER_NAME
+    atlas_uv_attr.attribute_type = "GEOMETRY"
+    atlas_uv_attr.location = (x0, y0 - 260.0)
+
+    atlas_tex = _new("ShaderNodeTexImage")
+    atlas_tex.image = bpy.data.images.get(ATLAS_IMAGE_NAME) if bpy is not None else None
+    atlas_tex.interpolation = "Linear"
+    atlas_tex.extension = "CLIP"
+    if atlas_tex.image is not None:
+        try:
+            atlas_tex.image.colorspace_settings.name = "Non-Color"
+        except Exception:  # pragma: no cover - defensive, mirrors irradiance.py's style
+            pass
+    atlas_tex.location = (x0 + 200.0, y0 - 260.0)
+    links.new(atlas_uv_attr.outputs["Vector"], atlas_tex.inputs["Vector"])
+
+    atlas_red = _new("ShaderNodeSeparateColor")
+    atlas_red.location = (x0 + 420.0, y0 - 200.0)
+    links.new(atlas_tex.outputs["Color"], atlas_red.inputs["Color"])
+
+    # gate = atlas alpha (this texel's own validity) × object-level atlas-participant flag
+    atlas_gate_attr = _new("ShaderNodeAttribute")
+    atlas_gate_attr.attribute_name = ATLAS_COVERAGE_PROP
+    atlas_gate_attr.attribute_type = "OBJECT"
+    atlas_gate_attr.location = (x0 + 200.0, y0 - 420.0)
+
+    atlas_gate = _new("ShaderNodeMath")
+    atlas_gate.operation = "MULTIPLY"
+    atlas_gate.location = (x0 + 420.0, y0 - 380.0)
+    links.new(atlas_tex.outputs["Alpha"], atlas_gate.inputs[0])
+    links.new(atlas_gate_attr.outputs["Fac"], atlas_gate.inputs[1])
+
+    # T_effective = Mix(Factor=gate, A=T_vertex, B=atlas temperature)
+    mix = _new("ShaderNodeMix")
+    mix.data_type = "FLOAT"
+    mix.location = (x0 + 680.0, y0 - 100.0)
+    links.new(atlas_gate.outputs["Value"], mix.inputs["Factor"])
+    links.new(temp_vertex.outputs["Value"], mix.inputs["A"])
+    links.new(atlas_red.outputs["Red"], mix.inputs["B"])
+
+    return mix.outputs["Result"]
 
 
 def _build_gray_body_material(radiance_scale: float) -> Any:
@@ -79,52 +215,15 @@ def _build_gray_body_material(radiance_scale: float) -> Any:
     links = mat.node_tree.links
     nodes.clear()
 
-    # -- Per-vertex temperature (zero when attribute absent) --------------------
-    temp_attr = nodes.new("ShaderNodeAttribute")
-    temp_attr.attribute_name = "sim_temperature"
-    temp_attr.attribute_type = "GEOMETRY"
-    temp_attr.location = (-800.0, 300.0)
-
-    # -- Per-object fallback temperature (stamped by stamp_default_temperatures) -
-    default_temp_attr = nodes.new("ShaderNodeAttribute")
-    default_temp_attr.attribute_name = "heatsim_default_temperature"
-    default_temp_attr.attribute_type = "OBJECT"
-    default_temp_attr.location = (-800.0, 500.0)
-
-    # is_valid = sim_temperature > 1.0  (a real physical Kelvin value)
-    temp_is_valid = nodes.new("ShaderNodeMath")
-    temp_is_valid.operation = "GREATER_THAN"
-    temp_is_valid.location = (-600.0, 400.0)
-    temp_is_valid.inputs[1].default_value = 1.0
-    links.new(temp_attr.outputs["Fac"], temp_is_valid.inputs[0])
-
-    # delta = sim_temperature - default_T
-    temp_delta = nodes.new("ShaderNodeMath")
-    temp_delta.operation = "SUBTRACT"
-    temp_delta.location = (-600.0, 260.0)
-    links.new(temp_attr.outputs["Fac"], temp_delta.inputs[0])
-    links.new(default_temp_attr.outputs["Fac"], temp_delta.inputs[1])
-
-    # scaled = is_valid × delta  (zero when the per-vertex attr is absent)
-    temp_scaled = nodes.new("ShaderNodeMath")
-    temp_scaled.operation = "MULTIPLY"
-    temp_scaled.location = (-440.0, 330.0)
-    links.new(temp_is_valid.outputs["Value"], temp_scaled.inputs[0])
-    links.new(temp_delta.outputs["Value"], temp_scaled.inputs[1])
-
-    # T_effective = default_T + scaled  (= sim_temperature when valid, else default_T)
-    temp_effective = nodes.new("ShaderNodeMath")
-    temp_effective.operation = "ADD"
-    temp_effective.location = (-280.0, 430.0)
-    links.new(default_temp_attr.outputs["Fac"], temp_effective.inputs[0])
-    links.new(temp_scaled.outputs["Value"], temp_effective.inputs[1])
+    # -- Temperature source: vertex path + atlas mix (see _build_temperature_source_chain) --
+    temp_effective_socket = _build_temperature_source_chain(nodes, links, x0=-800.0, y0=300.0)
 
     # -- Stefan-Boltzmann T⁴ chain ---------------------------------------------
     temp_pow4 = nodes.new("ShaderNodeMath")
     temp_pow4.operation = "POWER"
     temp_pow4.location = (-100.0, 430.0)
     temp_pow4.inputs[1].default_value = 4.0
-    links.new(temp_effective.outputs["Value"], temp_pow4.inputs[0])
+    links.new(temp_effective_socket, temp_pow4.inputs[0])
 
     sigma_mul = nodes.new("ShaderNodeMath")
     sigma_mul.operation = "MULTIPLY"
@@ -198,45 +297,8 @@ def _append_temperature_aov_nodes(mat: Any, aov_name: str) -> None:
         return node
 
     try:
-        # -- per-vertex temperature (0 when the attribute is absent) ------------
-        temp_attr = _new("ShaderNodeAttribute")
-        temp_attr.attribute_name = "sim_temperature"
-        temp_attr.attribute_type = "GEOMETRY"
-        temp_attr.location = (-600.0, -400.0)
-
-        # -- per-object fallback temperature (stamp_default_temperatures) -------
-        default_temp_attr = _new("ShaderNodeAttribute")
-        default_temp_attr.attribute_name = "heatsim_default_temperature"
-        default_temp_attr.attribute_type = "OBJECT"
-        default_temp_attr.location = (-600.0, -560.0)
-
-        # is_valid = sim_temperature > 1.0
-        temp_is_valid = _new("ShaderNodeMath")
-        temp_is_valid.operation = "GREATER_THAN"
-        temp_is_valid.location = (-420.0, -360.0)
-        temp_is_valid.inputs[1].default_value = 1.0
-        links.new(temp_attr.outputs["Fac"], temp_is_valid.inputs[0])
-
-        # delta = sim_temperature - default_T
-        temp_delta = _new("ShaderNodeMath")
-        temp_delta.operation = "SUBTRACT"
-        temp_delta.location = (-420.0, -520.0)
-        links.new(temp_attr.outputs["Fac"], temp_delta.inputs[0])
-        links.new(default_temp_attr.outputs["Fac"], temp_delta.inputs[1])
-
-        # scaled = is_valid * delta  (zero when sim_temperature is absent)
-        temp_scaled = _new("ShaderNodeMath")
-        temp_scaled.operation = "MULTIPLY"
-        temp_scaled.location = (-240.0, -440.0)
-        links.new(temp_is_valid.outputs["Value"], temp_scaled.inputs[0])
-        links.new(temp_delta.outputs["Value"], temp_scaled.inputs[1])
-
-        # T_effective = default_T + scaled
-        temp_effective = _new("ShaderNodeMath")
-        temp_effective.operation = "ADD"
-        temp_effective.location = (-60.0, -400.0)
-        links.new(default_temp_attr.outputs["Fac"], temp_effective.inputs[0])
-        links.new(temp_scaled.outputs["Value"], temp_effective.inputs[1])
+        # -- Temperature source: vertex path + atlas mix (see _build_temperature_source_chain) --
+        temp_effective_socket = _build_temperature_source_chain(nodes, links, new_node=_new, x0=-600.0, y0=-400.0)
 
         aov_node = _new("ShaderNodeOutputAOV")
     except Exception as exc:
@@ -254,12 +316,12 @@ def _append_temperature_aov_nodes(mat: Any, aov_name: str) -> None:
             aov_node.aov_name = aov_name
         except Exception:
             pass
-    aov_node.location = (140.0, -400.0)
+    aov_node.location = (940.0, -400.0)
 
     sock = aov_node.inputs.get("Value") or (aov_node.inputs[0] if aov_node.inputs else None)
     if sock is not None:
         try:
-            links.new(temp_effective.outputs["Value"], sock)
+            links.new(temp_effective_socket, sock)
         except Exception as exc:
             _log.debug("Could not link AOV socket on %r: %s", mat.name, exc)
 

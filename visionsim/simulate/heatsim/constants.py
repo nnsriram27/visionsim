@@ -7,6 +7,16 @@ IRRADIANCE_LAYER_NAME = "HeatSim_Irradiance"
 ALBEDO_LAYER_NAME = "HeatSim_Albedo"
 BAKE_UV_LAYER_NAME = "HeatSim_Bake_UV"
 ATLAS_UV_LAYER_NAME = "HeatSim_Atlas_UV"
+# The render-time atlas image (adapter.write_atlas writes the EXR; blender.py loads +
+# packs it under this datablock name; thermal_shader.py's temperature-source chain
+# samples it by this name).
+ATLAS_IMAGE_NAME = "HeatSim_Temperature_Atlas"
+# OBJECT-domain custom property (float 0.0/1.0): explicitly gates the shader's atlas
+# mix factor to 0 for any object that is not an atlas participant, independent of
+# whatever the atlas image happens to contain at the (0,0,0) UV a missing
+# HeatSim_Atlas_UV attribute defaults to. Stamped on every mesh by
+# adapter.write_frame_attributes whenever an atlas_plan is supplied.
+ATLAS_COVERAGE_PROP = "heatsim_atlas_coverage"
 
 
 CAMERA = 'Boson'
