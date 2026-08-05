@@ -108,6 +108,51 @@ print('WRITE_ATLAS_EMPTY_OK')
 
 
 # ---------------------------------------------------------------------------
+# F3: dilation must not bridge the inter-tile packing padding (pure numpy, no bpy).
+# ---------------------------------------------------------------------------
+
+
+def test_scatter_atlas_arrays_dilation_does_not_bridge_inter_tile_padding():
+    """Two adjacent tiles, solved at the edges nearest each other with different
+    temperatures. The dilation margin from each tile must not reach far enough to pull
+    its neighbour's temperature into the other tile's region (or the padding gap right
+    next to it) -- this is only true while `_ATLAS_DILATE_ITERATIONS` (grows the valid
+    region by 1 texel/pass) stays strictly less than the packing `_ATLAS_PACKING_PADDING`
+    gap between tiles."""
+    pad = adapter._ATLAS_PACKING_PADDING
+    tile_a = atlas.TileSpec("tile_a", (4, 4), (0, 0))
+    tile_b = atlas.TileSpec("tile_b", (4, 4), (4 + pad, 0))
+    atlas_size = (4 + pad + 4, 4)
+    layout = atlas.AtlasLayout(atlas_size=atlas_size, tiles={"tile_a": tile_a, "tile_b": tile_b},
+                                effective_density=500.0, rescaled=False)
+    # Solved texel at each tile's edge closest to the other tile, so any bleed shows up
+    # as fast as possible.
+    texels = {
+        "tile_a": {"xy": np.array([[3, 0]], dtype=np.int64)},
+        "tile_b": {"xy": np.array([[0, 0]], dtype=np.int64)},
+    }
+    plan = adapter.AtlasPlan(layout=layout, texels=texels, digest="bleedtest")
+    history = {"tile_a": np.array([[400.0]]), "tile_b": np.array([[300.0]])}
+
+    temp, alpha = adapter._scatter_atlas_arrays(history, plan)
+
+    b_start = 4 + pad
+    tile_b_region = temp[:, b_start : b_start + 4]
+    tile_a_region = temp[:, 0:4]
+    # The gap's near-A column may legitimately carry tile A's dilated value (and the
+    # near-B column may legitimately carry tile B's) -- that's the single-texel push-out
+    # margin working as intended. What must never happen is A's temperature reaching
+    # tile B's region or the gap column immediately adjacent to B (and symmetrically for
+    # B's temperature reaching tile A's side).
+    gap_near_b = temp[:, b_start - 1 : b_start]
+    gap_near_a = temp[:, 4:5]
+    assert not np.any(np.isclose(tile_b_region, 400.0)), tile_b_region
+    assert not np.any(np.isclose(gap_near_b, 400.0)), gap_near_b
+    assert not np.any(np.isclose(tile_a_region, 300.0)), tile_a_region
+    assert not np.any(np.isclose(gap_near_a, 300.0)), gap_near_a
+
+
+# ---------------------------------------------------------------------------
 # write_frame_attributes TEXEL behavior (no bpy needed via a minimal fake scene/mesh).
 # ---------------------------------------------------------------------------
 
@@ -132,6 +177,12 @@ class _FakeAttrs(dict):
         self[name] = _FakeAttr(self._n)
         return self[name]
 
+    def remove(self, attr):
+        for key, value in list(self.items()):
+            if value is attr:
+                del self[key]
+                return
+
 
 class _FakeMesh:
     def __init__(self, n_verts):
@@ -155,6 +206,12 @@ class _FakeObj:
 
     def __getitem__(self, key):
         return self._props[key]
+
+    def __contains__(self, key):
+        return key in self._props
+
+    def __delitem__(self, key):
+        del self._props[key]
 
 
 class _FakeScene:
@@ -214,6 +271,46 @@ def test_write_frame_attributes_vertex_mode_unaffected_by_atlas_plan_none():
 
     vals = [d.value for d in obj.data.attributes["sim_temperature"].data]
     assert vals == pytest.approx([305.0, 306.0])
+    assert "heatsim_atlas_coverage" not in obj._props
+
+
+def test_write_frame_attributes_atlas_participant_clears_stale_vertex_attrs():
+    """F1: a VERTEX->TEXEL mode switch on a long-lived service must not let a
+    pre-existing (stale) per-vertex sim_temperature/emissivity attribute bleed through
+    atlas holes -- the shader's vertex-path fallback treats sim_temperature > 1.0 as
+    valid, so a leftover attribute would win over the fresh OBJECT-level fallback."""
+    atlas_obj = _FakeObj("atlas_mesh", n_verts=3)
+    # Simulate a prior VERTEX-mode run: stale per-vertex attributes already present.
+    atlas_obj.data.attributes.new(name="sim_temperature", type="FLOAT", domain="POINT")
+    atlas_obj.data.attributes.new(name="emissivity", type="FLOAT", domain="POINT")
+    for d in atlas_obj.data.attributes["sim_temperature"].data:
+        d.value = 999.0
+
+    plan = _plan(
+        (8, 8),
+        {"atlas_mesh": atlas.TileSpec("atlas_mesh", (8, 8), (0, 0))},
+        {"atlas_mesh": {"xy": np.zeros((3, 2), dtype=np.int64)}},
+    )
+    scene = _FakeScene([atlas_obj])
+    adapter.write_frame_attributes(scene, {}, -1, _DEFAULTS, atlas_plan=plan)
+
+    assert "sim_temperature" not in atlas_obj.data.attributes
+    assert "emissivity" not in atlas_obj.data.attributes
+    assert atlas_obj["heatsim_default_temperature"] == pytest.approx(295.0)
+
+
+def test_write_frame_attributes_vertex_mode_clears_stale_atlas_coverage_gate():
+    """F4: a TEXEL->VERTEX mode switch must clear a stale heatsim_atlas_coverage=1.0
+    object property left by a prior TEXEL run -- otherwise the shader's atlas mix gate
+    (stale alpha * stale coverage) can stay open and select stale atlas texels over the
+    fresh per-vertex temperatures written this call."""
+    obj = _FakeObj("mesh", n_verts=2)
+    obj["heatsim_atlas_coverage"] = 1.0  # left over from a prior TEXEL run
+    history = {"mesh": np.array([[295.0, 295.0], [305.0, 306.0]])}
+
+    scene = _FakeScene([obj])
+    adapter.write_frame_attributes(scene, history, -1, _DEFAULTS, atlas_plan=None)
+
     assert "heatsim_atlas_coverage" not in obj._props
 
 
@@ -324,6 +421,78 @@ print('TEXEL_E2E_OK')
 """
     out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
     assert "TEXEL_E2E_OK" in out.stdout, out.stdout + "\n" + out.stderr
+
+
+def test_prepare_thermal_texel_static_branch_keeps_dirichlet_reservoir_fallback(executable, tmp_path):
+    """F2: exposed_prepare_thermal's static (non-animated) branch must stamp
+    heatsim_default_temperature (ambient) BEFORE write_frame_attributes runs, not after --
+    otherwise the stamp clobbers the Dirichlet-reservoir fallback write_frame_attributes
+    just set for a DIRICHLET_SOURCE atlas object back down to ambient."""
+    code = f"""
+import bpy
+from visionsim.simulate.heatsim import register
+register()
+
+bpy.ops.object.select_all(action='SELECT')
+bpy.ops.object.delete()
+
+bpy.ops.mesh.primitive_plane_add(size=2.0)
+plane = bpy.context.active_object
+plane.name = 'HotReservoir'
+plane.heat_simulation_enabled = True
+plane.heat_sim_material.thermal_role = 'DIRICHLET_SOURCE'
+plane.heat_sim_material.dirichlet_temperature_K = 350.0
+
+mat = bpy.data.materials.new('plane_mat')
+mat.use_nodes = True
+plane.data.materials.append(mat)
+
+bpy.ops.object.light_add(type='SUN')
+bpy.context.active_object.data.energy = 10.0
+world = bpy.context.scene.world
+world.use_nodes = True
+bg = world.node_tree.nodes.get('Background')
+bg.inputs['Strength'].default_value = 1.0
+
+blend_path = r'{tmp_path}/texel_dirichlet_test.blend'
+root_path = r'{tmp_path}'
+bpy.ops.wm.save_as_mainfile(filepath=blend_path)
+
+from visionsim.simulate.blender import BlenderService
+from visionsim.simulate.heatsim.constants import ATLAS_COVERAGE_PROP
+
+service = BlenderService()
+service.exposed_initialize(blend_path, root_path)
+
+service.exposed_prepare_thermal(
+    render_domain='TEXEL',
+    atlas_texel_density=64.0,
+    atlas_tile_min=16,
+    atlas_tile_max=64,
+    atlas_texel_soft_max=500_000,
+    domain='POINTS',
+    laplacian_backend='ROBUST',
+    device='cpu',
+    sim_time_s=0.1,
+    timestep_s=0.05,
+    initial_temperature_K=295.0,
+    thermal_diffusivity_mm2_s=0.17,
+    density_kg_m3=1330.0,
+    specific_heat_J_kgK=880.0,
+    emissivity=0.9,
+    irradiance_scale=100.0,
+)
+
+plane_obj = bpy.data.objects['HotReservoir']
+assert plane_obj[ATLAS_COVERAGE_PROP] == 1.0, 'expected this DIRICHLET_SOURCE object to be an atlas participant'
+# Must be the reservoir temperature (350K), NOT ambient (295K) -- a wrong stamp/write
+# order would have clobbered it back down to ambient.
+assert abs(plane_obj['heatsim_default_temperature'] - 350.0) < 1e-6, plane_obj['heatsim_default_temperature']
+
+print('DIRICHLET_FALLBACK_OK')
+"""
+    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
+    assert "DIRICHLET_FALLBACK_OK" in out.stdout, out.stdout + "\n" + out.stderr
 
 
 def test_global_temperature_range_includes_texels():

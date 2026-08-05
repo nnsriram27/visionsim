@@ -480,7 +480,7 @@ def build_atlas_plan(scene: Any, sim_objects: list, cfg: dict) -> AtlasPlan:
 
     layout = atlas.allocate(
         areas, density, tile_min=tile_min, tile_max=tile_max, soft_max=soft_max,
-        retained_vertex_count=retained_vertex_count,
+        retained_vertex_count=retained_vertex_count, padding=_ATLAS_PACKING_PADDING,
     )
 
     texels: Dict[str, Dict[str, np.ndarray]] = {}
@@ -547,10 +547,15 @@ def build_atlas_plan(scene: Any, sim_objects: list, cfg: dict) -> AtlasPlan:
     )
 
 
-# Push-out margin dilation, in texels. Kept <= atlas.allocate's default inter-tile
-# `padding` (2px) so a single dilate pass cannot bridge the gap and blend two
-# unrelated objects' tiles together; see the design spec's "seam bleeding" risk note.
-_ATLAS_DILATE_ITERATIONS = 2
+# Push-out margin dilation, in texels. Invariant: iterations < the packing `padding`
+# (see build_atlas_plan's atlas.allocate(..., padding=_ATLAS_PACKING_PADDING) call) --
+# each dilate pass can grow a tile's valid region by at most 1px, so iterations strictly
+# less than the inter-tile gap guarantees the dilation from one object's tile can never
+# reach into a neighbour's tile (or blend two unrelated objects' temperatures together);
+# see the design spec's "seam bleeding" risk note. 1 < 3 gives one full padding-px margin
+# of slack, belt and braces.
+_ATLAS_DILATE_ITERATIONS = 1
+_ATLAS_PACKING_PADDING = 3
 
 
 def _scatter_atlas_arrays(history: dict, atlas_plan: AtlasPlan) -> tuple[np.ndarray, np.ndarray]:
@@ -1696,8 +1701,25 @@ def write_frame_attributes(
         if obj.name in atlas_names:
             # TEXEL: this object's field lives in the atlas image, not on its mesh --
             # only the fallback (used wherever the atlas mix factor is 0) is written.
+            # Remove any stale sim_temperature/emissivity POINT attributes left by a
+            # prior VERTEX-mode run on this same mesh (long-lived RPyC service can
+            # switch modes between prepare_thermal calls): the shader's vertex path
+            # reads sim_temperature whenever it's present and > 1.0, so a leftover
+            # attribute would bleed stale per-vertex temperatures through atlas holes
+            # (mix factor 0) instead of the fresh fallback written below.
+            for attr_name in ("sim_temperature", "emissivity"):
+                if attr_name in mesh.attributes:
+                    mesh.attributes.remove(mesh.attributes[attr_name])
             obj["heatsim_default_temperature"] = _fallback_temperature_K(obj, defaults, default_T)
             continue
+
+        if atlas_plan is None and ATLAS_COVERAGE_PROP in obj:
+            # VERTEX mode: clear a stale coverage gate left by a prior TEXEL-mode run
+            # on this same object (long-lived RPyC service can switch modes between
+            # prepare_thermal calls). Otherwise the shader's atlas mix factor stays
+            # gated open by a stale alpha * stale coverage=1.0, letting a stale packed
+            # atlas image win over the fresh per-vertex sim_temperature written below.
+            del obj[ATLAS_COVERAGE_PROP]
 
         hist = history.get(obj.name)
         if hist is None:
