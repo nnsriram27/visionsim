@@ -458,7 +458,7 @@ def build_atlas_plan(scene: Any, sim_objects: list, cfg: dict) -> AtlasPlan:
     match the evaluated geometry's triangle count. Every check degrades gracefully;
     this function never raises for a per-object failure.
     """
-    density = float(cfg.get("atlas_texel_density", 50.0))
+    density = float(cfg.get("atlas_texel_density", 1500.0))  # keep in sync with ThermalConfig.atlas_texel_density
     tile_min = int(cfg.get("atlas_tile_min", 16))
     tile_max = int(cfg.get("atlas_tile_max", 512))
     soft_max = int(cfg.get("atlas_texel_soft_max", 500_000))
