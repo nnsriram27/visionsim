@@ -334,6 +334,12 @@ class _FakeScene:
 
 
 def test_cache_key_gains_atlas_digest(tmp_path, monkeypatch):
+    """Finding 1 regression: with ``atlas_plan=None`` the ``"atlas"`` key must be
+    entirely ABSENT from key_cfg -- not present with value ``None`` -- so the JSON
+    (and therefore the SHA1 cache key) is byte-identical to before the atlas feature
+    existed, per solve_scene's docstring guarantee ("reproduces today's behaviour
+    exactly, including the cache key"). Only once an AtlasPlan is actually supplied
+    does the key gain the layout-sensitive ``"atlas"`` entry."""
     captured = []
     from visionsim.simulate.heatsim import cache as cache_mod
 
@@ -357,10 +363,207 @@ def test_cache_key_gains_atlas_digest(tmp_path, monkeypatch):
     )
 
     assert len(captured) == 2
-    assert captured[0]["atlas"] is None
+    assert "atlas" not in captured[0]
     assert captured[1]["atlas"] == {
         "density": 50.0, "tile_min": 16, "tile_max": 512, "soft_max": 500_000, "layout_digest": "deadbeef",
     }
+
+
+def test_cache_key_is_byte_identical_to_pre_atlas_baseline(tmp_path, monkeypatch):
+    """Stronger form of the above: reconstruct the pre-atlas key_cfg by hand (no
+    "atlas" field at all) and assert solve_scene's atlas_plan=None key_cfg matches it
+    exactly, so an existing .heatsim cache from before the atlas feature is not busted."""
+    captured = []
+    monkeypatch.setattr(adapter, "gather_meshes", lambda scene: [])
+    monkeypatch.setattr(adapter.cache, "cache_key", lambda blend_path, key_cfg: captured.append(key_cfg) or "k")
+
+    scene = _FakeScene()
+    adapter.solve_scene(scene, defaults=_DEFAULTS, solver_cfg=_SOLVER_CFG, cache_root=tmp_path)
+
+    expected_pre_atlas_key_cfg = {
+        "solver": dict(_SOLVER_CFG),
+        "defaults": dict(_DEFAULTS),
+        "objects": [],
+        "assignments": None,
+    }
+    assert captured[0] == expected_pre_atlas_key_cfg
+
+
+# ---------------------------------------------------------------------------
+# solve_scene: atlas objects skip the per-vertex irradiance pass (Finding 2)
+# ---------------------------------------------------------------------------
+
+
+def test_solve_scene_only_computes_vertex_irradiance_for_non_atlas_objects(tmp_path, monkeypatch):
+    """_compute_irradiance must not do the expensive per-vertex albedo-bake + shadow-ray
+    work for objects the atlas plan is going to solve at texel resolution and whose
+    per-vertex result would be discarded by _combine's TEXEL branch."""
+    atlas_obj = _NS(name="atlas_obj", heat_sim_material=None)
+    vertex_obj = _NS(name="vertex_obj", heat_sim_material=None)
+
+    monkeypatch.setattr(adapter, "gather_meshes", lambda scene: [atlas_obj, vertex_obj])
+
+    vertex_call_objects: list = []
+
+    def fake_compute_irradiance(scene, sim_objects, solver_cfg, defaults):
+        vertex_call_objects.extend(sim_objects)
+        return {}
+
+    texel_calls: list = []
+
+    def fake_compute_texel_irradiance(scene, sim_objects, atlas_plan, solver_cfg, defaults):
+        texel_calls.append(list(sim_objects))
+        return {}
+
+    monkeypatch.setattr(adapter, "_compute_irradiance", fake_compute_irradiance)
+    monkeypatch.setattr(adapter, "_compute_texel_irradiance", fake_compute_texel_irradiance)
+    monkeypatch.setattr(adapter, "_combine", lambda *a, **kw: None)
+
+    atlas_plan = SimpleNamespace(
+        texels={"atlas_obj": _texel_table(3, face=np.zeros(3, dtype=np.int64), face_material_index=[0])},
+        density=50.0, tile_min=16, tile_max=512, soft_max=500_000, digest="abc123",
+    )
+
+    scene = _FakeScene()
+    adapter.solve_scene(
+        scene, defaults=_DEFAULTS, solver_cfg=_SOLVER_CFG, cache_root=tmp_path, atlas_plan=atlas_plan,
+    )
+
+    # Only the object NOT covered by the atlas plan reaches the per-vertex kernel...
+    assert vertex_call_objects == [vertex_obj]
+    # ...while the texel path still sees every sim object (it filters by atlas_plan.texels
+    # itself, and still needs to trigger the albedo bake for its own participants).
+    assert texel_calls == [[atlas_obj, vertex_obj]]
+
+
+def test_solve_scene_runs_vertex_irradiance_for_all_objects_without_an_atlas_plan(tmp_path, monkeypatch):
+    """Backward-compat gate: atlas_plan=None must not filter anything out."""
+    obj_a = _NS(name="a", heat_sim_material=None)
+    obj_b = _NS(name="b", heat_sim_material=None)
+    monkeypatch.setattr(adapter, "gather_meshes", lambda scene: [obj_a, obj_b])
+
+    vertex_call_objects: list = []
+    monkeypatch.setattr(
+        adapter, "_compute_irradiance",
+        lambda scene, sim_objects, solver_cfg, defaults: (vertex_call_objects.extend(sim_objects) or {}),
+    )
+    monkeypatch.setattr(adapter, "_combine", lambda *a, **kw: None)
+
+    scene = _FakeScene()
+    adapter.solve_scene(scene, defaults=_DEFAULTS, solver_cfg=_SOLVER_CFG, cache_root=tmp_path)
+
+    assert vertex_call_objects == [obj_a, obj_b]
+
+
+# ---------------------------------------------------------------------------
+# _compute_texel_irradiance: shared BVH build + shadow-ray count (Findings 3 & 4)
+# ---------------------------------------------------------------------------
+
+
+def test_compute_texel_irradiance_builds_bvh_once_and_threads_shadow_ray_count(executable):
+    """_compute_texel_irradiance must build the scene BVH backend exactly once per call
+    (not once per atlas-participating object -- irradiance_kernel.compute_irradiance_at_points
+    builds a full scene BVH internally whenever no backend is supplied) and must thread
+    solver_cfg['direct_kernel_soft_shadow_rays'] through to the kernel instead of relying on
+    its hardcoded default of 8. Needs real bpy (irradiance_kernel imports it unconditionally),
+    so this spies via direct module-attribute patching inside a Blender subprocess -- the same
+    pattern test_heatsim_irradiance.py's under-bpy tests use.
+    """
+    code = r"""
+import bpy, numpy as np
+from visionsim.simulate.heatsim import register, adapter, bvh_backend, irradiance_kernel
+
+register()
+bpy.ops.object.select_all(action='SELECT')
+bpy.ops.object.delete()
+
+
+def make_plane(name, x):
+    bpy.ops.mesh.primitive_plane_add(size=2.0, location=(x, 0.0, 0.0))
+    obj = bpy.context.active_object
+    obj.name = name
+    obj.heat_simulation_enabled = True
+    mat = bpy.data.materials.new(name + '_mat')
+    mat.use_nodes = True
+    obj.data.materials.append(mat)
+    return obj
+
+
+make_plane('A', 0.0)
+make_plane('B', 5.0)
+
+bpy.ops.object.light_add(type='SUN')
+bpy.context.active_object.data.energy = 10.0
+world = bpy.context.scene.world
+world.use_nodes = True
+bg = world.node_tree.nodes.get('Background')
+bg.inputs['Strength'].default_value = 1.0
+
+atlas_cfg = dict(atlas_texel_density=64.0, atlas_tile_min=16, atlas_tile_max=64, atlas_texel_soft_max=500_000)
+sim_objects = adapter.gather_meshes(bpy.context.scene)
+plan = adapter.build_atlas_plan(bpy.context.scene, sim_objects, atlas_cfg)
+assert set(plan.texels) == {'A', 'B'}, plan.texels.keys()
+
+build_calls = []
+best_available_calls = []
+orig_best_available = bvh_backend.best_available
+
+
+def counting_best_available():
+    best_available_calls.append(1)
+    backend = orig_best_available()
+    orig_build = backend.build_for_meshes
+
+    def counted(meshes):
+        build_calls.append(1)
+        return orig_build(meshes)
+    backend.build_for_meshes = counted
+    return backend
+
+
+bvh_backend.best_available = counting_best_available
+
+captured_n_samples = []
+orig_compute_at_points = irradiance_kernel.compute_irradiance_at_points
+
+
+def spy_compute_at_points(scene, positions, normals, albedo, **kwargs):
+    captured_n_samples.append(kwargs.get('n_samples_for_area'))
+    return orig_compute_at_points(scene, positions, normals, albedo, **kwargs)
+
+
+irradiance_kernel.compute_irradiance_at_points = spy_compute_at_points
+
+defaults = dict(initial_temperature_K=295.0, thermal_diffusivity_mm2_s=0.17,
+                density_kg_m3=1330.0, specific_heat_J_kgK=880.0, emissivity=0.9,
+                irradiance_scale=100.0)
+
+# 1. A custom shadow-ray count in solver_cfg must reach the kernel, and the BVH must be
+#    built exactly once even though there are 2 atlas-participating objects.
+solver_cfg_custom = dict(sim_time_s=0.1, timestep_s=0.05, domain='POINTS',
+                          laplacian_backend='ROBUST', device='cpu',
+                          direct_kernel_soft_shadow_rays=3)
+flux = adapter._compute_texel_irradiance(bpy.context.scene, sim_objects, plan, solver_cfg_custom, defaults)
+assert set(o.name for o in flux) == {'A', 'B'}, flux.keys()
+assert len(best_available_calls) == 1, best_available_calls
+assert len(build_calls) == 1, build_calls
+assert len(captured_n_samples) == 2, captured_n_samples
+assert all(n == 3 for n in captured_n_samples), captured_n_samples
+
+# 2. Omitting the knob from solver_cfg must fall back to the kernel's original hardcoded
+#    default (8), not silently pass 0/None through.
+build_calls.clear(); best_available_calls.clear(); captured_n_samples.clear()
+solver_cfg_default = dict(sim_time_s=0.1, timestep_s=0.05, domain='POINTS',
+                           laplacian_backend='ROBUST', device='cpu')
+adapter._compute_texel_irradiance(bpy.context.scene, sim_objects, plan, solver_cfg_default, defaults)
+assert len(best_available_calls) == 1, best_available_calls
+assert len(build_calls) == 1, build_calls
+assert all(n == 8 for n in captured_n_samples), captured_n_samples
+
+print('TEXEL_BVH_ONCE_AND_SHADOW_RAYS_OK')
+"""
+    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
+    assert "TEXEL_BVH_ONCE_AND_SHADOW_RAYS_OK" in out.stdout, out.stdout + "\n" + out.stderr
 
 
 # ---------------------------------------------------------------------------

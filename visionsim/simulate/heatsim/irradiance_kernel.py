@@ -560,6 +560,9 @@ def compute_irradiance_at_points(
     positions_mm: np.ndarray,
     normals: np.ndarray,
     albedo: np.ndarray,
+    *,
+    backend=None,
+    n_samples_for_area: int = 8,
 ) -> np.ndarray:
     """Direct-Kernel irradiance at arbitrary world-space points - the texel-sim entry point.
 
@@ -588,6 +591,18 @@ def compute_irradiance_at_points(
         albedo: ``(K,)`` per-point albedo in ``[0, 1]``. A shape mismatch against
             ``positions_mm`` is treated as "no albedo" (full absorption), matching
             :func:`compute_per_vertex_irradiance`'s missing-albedo fallback.
+        backend: An optional, already-built BVH backend (``bvh_backend.best_available()``
+            with ``.build_for_meshes(...)`` already called). When given, the scene-mesh
+            collection and BVH build are skipped entirely and this backend is used as-is
+            -- lets a caller that queries many point sets against the same static scene
+            (e.g. one call per atlas-participating object in a single solve) build the
+            BVH once and reuse it, instead of paying a full scene BVH rebuild per call.
+            Defaults to ``None``, which preserves today's behaviour: build a fresh backend
+            from ``scene`` on every call.
+        n_samples_for_area: Shadow-ray sample count for area lights, the same knob
+            :func:`compute_per_vertex_irradiance` reads from
+            ``settings.direct_kernel_soft_shadow_rays``. Defaults to ``8`` (that setting's
+            own default), so omitting it reproduces today's behaviour exactly.
     """
     positions_mm = np.asarray(positions_mm, dtype=np.float64).reshape(-1, 3)
     normals = np.asarray(normals, dtype=np.float64).reshape(-1, 3)
@@ -602,15 +617,15 @@ def compute_irradiance_at_points(
         o for o in scene.objects
         if getattr(o, "type", None) == "LIGHT" and not o.hide_render and o.visible_get()
     ]
-    scene_meshes = _collect_scene_meshes_world(scene)
-    backend = bvh_backend.best_available()
-    backend.build_for_meshes(scene_meshes)
+    if backend is None:
+        scene_meshes = _collect_scene_meshes_world(scene)
+        backend = bvh_backend.best_available()
+        backend.build_for_meshes(scene_meshes)
 
     sky_coeffs = _get_sky_coefficients(getattr(scene, "world", None))
     sky_has_energy = sh9_sky.coeffs_have_energy(sky_coeffs)
 
-    # Matches compute_per_vertex_irradiance's settings default (direct_kernel_soft_shadow_rays).
-    n_samples_for_area = 8
+    n_samples_for_area = max(1, int(n_samples_for_area))
     rng = np.random.default_rng(0)
 
     direct = _accumulate_light_contributions(light_objs, positions_m, normals, backend, n_samples_for_area, rng)

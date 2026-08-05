@@ -95,6 +95,27 @@ def test_material_absent_from_the_sidecar_returns_none(tmp_path):
     assert sa.entry_for("NOT PRESENT") is None
 
 
+def test_null_reason_does_not_become_the_literal_string_none(tmp_path):
+    """``spec.get("reason", "")`` would turn a JSON ``null`` into the string "None"
+    (``str(None)``); the ``or``-fallback used elsewhere in this file must be used here too."""
+    path = _write(tmp_path, {"x": {"preset": "wood", "reason": None}})
+    entry = materials.load_assignments(path).entry_for("x")
+    assert entry is not None
+    assert entry.reason == ""
+
+
+def test_null_scene_does_not_become_the_literal_string_none(tmp_path):
+    """Same ``.get(key, default)`` vs ``or``-fallback hazard for the top-level ``scene``
+    field, which reaches the solve cache key - a stray "None" there would be a silently
+    wrong (but stable-looking) cache key component."""
+    path = tmp_path / "scene.thermal.json"
+    path.write_text(json.dumps({
+        "schema_version": 1, "scene": None, "defaults": {}, "materials": {},
+    }), encoding="utf-8")
+    sa = materials.load_assignments(path)
+    assert sa.scene == path.name
+
+
 def test_unknown_preset_becomes_unassigned_and_warns(tmp_path):
     """An out-of-enum preset must never be silently guessed at - spec section 5."""
     path = _write(tmp_path, {"weird": {"preset": "unobtainium"}})
@@ -113,11 +134,15 @@ def test_dirichlet_source_keeps_an_in_band_temperature(tmp_path):
 
 @pytest.mark.parametrize("bad", [12.0, 5000.0])
 def test_out_of_band_dirichlet_temperature_is_dropped_and_warns(tmp_path, bad):
+    """An out-of-band dirichlet_K must not leave the slot pinned at ambient with role
+    still DIRICHLET_SOURCE (alpha=0, no incident flux) - that would silently turn an
+    intended heat source into a heat sink. The role degrades to FEM_PARTICIPANT too."""
     path = _write(tmp_path, {"ilum": {"preset": "glass", "role": "DIRICHLET_SOURCE", "dirichlet_K": bad}})
     with pytest.warns(UserWarning, match="dirichlet_K"):
         sa = materials.load_assignments(path)
     entry = sa.entry_for("ilum")
     assert entry is not None and entry.dirichlet_K is None
+    assert entry.role == "FEM_PARTICIPANT"
 
 
 def test_unknown_role_falls_back_to_fem_and_warns(tmp_path):

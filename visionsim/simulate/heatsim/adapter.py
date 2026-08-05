@@ -721,11 +721,24 @@ def _compute_texel_irradiance(
     Returns ``{obj: (K,) float64 W/m^2 absorbed}``, keyed the same way as
     :func:`_compute_irradiance`'s return value so both can feed the same
     ``flux_by_obj`` dict into :func:`_combine`.
+
+    Builds the scene BVH backend exactly **once** per call (not once per atlas
+    object) and reuses it across every ``compute_irradiance_at_points`` call below
+    via that function's optional ``backend`` parameter -- with N atlas objects this
+    was previously N full scene BVH rebuilds. Also threads the same
+    ``direct_kernel_soft_shadow_rays`` knob :func:`_compute_irradiance` reads from
+    ``solver_cfg`` through to the texel kernel, so both irradiance paths use the
+    same shadow-ray sample count instead of the kernel's hardcoded default.
     """
-    from visionsim.simulate.heatsim import irradiance_kernel
+    from visionsim.simulate.heatsim import bvh_backend, irradiance_kernel
 
     texture_size = int(solver_cfg.get("irradiance_texture_size", 512))
+    n_samples_for_area = int(solver_cfg.get("direct_kernel_soft_shadow_rays", 8))
     by_name = {o.name: o for o in sim_objects}
+
+    backend = bvh_backend.best_available()
+    backend.build_for_meshes(irradiance_kernel._collect_scene_meshes_world(scene))
+
     out: dict = {}
     for name, tex in atlas_plan.texels.items():
         obj = by_name.get(name)
@@ -737,7 +750,9 @@ def _compute_texel_irradiance(
         normals = np.asarray(tex["normal"], dtype=np.float64)
         uv = np.asarray(tex["uv"], dtype=np.float64)
         albedo = _texel_albedo(scene, obj, uv, texture_size)
-        flux = irradiance_kernel.compute_irradiance_at_points(scene, positions, normals, albedo)
+        flux = irradiance_kernel.compute_irradiance_at_points(
+            scene, positions, normals, albedo, backend=backend, n_samples_for_area=n_samples_for_area
+        )
         out[obj] = np.asarray(flux, dtype=np.float64).reshape(-1)
     return out
 
@@ -1248,14 +1263,20 @@ def solve_scene(
         "defaults": dict(defaults),
         "objects": sorted(o.name for o in sim_objects),
         "assignments": None if assignment is None else assignment.digest,
-        "atlas": None if atlas_plan is None else {
+    }
+    # The "atlas" key is entirely ABSENT (not present-with-value-None) when no atlas is
+    # in play, so key_cfg's JSON -- and therefore the SHA1 cache key -- is byte-identical
+    # to before the atlas feature existed. Adding an "atlas": None entry here would still
+    # change the JSON (and thus every existing .heatsim cache's key) even though nothing
+    # about the solve changed; see solve_scene's docstring guarantee below.
+    if atlas_plan is not None:
+        key_cfg["atlas"] = {
             "density": atlas_plan.density,
             "tile_min": atlas_plan.tile_min,
             "tile_max": atlas_plan.tile_max,
             "soft_max": atlas_plan.soft_max,
             "layout_digest": atlas_plan.digest,
-        },
-    }
+        }
     key = cache.cache_key(blend_path, key_cfg)
 
     cached = cache.read_temperatures(cache_root, key)
@@ -1267,7 +1288,9 @@ def solve_scene(
         cache.write_temperatures(cache_root, key, {}, {"objects": []})
         return {}
 
-    flux_by_obj = _compute_irradiance(scene, sim_objects, solver_cfg, defaults)
+    atlas_names = set(atlas_plan.texels) if atlas_plan is not None else set()
+    vertex_objects = [o for o in sim_objects if o.name not in atlas_names]
+    flux_by_obj = _compute_irradiance(scene, vertex_objects, solver_cfg, defaults)
     if atlas_plan is not None and atlas_plan.texels:
         flux_by_obj.update(_compute_texel_irradiance(scene, sim_objects, atlas_plan, solver_cfg, defaults))
     combined = _combine(sim_objects, flux_by_obj, defaults, solver_cfg, assignment=assignment, atlas_plan=atlas_plan)

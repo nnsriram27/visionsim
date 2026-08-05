@@ -216,6 +216,21 @@ def load_assignments(path: Path) -> SceneAssignment:
                 ) from exc
             if MIN_DIRICHLET_K <= value <= MAX_DIRICHLET_K:
                 dirichlet_K = value
+            elif role == "DIRICHLET_SOURCE":
+                # An out-of-band K on a DIRICHLET_SOURCE must not silently keep the role: with
+                # dirichlet_K dropped but role left as DIRICHLET_SOURCE, _slot_tables would still
+                # mark the slot dirichlet and pin it at the *ambient* fallback temperature (alpha=0,
+                # no incident flux, excluded from the radiation/convection boundary) -- an intended
+                # 5000 K source silently becomes an ambient-temperature heat SINK. Degrading the role
+                # to FEM_PARTICIPANT instead lets the slot behave as an ordinary participant, which is
+                # the closer-to-harmless failure mode for "the authored temperature was nonsense".
+                warnings.warn(
+                    f"thermal assignment {where}: dirichlet_K={value} outside "
+                    f"[{MIN_DIRICHLET_K}, {MAX_DIRICHLET_K}] K; dropping it and degrading role "
+                    "DIRICHLET_SOURCE -> FEM_PARTICIPANT (an out-of-band source pinned at ambient "
+                    "would otherwise silently act as a heat sink)", UserWarning, stacklevel=2,
+                )
+                role = "FEM_PARTICIPANT"
             else:
                 warnings.warn(f"thermal assignment {where}: dirichlet_K={value} outside "
                               f"[{MIN_DIRICHLET_K}, {MAX_DIRICHLET_K}] K; ignoring it", UserWarning, stacklevel=2)
@@ -225,11 +240,11 @@ def load_assignments(path: Path) -> SceneAssignment:
             role=role,
             dirichlet_K=dirichlet_K,
             confidence=float(spec.get("confidence", 0.0)),
-            reason=str(spec.get("reason", "")),
+            reason=str(spec.get("reason") or ""),
         )
 
     return SceneAssignment(
-        scene=str(raw.get("scene", path.name)),
+        scene=str(raw.get("scene") or path.name),
         digest=digest,
         default_preset=default_preset,
         materials=entries,

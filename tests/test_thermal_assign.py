@@ -209,11 +209,26 @@ def test_out_of_enum_preset_becomes_unassigned_and_warns():
 
 
 def test_out_of_band_dirichlet_temperature_is_dropped_and_warns():
+    """A non-emissive DIRICHLET_SOURCE with an out-of-band K must not stay pinned at
+    ambient (which would silently act as a heat sink): the role is degraded too."""
     raw = [{"material": "hob", "preset": "steel", "role": "DIRICHLET_SOURCE",
             "dirichlet_K": 5000.0, "confidence": 0.7, "reason": "stove"}]
     with pytest.warns(UserWarning, match="dirichlet_K"):
         out = thermal_assign.apply_guards(_dump([_material("hob")]), raw)
     assert out["hob"]["dirichlet_K"] is None
+    assert out["hob"]["role"] == "FEM_PARTICIPANT"
+
+
+def test_out_of_band_dirichlet_temperature_on_emissive_material_still_forced_to_source():
+    """Ground truth (the EMISSION node) still wins even after the out-of-band-K degrade:
+    the role guard drops to FEM_PARTICIPANT first, then the emission check forces it back
+    to DIRICHLET_SOURCE with DEFAULT_LAMP_K instead of the rejected out-of-band value."""
+    raw = [{"material": "ilum", "preset": "glass", "role": "DIRICHLET_SOURCE",
+            "dirichlet_K": 5000.0, "confidence": 0.7, "reason": "lamp"}]
+    with pytest.warns(UserWarning, match="dirichlet_K"):
+        out = thermal_assign.apply_guards(_dump([_material("ilum", emissive=True)]), raw)
+    assert out["ilum"]["role"] == "DIRICHLET_SOURCE"
+    assert out["ilum"]["dirichlet_K"] == pytest.approx(thermal_assign.DEFAULT_LAMP_K)
 
 
 def test_skipped_material_is_added_back_and_hallucinated_one_is_dropped():

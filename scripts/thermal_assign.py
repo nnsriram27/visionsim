@@ -301,7 +301,10 @@ def apply_guards(dump: Dict[str, Any], raw_assignments: List[Dict[str, Any]]) ->
     4. An unknown role becomes ``FEM_PARTICIPANT``.
     5. A material with an EMISSION node is **forced** to ``DIRICHLET_SOURCE`` -
        the node is ground truth and outranks the model's judgement.
-    6. A ``dirichlet_K`` outside the sane band is dropped.
+    6. A ``dirichlet_K`` outside the sane band is dropped; if the role was
+       ``DIRICHLET_SOURCE`` (and the material is not itself emissive, which would force
+       it back), the role is also degraded to ``FEM_PARTICIPANT`` -- otherwise the slot
+       would stay pinned at the ambient temperature and silently act as a heat sink.
     """
     known = set(preset_keys())
     scene_materials = {m["name"]: m for m in dump["materials"]}
@@ -331,6 +334,20 @@ def apply_guards(dump: Dict[str, Any], raw_assignments: List[Dict[str, Any]]) ->
             value = float(dirichlet_K)
             if MIN_DIRICHLET_K <= value <= MAX_DIRICHLET_K:
                 dirichlet_K = value
+            elif role == "DIRICHLET_SOURCE":
+                # Dropping the temperature but leaving role=DIRICHLET_SOURCE would pin this
+                # slot at the ambient/initial temperature (alpha=0, no incident flux) -- an
+                # intended-but-nonsense-valued heat source silently becomes an ambient heat
+                # SINK. Degrade to FEM_PARTICIPANT instead (mirrors materials.load_assignments'
+                # identical guard). The EMISSION-node check below still overrides this back to
+                # DIRICHLET_SOURCE (with DEFAULT_LAMP_K) when the node is ground truth.
+                warnings.warn(f"thermal assign: {name!r} got dirichlet_K={value} outside "
+                              f"[{MIN_DIRICHLET_K}, {MAX_DIRICHLET_K}] K; dropping it and degrading role "
+                              "DIRICHLET_SOURCE -> FEM_PARTICIPANT (an out-of-band source pinned at "
+                              "ambient would otherwise silently act as a heat sink)",
+                              UserWarning, stacklevel=2)
+                role = "FEM_PARTICIPANT"
+                dirichlet_K = None
             else:
                 warnings.warn(f"thermal assign: {name!r} got dirichlet_K={value} outside "
                               f"[{MIN_DIRICHLET_K}, {MAX_DIRICHLET_K}] K; dropping it", UserWarning, stacklevel=2)
