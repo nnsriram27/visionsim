@@ -547,15 +547,16 @@ def build_atlas_plan(scene: Any, sim_objects: list, cfg: dict) -> AtlasPlan:
     )
 
 
-# Push-out margin dilation, in texels. Invariant: iterations < the packing `padding`
-# (see build_atlas_plan's atlas.allocate(..., padding=_ATLAS_PACKING_PADDING) call) --
-# each dilate pass can grow a tile's valid region by at most 1px, so iterations strictly
-# less than the inter-tile gap guarantees the dilation from one object's tile can never
-# reach into a neighbour's tile (or blend two unrelated objects' temperatures together);
-# see the design spec's "seam bleeding" risk note. 1 < 3 gives one full padding-px margin
-# of slack, belt and braces.
+# Push-out margin dilation, in texels. Invariant: 2 * iterations <= the packing
+# `padding` (see build_atlas_plan's atlas.allocate(..., padding=_ATLAS_PACKING_PADDING)
+# call). Each dilate pass grows a tile's valid region by at most 1px, and TWO adjacent
+# tiles dilate toward each other from both sides of the gap -- so the gap must be wide
+# enough for both expansions with no meeting point, or the middle gap texels would be
+# filled with the MEAN of two unrelated objects' temperatures. 2*1 <= 3 holds with one
+# spare gap texel; see the design spec's "seam bleeding" risk note.
 _ATLAS_DILATE_ITERATIONS = 1
 _ATLAS_PACKING_PADDING = 3
+assert 2 * _ATLAS_DILATE_ITERATIONS <= _ATLAS_PACKING_PADDING, "dilation would bridge tile padding"
 
 
 def _scatter_atlas_arrays(history: dict, atlas_plan: AtlasPlan) -> tuple[np.ndarray, np.ndarray]:

@@ -150,6 +150,11 @@ def test_scatter_atlas_arrays_dilation_does_not_bridge_inter_tile_padding():
     assert not np.any(np.isclose(gap_near_b, 400.0)), gap_near_b
     assert not np.any(np.isclose(tile_a_region, 300.0)), tile_a_region
     assert not np.any(np.isclose(gap_near_a, 300.0)), gap_near_a
+    # The middle gap column must stay untouched (0.0). With 2*iterations <= padding the
+    # two tiles' push-outs can never meet; if a future bump violated that invariant, the
+    # meeting texels would hold the MEAN of both tiles (e.g. 350.0 here) - catch it.
+    gap_middle = temp[:, 5:6]
+    assert np.all(gap_middle == 0.0), gap_middle
 
 
 # ---------------------------------------------------------------------------
