@@ -297,6 +297,112 @@ def test_rasterize_degenerate_triangle_mixed_with_valid_no_nan():
     assert 0 not in out["face"].tolist()  # the degenerate triangle (face 0) claims nothing
 
 
+def test_rasterize_mirrored_uv_triangle_interpolates_correctly():
+    """Mirrored-UV island: face 0's loop_uv corners are authored CW (negative signed UV area),
+    which exercises the `area2 < 0` vertex-swap branch in rasterize_tile. Mesh vertex order in
+    `faces` stays natural/untouched (so the swap only affects the UV<->vertex pairing used for
+    barycentric interpolation, not the mesh winding used for the normal).
+
+    Mesh: same quad as `_quad_mesh` - P0=(0,0,0), P1=(size,0,0), P2=(size,size,0), P3=(0,size,0) -
+    split into faces [0,1,2] and [0,2,3], both CCW in 3D (both normals point +Z).
+
+    Face 0's UV corners are the *same three UV points* as `_quad_mesh`'s face 0 ((0,0),(1,0),(1,1))
+    but with corners 1 and 2 swapped, i.e. mirrored:
+        uv0 = (0, 0)  at vertex i0 = P0
+        uv1 = (1, 1)  at vertex i1 = P1   (P1 normally maps to (1, 0))
+        uv2 = (1, 0)  at vertex i2 = P2   (P2 normally maps to (1, 1))
+    Signed UV area = cross(uv1-uv0, uv2-uv0) = cross((1,1),(1,0)) = 1*0 - 1*1 = -1 < 0, so
+    rasterize_tile takes the `area2 < 0` branch: idx becomes (i0, i2, i1), pts becomes
+    (uv0, uv2, uv1) = ((0,0), (w,0), (w,h)) in tile-pixel space (w, h = tile size). That is the
+    *same triangle footprint* as face 0 in `_quad_mesh` (only relabeled), so coverage/no-double-
+    claim behaves exactly as in `test_rasterize_full_cover_quad` - what differs is which mesh
+    vertex gets which barycentric weight.
+
+    Hand-derived barycentric weights for a=(0,0), b=(w,0), c=(w,h), area2=w*h, texel center
+    (px, py) = (x+0.5, y+0.5):
+        w_a = h*(w-px),  w_b = h*px - w*py,  w_c = w*py
+        wa = 1 - px/w,   wb = px/w - py/h,   wc = py/h
+    and post-swap (ia, ib, ic) = (i0, i2, i1) = (P0, P2, P1), so
+        position = P0*wa + P2*wb + P1*wc = (size*px/w, size*(px/w - py/h), 0)
+    Note the y-component is *not* the naive `(y+0.5)/h*size` shortcut - it is skewed by the
+    mirrored vertex/UV pairing (it depends on px too). A regression that mishandles the swap
+    (e.g. permutes `idx` without permuting `pts` to match, or vice versa) would instead produce
+    either NaNs/garbage or the naive-linear result asserted for face 1 below; this formula is
+    specific to the correct pairing and was cross-checked against the implementation by hand.
+
+    Face 1 is untouched from `_quad_mesh` (ordinary CCW UV, no swap), so it must still interpolate
+    with the naive-linear formula - confirming the mirror on face 0 didn't leak into face 1.
+    """
+    size_mm = 80.0
+    tile = (8, 8)
+    w, h = tile
+    verts_mm = np.array(
+        [[0.0, 0.0, 0.0], [size_mm, 0.0, 0.0], [size_mm, size_mm, 0.0], [0.0, size_mm, 0.0]]
+    )
+    faces = np.array([[0, 1, 2], [0, 2, 3]])
+    loop_uv = np.array(
+        [
+            [[0.0, 0.0], [1.0, 1.0], [1.0, 0.0]],  # CW winding -> area2 < 0 swap branch (mirrored)
+            [[0.0, 0.0], [1.0, 1.0], [0.0, 1.0]],  # ordinary CCW UV, same as _quad_mesh face 1
+        ]
+    )
+
+    # Sanity-check the premise this test depends on, independent of atlas internals: face 0's
+    # loop_uv is authored CW (negative signed area) while face 1's is CCW (positive).
+    uv0, uv1, uv2 = loop_uv[0]
+    signed_area2_face0 = (uv1[0] - uv0[0]) * (uv2[1] - uv0[1]) - (uv1[1] - uv0[1]) * (uv2[0] - uv0[0])
+    assert signed_area2_face0 < 0, "fixture must exercise the area2 < 0 swap branch"
+    uv0, uv1, uv2 = loop_uv[1]
+    signed_area2_face1 = (uv1[0] - uv0[0]) * (uv2[1] - uv0[1]) - (uv1[1] - uv0[1]) * (uv2[0] - uv0[0])
+    assert signed_area2_face1 > 0, "face 1 must stay on the ordinary (no-swap) path"
+
+    out = atlas.rasterize_tile(verts_mm, faces, loop_uv, tile)
+
+    # (a) full coverage, no double-claimed texels, and both triangles actually contributed. The
+    # footprint is identical to test_rasterize_full_cover_quad's quad (see derivation above), so
+    # this should behave exactly the same regardless of the UV mirror on face 0.
+    xy_rows = list(map(tuple, out["xy"].tolist()))
+    assert len(xy_rows) == w * h
+    assert len(set(xy_rows)) == len(xy_rows)
+    assert set(out["face"].tolist()) == {0, 1}
+
+    # (c) normals: computed from `faces`' vertex order (mesh winding), not `loop_uv`, so the UV
+    # mirror on face 0 must NOT affect it. Both faces are CCW in the XY plane -> unit +Z normal.
+    assert np.allclose(out["normal"], np.array([0.0, 0.0, 1.0]), atol=1e-9)
+    assert np.allclose(np.linalg.norm(out["normal"], axis=1), 1.0, atol=1e-9)
+
+    xy = out["xy"]
+    pos = out["position_mm"]
+    face_col = out["face"]
+
+    # (b) face 0 (mirrored): every covered texel must match the skewed barycentric formula above,
+    # not the naive linear one.
+    face0_mask = face_col == 0
+    assert face0_mask.sum() > 0  # the mirrored triangle actually contributed texels
+    for x, y, p in zip(xy[face0_mask, 0], xy[face0_mask, 1], pos[face0_mask]):
+        px, py = float(x) + 0.5, float(y) + 0.5
+        expected = np.array([size_mm * px / w, size_mm * (px / w - py / h), 0.0])
+        assert p == pytest.approx(expected, abs=1e-9)
+
+    # face 1 (ordinary CCW UV): naive-linear formula, unaffected by face 0's mirror.
+    face1_mask = face_col == 1
+    assert face1_mask.sum() > 0
+    for x, y, p in zip(xy[face1_mask, 0], xy[face1_mask, 1], pos[face1_mask]):
+        expected = np.array([(x + 0.5) / w * size_mm, (y + 0.5) / h * size_mm, 0.0])
+        assert p == pytest.approx(expected, abs=1e-9)
+
+    # Explicit named probes (face 0) for diagnosability if the loop-based check above ever fails:
+    # texel (0,0): px=py=0.5 -> wa=1-0.5/8=0.9375, wb=0.5/8-0.5/8=0, wc=0.5/8=0.0625
+    #   position = P0*0.9375 + P2*0 + P1*0.0625 = (80*0.0625, 0, 0) = (5.0, 0.0, 0.0)
+    # texel (7,0): px=7.5, py=0.5 -> position_x=80*7.5/8=75.0, position_y=80*(7.5/8-0.5/8)=70.0
+    # texel (4,2): px=4.5, py=2.5 -> position_x=80*4.5/8=45.0, position_y=80*(4.5/8-2.5/8)=20.0
+    probes = {(0, 0): (5.0, 0.0, 0.0), (7, 0): (75.0, 70.0, 0.0), (4, 2): (45.0, 20.0, 0.0)}
+    for (px_i, py_i), expected in probes.items():
+        m = face0_mask & (xy[:, 0] == px_i) & (xy[:, 1] == py_i)
+        assert m.sum() == 1, f"expected exactly one covered face-0 texel at ({px_i},{py_i})"
+        assert pos[m][0] == pytest.approx(np.array(expected), abs=1e-9)
+
+
 # ---------------------------------------------------------------------------
 # dilate
 # ---------------------------------------------------------------------------
