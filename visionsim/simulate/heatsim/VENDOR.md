@@ -16,14 +16,38 @@ Source commit: `543ee81` (`543ee814488742eb6147e2296d0d29ce385f97d2`)
 | `visionsim/simulate/heatsim/sky_visibility.py` | `addon/lib/sky_visibility.py` | See below |
 | `visionsim/simulate/heatsim/bvh_backend.py` | `addon/lib/bvh_backend.py` | See below |
 | `visionsim/simulate/heatsim/temperature_io.py` | `addon/lib/temperature_io.py` | See below |
+| `visionsim/simulate/heatsim/irradiance.py` | `addon/lib/irradiance.py` | See below |
+| `visionsim/simulate/heatsim/uv_utils.py` | `addon/lib/irradiance.py` (UV helpers) | See below |
 
 ## Lint / type-check exclusions
 
-`solver.py`, `laplacian.py`, and `constants.py` are excluded from both ruff and mypy in `pyproject.toml` (mirroring the `rife/` precedent) because they are kept verbatim from upstream.
+The rule is provenance-based: a file keeps the exemption only while it stays close to
+upstream. Once we have substantially rewritten one, it is ours to maintain and gets linted
+like the rest of the codebase.
 
-`irradiance_kernel.py`, `light_models.py`, `sh9_sky.py`, `sky_visibility.py`, and `bvh_backend.py` are likewise excluded from both ruff and mypy because they are Tier-B (Blender-coupled) vendored files that import `bpy`/`mathutils` unconditionally and are only run inside Blender.
+**Excluded from ruff and mypy** (near-verbatim upstream; linting them would force edits that
+diverge from the source): `solver.py`, `laplacian.py`, `constants.py`, `light_models.py`,
+`sh9_sky.py`, `sky_visibility.py`, `bvh_backend.py`, `temperature_io.py`, `uv_utils.py`.
 
-`properties.py` is hand-written glue (NOT near-verbatim vendor); it is ruff-linted but excluded from mypy because bpy-dynamic PropertyGroup annotations cannot be type-checked outside Blender even with the host-safe try/except import pattern.
+**Linted by ruff, excluded from mypy only** (substantially modified here; mypy cannot check
+them because they import `bpy`/`mathutils` unconditionally and only run inside Blender):
+
+| File | Drift since vendoring |
+|---|---|
+| `irradiance_kernel.py` | +263 / -18 over 7 commits |
+| `irradiance.py` | +71 / -19 over 3 commits |
+
+`properties.py` is hand-written glue (NOT vendored); it is ruff-linted but excluded from mypy
+because bpy-dynamic PropertyGroup annotations cannot be type-checked outside Blender even with
+the host-safe try/except import pattern.
+
+### Original code must not accumulate in vendored files
+
+Logic that is ours rather than upstream's belongs in a non-vendored module, so the provenance
+claim above stays true and the code gets linted. Precedent: the shortwave-occluder material
+classification (`casts_shadow`, `material_is_clear`, `surface_shader_nodes`) was written here,
+briefly lived in `irradiance_kernel.py`, and now lives in `occluders.py`, which the kernel
+imports. Follow that pattern for anything new.
 
 ## Modifications applied to each file
 
@@ -93,3 +117,17 @@ Source commit: `543ee81` (`543ee814488742eb6147e2296d0d29ce385f97d2`)
 - `irradiance` — Cycles albedo bake. Used in `_bake_vertex_albedo_via_cycles()`. Explicitly called out as acceptable ("Their albedo step may call Cycles once") in the task brief — this is intentional design.
 
 Both are lazy imports (inside functions, not at module top-level) so they do not prevent the modules from being imported; they only fail at runtime when those specific code paths are exercised.
+
+### irradiance.py (from irradiance.py)
+
+1. **Provenance header** in the module docstring.
+2. **Logger added**; prints routed to `_log`.
+3. **Headless-bake robustness** (ours, not upstream): zero-geometry meshes are skipped, an
+   OBJECT-mode context is forced before selection operators, and the UV/mode restore is
+   guarded so one object's unwrap failure cannot abort a whole-scene bake.
+4. UV snapshot/restore helpers extracted to `uv_utils.py`.
+
+### uv_utils.py (from irradiance.py)
+
+1. **Provenance header** in the module docstring; UV state snapshot/restore helpers lifted
+   verbatim out of the upstream `irradiance.py` so both bake paths can share them.

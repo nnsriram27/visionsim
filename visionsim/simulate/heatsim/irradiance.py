@@ -44,7 +44,6 @@ def _ensure_uv_layer(obj):
         view_layer = bpy.context.view_layer
         prev_active = view_layer.objects.active
         prev_selection = [o for o in scene.objects if o.select_get()]
-        prev_mode = obj.mode
         try:
             bpy.ops.object.select_all(action="DESELECT")
             obj.select_set(True)
@@ -121,11 +120,9 @@ def prepare_object_bake_uv(obj: bpy.types.Object) -> None:
         pass
 
     ctx = bpy.context
-    scene = ctx.scene
     view_layer = ctx.view_layer
     prev_selection = list(getattr(ctx, "selected_objects", []) or [])
     prev_active = getattr(ctx, "active_object", None)
-    prev_mode = getattr(ctx, "mode", "OBJECT")
 
     try:
         # Establish a clean OBJECT-mode context before any selection operator.
