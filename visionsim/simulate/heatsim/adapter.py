@@ -317,8 +317,27 @@ class AtlasPlan:
     digest: str = ""
 
 
-def _atlas_digest(layout: "atlas.AtlasLayout", tile_min: int, tile_max: int, soft_max: int) -> str:
-    """Stable digest of an atlas allocation, for the solve cache key."""
+def _atlas_digest(
+    layout: "atlas.AtlasLayout",
+    tile_min: int,
+    tile_max: int,
+    soft_max: int,
+    texels: Dict[str, Dict[str, np.ndarray]],
+) -> str:
+    """Stable digest of an atlas allocation, for the solve cache key.
+
+    Must be computed from the FINISHED :class:`AtlasPlan`, not from ``atlas.allocate``'s
+    output alone: tiles are allocated for every object :func:`atlas.select_for_atlas`
+    admits, but the per-object rasterization loop in :func:`build_atlas_plan` can still
+    drop an object afterwards (UV unavailable, zero texels rasterized, evaluated mesh
+    missing the atlas UV layer). An object that is allocated a tile but never
+    contributes texels must NOT hash identically to one that fully participates - that
+    previously let a change which promoted dropped objects into the atlas leave the
+    cache key unchanged, silently reusing a stale solve. ``texels`` (``AtlasPlan.texels``)
+    is keyed only by objects that actually rasterized, so folding in each one's realized
+    texel count (sorted, for iteration-order stability) captures real participation on
+    top of the existing tile geometry.
+    """
     payload = {
         "density": round(float(layout.effective_density), 6),
         "tile_min": int(tile_min),
@@ -327,6 +346,9 @@ def _atlas_digest(layout: "atlas.AtlasLayout", tile_min: int, tile_max: int, sof
         "atlas_size": list(layout.atlas_size),
         "tiles": sorted(
             (name, list(spec.size), list(spec.offset)) for name, spec in layout.tiles.items()
+        ),
+        "texel_counts": sorted(
+            (name, int(obj_texels["xy"].shape[0])) for name, obj_texels in texels.items()
         ),
     }
     return hashlib.sha1(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
@@ -590,7 +612,7 @@ def build_atlas_plan(scene: Any, sim_objects: list, cfg: dict) -> AtlasPlan:
             "face_material_index": face_material_index,
         }
 
-    digest = _atlas_digest(layout, tile_min, tile_max, soft_max)
+    digest = _atlas_digest(layout, tile_min, tile_max, soft_max, texels)
     return AtlasPlan(
         layout=layout, texels=texels, density=layout.effective_density,
         tile_min=tile_min, tile_max=tile_max, soft_max=soft_max, digest=digest,

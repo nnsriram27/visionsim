@@ -269,18 +269,37 @@ def test_uv_failure_demotes_to_vertex_path_with_warning(monkeypatch, caplog):
     monkeypatch.setattr(adapter, "_extract_geometry", lambda obj: geoms[obj.name])
     monkeypatch.setattr(adapter, "_prepare_bake_uv", lambda obj: None)
 
+    captured = {}
+
+    def spy_write(o, tile, atlas_size, src_layer_name):
+        captured[o.name] = (tile, atlas_size)
+
+    monkeypatch.setattr(adapter, "_write_atlas_uv_layer", spy_write)
+
+    raw_uv = np.array([
+        [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+        [[0.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+    ])
+
     def fake_uv(obj, layer_name):
         if obj.name == "bad":
             return None  # simulates an unwrap that never produced a usable UV layer
-        loop_uv = np.array([
-            [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
-            [[0.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
-        ])
+        # Mirror the real _write_atlas_uv_layer -> _extract_evaluated_face_uv_and_slots
+        # round trip (as test_build_atlas_plan_vertex_count_mismatch_no_longer_demotes
+        # does): apply the forward tile-local -> atlas-global remap here, so
+        # build_atlas_plan's inverse remap gets back exactly `raw_uv` instead of
+        # double-remapping already tile-local coordinates out of [0, 1].
+        tile, atlas_size = captured[obj.name]
+        aw, ah = atlas_size
+        tw, th = tile.size
+        tx, ty = tile.offset
+        atlas_uv = np.empty_like(raw_uv)
+        atlas_uv[..., 0] = (tx + raw_uv[..., 0] * tw) / aw
+        atlas_uv[..., 1] = (ty + raw_uv[..., 1] * th) / ah
         face_material_index = np.array([0, 0], dtype=np.int32)
-        return loop_uv, face_material_index
+        return atlas_uv, face_material_index
 
     monkeypatch.setattr(adapter, "_extract_evaluated_face_uv_and_slots", fake_uv)
-    monkeypatch.setattr(adapter, "_write_atlas_uv_layer", lambda *a, **kw: None)
 
     with caplog.at_level(logging.WARNING):
         plan = adapter.build_atlas_plan(scene=None, sim_objects=[good, bad], cfg=_ATLAS_CFG)
@@ -356,6 +375,76 @@ def test_build_atlas_plan_excludes_dense_objects(monkeypatch):
 
     plan = adapter.build_atlas_plan(scene=None, sim_objects=[dense], cfg=_ATLAS_CFG)
     assert plan.texels == {}
+
+
+def _build_two_object_plan(monkeypatch, *, drop_second: bool):
+    """Shared setup for the digest-participation tests below: two same-sized objects on
+    the same allocation (so ``layout.tiles`` is identical either way); ``drop_second``
+    controls whether "obj_b" makes it through rasterization (mirrors
+    ``test_uv_failure_demotes_to_vertex_path_with_warning``'s UV-extraction-failure
+    setup) or fully participates."""
+    obj_a = _AtlasObj("obj_a", 4)
+    obj_b = _AtlasObj("obj_b", 4)
+    geoms = {"obj_a": _big_plane_geom(), "obj_b": _big_plane_geom()}
+
+    monkeypatch.setattr(adapter, "_extract_geometry", lambda obj: geoms[obj.name])
+    monkeypatch.setattr(adapter, "_prepare_bake_uv", lambda obj: None)
+
+    captured = {}
+
+    def spy_write(o, tile, atlas_size, src_layer_name):
+        captured[o.name] = (tile, atlas_size)
+
+    monkeypatch.setattr(adapter, "_write_atlas_uv_layer", spy_write)
+
+    raw_uv = np.array([
+        [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+        [[0.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+    ])
+
+    def fake_uv(obj, layer_name):
+        if drop_second and obj.name == "obj_b":
+            return None  # simulates an unwrap that never produced a usable UV layer
+        tile, atlas_size = captured[obj.name]
+        aw, ah = atlas_size
+        tw, th = tile.size
+        tx, ty = tile.offset
+        atlas_uv = np.empty_like(raw_uv)
+        atlas_uv[..., 0] = (tx + raw_uv[..., 0] * tw) / aw
+        atlas_uv[..., 1] = (ty + raw_uv[..., 1] * th) / ah
+        face_material_index = np.array([0, 0], dtype=np.int32)
+        return atlas_uv, face_material_index
+
+    monkeypatch.setattr(adapter, "_extract_evaluated_face_uv_and_slots", fake_uv)
+
+    return adapter.build_atlas_plan(scene=None, sim_objects=[obj_a, obj_b], cfg=_ATLAS_CFG)
+
+
+def test_atlas_digest_reflects_realized_texel_participation(monkeypatch):
+    """Finding 1 regression: `atlas.allocate` assigns tiles for both "obj_a" and "obj_b"
+    before rasterization runs, so the tile layout alone (name/size/offset) is identical
+    whether "obj_b" ends up contributing texels or gets dropped by a UV failure. The
+    digest must still differ, because a materially different simulation (one fewer
+    object's temperature actually solved into the atlas) must not silently reuse a
+    cached solve keyed on the allocation alone."""
+    plan_both = _build_two_object_plan(monkeypatch, drop_second=False)
+    plan_dropped = _build_two_object_plan(monkeypatch, drop_second=True)
+
+    assert "obj_a" in plan_both.texels and "obj_b" in plan_both.texels
+    assert "obj_a" in plan_dropped.texels and "obj_b" not in plan_dropped.texels
+    # Same objects, same density/config => same tile allocation either way.
+    assert plan_both.layout.tiles.keys() == plan_dropped.layout.tiles.keys()
+
+    assert plan_both.digest != plan_dropped.digest
+
+
+def test_atlas_digest_stable_across_identical_builds(monkeypatch):
+    """The digest must be deterministic: two builds over the same inputs produce the
+    same digest, regardless of dict/set iteration order."""
+    plan1 = _build_two_object_plan(monkeypatch, drop_second=False)
+    plan2 = _build_two_object_plan(monkeypatch, drop_second=False)
+
+    assert plan1.digest == plan2.digest
 
 
 # ---------------------------------------------------------------------------
