@@ -137,32 +137,50 @@ def _principled_is_clear(node: bpy.types.Node) -> bool:
     return False
 
 
-def _surface_shader_nodes(tree: bpy.types.NodeTree) -> List[bpy.types.Node]:
+def _surface_shader_nodes(tree: bpy.types.NodeTree) -> Optional[List[bpy.types.Node]]:
     """Shader nodes actually reachable from the active Material Output's Surface.
 
     Walking the graph rather than scanning ``tree.nodes`` matters in both
     directions: Blender leaves an unconnected Principled node in every new
     material (which would otherwise read as opaque), and an alpha-cutout leaf
     genuinely routes an opaque shader into the output through a Mix Shader
-    (which must read as opaque).
+    (which must read as opaque). The walk descends into node groups, since
+    reusable glass/window shaders are commonly wrapped in one.
+
+    Returns ``None`` when the material has no surface at all — no Material
+    Output, or its Surface input left unlinked (a volume-only fog box, say).
+    Cycles draws no surface there, so nothing can block a ray. That is distinct
+    from an empty list, which means a surface exists but reached no shader.
     """
     outputs = [n for n in tree.nodes if n.type == "OUTPUT_MATERIAL"]
     if not outputs:
-        return []
+        return None
     active = next((n for n in outputs if getattr(n, "is_active_output", False)), outputs[0])
     surface = active.inputs.get("Surface")
     if surface is None or not surface.is_linked:
-        return []
+        return None
 
     seen: set = set()
     stack = [link.from_node for link in surface.links]
     reachable: List[bpy.types.Node] = []
     while stack:
         node = stack.pop()
-        if node.name in seen:
+        # Node names are only unique within a tree, so key on the tree too.
+        key = (id(node.id_data), node.name)
+        if key in seen:
             continue
-        seen.add(node.name)
+        seen.add(key)
         reachable.append(node)
+
+        group_tree = getattr(node, "node_tree", None)
+        if node.type == "GROUP" and group_tree is not None:
+            for inner in group_tree.nodes:
+                if inner.type != "GROUP_OUTPUT":
+                    continue
+                for socket in inner.inputs:
+                    for link in socket.links:
+                        stack.append(link.from_node)
+
         for socket in node.inputs:
             for link in socket.links:
                 stack.append(link.from_node)
@@ -177,8 +195,12 @@ def _material_is_clear(mat: Optional[bpy.types.Material]) -> bool:
     """
     if mat is None or not mat.use_nodes or mat.node_tree is None:
         return False
+    nodes = _surface_shader_nodes(mat.node_tree)
+    if nodes is None:
+        # No surface shader at all — Cycles renders nothing to block a ray.
+        return True
     saw_clear = False
-    for node in _surface_shader_nodes(mat.node_tree):
+    for node in nodes:
         if node.type in _OPAQUE_BSDF_NODES:
             return False
         if node.type in _CLEAR_BSDF_NODES:
@@ -207,9 +229,11 @@ def _casts_shadow(obj: bpy.types.Object) -> bool:
     """
     if not getattr(obj, "visible_shadow", True):
         return False
-    slots = [slot.material for slot in obj.material_slots if slot.material is not None]
+    slots = [slot.material for slot in obj.material_slots]
     if not slots:
         return True
+    # An empty slot renders with Blender's default opaque material, so faces
+    # assigned to it cast a real shadow; _material_is_clear(None) is False.
     return not all(_material_is_clear(mat) for mat in slots)
 
 

@@ -264,6 +264,50 @@ check('cutout_leaf', cutout_leaf, True)
 check('decal', transparent_plus_diffuse, True)
 check('driven', driven_transmission, True)
 
+# Glass wrapped in a node group must still read as clear (review finding).
+group = bpy.data.node_groups.new('GlassGroup', 'ShaderNodeTree')
+g_out = group.nodes.new('NodeGroupOutput')
+group.interface.new_socket('Shader', in_out='OUTPUT', socket_type='NodeSocketShader')
+group.links.new(group.nodes.new('ShaderNodeBsdfGlass').outputs[0], g_out.inputs[0])
+
+def grouped_glass(tree):
+    n = tree.nodes.new('ShaderNodeGroup')
+    n.node_tree = group
+    return n
+
+check('grouped_glass', grouped_glass, False)
+
+# An opaque BSDF hidden inside a group must still occlude.
+ogroup = bpy.data.node_groups.new('OpaqueGroup', 'ShaderNodeTree')
+og_out = ogroup.nodes.new('NodeGroupOutput')
+ogroup.interface.new_socket('Shader', in_out='OUTPUT', socket_type='NodeSocketShader')
+ogroup.links.new(ogroup.nodes.new('ShaderNodeBsdfDiffuse').outputs[0], og_out.inputs[0])
+
+def grouped_opaque(tree):
+    n = tree.nodes.new('ShaderNodeGroup')
+    n.node_tree = ogroup
+    return n
+
+check('grouped_opaque', grouped_opaque, True)
+
+# An empty material slot renders opaque, so [None, glass] must keep its shadow.
+empty_and_glass = mesh('empty_and_glass')
+empty_and_glass.data.materials.append(None)
+empty_and_glass.data.materials.append(make_mat('eg_glass', glass))
+assert ik._casts_shadow(empty_and_glass), 'None slot + glass must occlude'
+
+# Volume-only material (Surface unlinked) has no surface to block a ray.
+volbox = mesh('volbox')
+vm = bpy.data.materials.new('vol_m')
+vm.use_nodes = True
+vt = vm.node_tree
+vout = next(n for n in vt.nodes if n.type == 'OUTPUT_MATERIAL')
+for n in [n for n in vt.nodes if n.type == 'BSDF_PRINCIPLED']:
+    vt.nodes.remove(n)
+vt.links.new(vt.nodes.new('ShaderNodeVolumePrincipled').outputs[0], vout.inputs['Volume'])
+volbox.data.materials.append(vm)
+assert not ik._casts_shadow(volbox), 'volume-only material must not occlude'
+
 # An unconnected leftover Principled must not make a glass pane opaque.
 stray = mesh('stray')
 m = bpy.data.materials.new('stray_m')
