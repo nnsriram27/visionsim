@@ -176,6 +176,70 @@ print('THERMAL_ADAPTER_OK')
     assert "THERMAL_ADAPTER_OK" in out.stdout, out.stderr
 
 
+def test_shared_mesh_objects_get_independent_copies(executable, tmp_path):
+    """Fix 3: linked duplicates (multiple objects pointing at one Mesh datablock) share
+    per-vertex attributes AND UV layers on that datablock, so writing sim_temperature for
+    one object overwrites the other -- last write wins. This is the minimal repro: two
+    objects sharing a mesh, given distinct fields (310 K / 350 K), both used to end up at
+    350 K. gather_meshes must un-share each object's mesh (once, idempotently) BEFORE any
+    per-vertex write happens, so each object ends up with -- and keeps -- its own values.
+    """
+    code = """
+import bpy, numpy as np
+from visionsim.simulate.heatsim import register, adapter
+
+register()
+
+bpy.ops.object.select_all(action='SELECT')
+bpy.ops.object.delete()
+
+bpy.ops.mesh.primitive_grid_add(x_subdivisions=6, y_subdivisions=6, size=1.0)
+obj_a = bpy.context.active_object
+obj_a.name = 'SharedA'
+obj_a.heat_simulation_enabled = True
+
+# Linked duplicate: obj_b shares obj_a's mesh datablock (mirrors Blender's Alt-D).
+obj_b = obj_a.copy()
+obj_b.name = 'SharedB'
+obj_b.location.x += 2.0
+bpy.context.collection.objects.link(obj_b)
+obj_b.heat_simulation_enabled = True
+
+assert obj_a.data is obj_b.data, 'objects must start out sharing one mesh datablock'
+assert obj_a.data.users >= 2, obj_a.data.users
+
+sim_objects = adapter.gather_meshes(bpy.context.scene)
+names = {o.name for o in sim_objects}
+assert names == {'SharedA', 'SharedB'}, names
+
+# After gather_meshes, each object must have its own single-user mesh.
+assert obj_a.data is not obj_b.data, 'meshes still shared after gather_meshes'
+assert obj_a.data.users == 1 and obj_b.data.users == 1, (obj_a.data.users, obj_b.data.users)
+
+# Hand-craft distinct histories (skip a full FEM solve -- Fix 3 is about write-back, not
+# the solver) and write them via the same function prepare_thermal uses.
+n = len(obj_a.data.vertices)
+defaults = dict(initial_temperature_K=295.0, thermal_diffusivity_mm2_s=0.17,
+                density_kg_m3=1330.0, specific_heat_J_kgK=880.0, emissivity=0.9)
+history = {'SharedA': np.full((2, n), 310.0), 'SharedB': np.full((2, n), 350.0)}
+adapter.write_frame_attributes(bpy.context.scene, history, timestep=-1, defaults=defaults)
+
+vals_a = np.array([d.value for d in obj_a.data.attributes['sim_temperature'].data])
+vals_b = np.array([d.value for d in obj_b.data.attributes['sim_temperature'].data])
+assert np.allclose(vals_a, 310.0), vals_a  # NOT 350.0 (the old last-write-wins bug)
+assert np.allclose(vals_b, 350.0), vals_b
+
+# Idempotent: a second gather_meshes call must not re-copy (already single-user).
+mesh_a_name, mesh_b_name = obj_a.data.name, obj_b.data.name
+adapter.gather_meshes(bpy.context.scene)
+assert obj_a.data.name == mesh_a_name and obj_b.data.name == mesh_b_name
+
+print('SHARED_MESH_OK')
+"""
+    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
+    assert "SHARED_MESH_OK" in out.stdout, out.stderr
+
+
 def test_read_authored_irradiance_scale():
     from visionsim.simulate.heatsim.adapter import read_authored_irradiance_scale
 

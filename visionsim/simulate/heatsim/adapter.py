@@ -64,6 +64,14 @@ def gather_meshes(scene: Any) -> list:
     A mesh participates when it is visible, renderable and (per-object) heat
     simulation is enabled. Mirrors the filter at ``fem_adapter.py:2867,2875``;
     a missing ``heat_simulation_enabled`` attribute defaults to ``True``.
+
+    Also un-shares each returned object's mesh datablock (see
+    :func:`_ensure_single_user_meshes`). This is the single choke point every
+    solve/atlas entry point pulls its object list from (:func:`solve_scene`,
+    :func:`solve_scene_animated`, and the adapter's TEXEL atlas-plan caller), so doing
+    it here guarantees it happens once, early, before any per-vertex attribute or atlas
+    UV layer is ever written for these objects - regardless of which of those three
+    paths runs first in a given ``prepare_thermal`` call.
     """
     out: list = []
     for obj in scene.objects:
@@ -74,7 +82,40 @@ def gather_meshes(scene: Any) -> list:
         if not bool(getattr(obj, "heat_simulation_enabled", True)):
             continue
         out.append(obj)
+    _ensure_single_user_meshes(out)
     return out
+
+
+def _ensure_single_user_meshes(sim_objects: list) -> None:
+    """Give every object in ``sim_objects`` its own single-user mesh datablock.
+
+    Linked duplicates (multiple objects pointing at the same ``Mesh`` datablock, e.g.
+    Blender's Alt-D) share per-vertex attributes AND UV layers on that one datablock, so
+    writing ``sim_temperature``/the atlas UV layer for one object silently overwrites --
+    or is overwritten by -- every other object sharing it (last write wins). Copying the
+    mesh (``obj.data = obj.data.copy()``) whenever ``obj.data.users > 1`` makes each
+    object's write target independent.
+
+    Idempotent: once an object's mesh is single-user, ``users`` stays 1 on every later
+    call (e.g. repeated ``prepare_thermal`` calls on a long-lived RPyC service), so a
+    second pass over the same objects is a no-op.
+    """
+    unshared = 0
+    for obj in sim_objects:
+        mesh = getattr(obj, "data", None)
+        if mesh is None or getattr(mesh, "users", 1) <= 1:
+            continue
+        obj.data = mesh.copy()
+        unshared += 1
+    if unshared:
+        # Extra memory for heavily-instanced scenes (each un-shared copy is a full mesh
+        # datablock) - worth a visible log line, not a warning (this is expected/correct
+        # behavior for any scene using linked duplicates, not a misconfiguration).
+        _log.info(
+            "[heatsim.adapter] un-shared %d mesh datablock(s) referenced by multiple "
+            "simulated objects (linked duplicates) so each object's solved field/atlas "
+            "UVs write independently instead of colliding.", unshared,
+        )
 
 
 def _is_set(mat: Any, attr: str) -> bool:
@@ -539,7 +580,15 @@ def build_atlas_plan(scene: Any, sim_objects: list, cfg: dict) -> AtlasPlan:
         verts, faces, n = geom
         geoms[obj.name] = (obj, verts, faces, n)
         area_m2 = atlas.surface_area_m2(verts, faces)
-        if atlas.select_for_atlas(n, area_m2, density):
+        # `n` is the EVALUATED vertex count `_extract_geometry` just read; the per-vertex
+        # write-back path (`write_frame_attributes`) can only write onto the BASE mesh
+        # (`obj.data.vertices`). When a topology-changing modifier (Bevel, Subdivision,
+        # Geometry Nodes, ...) makes those counts differ, write-back is structurally
+        # impossible regardless of how dense the object already looks, so the density
+        # rule doesn't apply - force atlas participation instead of silently discarding
+        # the solved field later.
+        writeback_possible = len(obj.data.vertices) == n
+        if atlas.select_for_atlas(n, area_m2, density, writeback_possible=writeback_possible):
             areas[obj.name] = area_m2
         else:
             retained_vertex_count += n
@@ -1730,6 +1779,43 @@ def _fallback_temperature_K(obj: Any, defaults: dict, default_T: float) -> float
     return default_T
 
 
+def _write_emissivity_attr(obj: Any, mesh: Any, defaults: dict, assignment: Optional[Any], n: int) -> None:
+    """Write the ``emissivity`` POINT attribute, per-vertex from ``assignment`` when
+    available (falling back to the object's single resolved material emissivity
+    otherwise). Shared by the normal per-vertex write-back path and the constant-fill
+    fallback (:func:`_write_constant_fill_attributes`) so both leave the SAME emissivity
+    signal for the gray-body shader -- only the temperature detail differs between them.
+    """
+    material = resolve_material(obj, defaults)
+    eps_vec = None
+    if assignment is not None:
+        per_vertex = materials.resolve_vertex_materials(obj, assignment, material)
+        if per_vertex is not None:
+            eps_vec = np.asarray(per_vertex["eps"], dtype=np.float32).reshape(-1)
+    if eps_vec is None or eps_vec.shape[0] != n:
+        eps_vec = np.full(n, float(material["emissivity"]), dtype=np.float32)
+    _write_point_float_attr(mesh, "emissivity", eps_vec)
+
+
+def _write_constant_fill_attributes(
+    obj: Any, mesh: Any, defaults: dict, assignment: Optional[Any], fill_T: float
+) -> None:
+    """Constant-fill ``sim_temperature`` (and ``emissivity``) for a vertex-path object
+    whose per-vertex write-back is impossible this frame (topology mismatch or missing
+    history) -- called instead of leaving both attributes absent.
+
+    An absent ``sim_temperature`` makes the ``temperature`` AOV emit 0 K (see
+    ``thermal_shader._build_temperature_source_chain``'s ``is_valid = sim_temperature >
+    1.0`` gate), which silently discards a real solved field down to nothing worse than
+    if the object had never been simulated. A constant fill is coarser than genuine
+    per-vertex detail but is never worse than 0 K or (for the shape-mismatch case)
+    ambient -- see ``write_frame_attributes`` for how ``fill_T`` is chosen.
+    """
+    n = len(mesh.vertices)
+    _write_point_float_attr(mesh, "sim_temperature", np.full(n, fill_T, dtype=np.float32))
+    _write_emissivity_attr(obj, mesh, defaults, assignment, n)
+
+
 def write_frame_attributes(
     scene: Any,
     history: dict,
@@ -1742,13 +1828,19 @@ def write_frame_attributes(
 
     For every simulated mesh (present in ``history``) this writes a
     ``sim_temperature`` (FLOAT/POINT) attribute for that timestep plus a constant
-    ``emissivity`` (FLOAT/POINT) attribute. Meshes that were NOT simulated get an
-    OBJECT-level ``heatsim_default_temperature`` custom property so downstream
-    rendering still has a sane fallback: ``defaults['initial_temperature_K']``
-    (ambient) for FEM participants, or the object's own
-    ``dirichlet_temperature_K`` reservoir temperature for a ``DIRICHLET_SOURCE``
-    (e.g. a topology-changing hot liquid whose vertex count can't be tracked
-    per-frame) so it still renders hot instead of at ambient.
+    ``emissivity`` (FLOAT/POINT) attribute. Vertex-path objects whose per-vertex
+    write-back is impossible this frame -- ``history`` has no entry for them, or its
+    per-vertex count doesn't match the base mesh (a topology-changing modifier) -- still
+    get a CONSTANT-fill ``sim_temperature``/``emissivity`` (never left absent: an absent
+    ``sim_temperature`` makes the ``temperature`` AOV emit 0 K, see
+    :func:`_write_constant_fill_attributes`), plus an OBJECT-level
+    ``heatsim_default_temperature`` custom property so downstream rendering still has a
+    sane fallback too: ``defaults['initial_temperature_K']`` (ambient) for FEM
+    participants, or the object's own ``dirichlet_temperature_K`` reservoir temperature
+    for a ``DIRICHLET_SOURCE`` (e.g. a topology-changing hot liquid whose vertex count
+    can't be tracked per-frame) so it still renders hot instead of at ambient. This does
+    NOT apply to atlas participants (see below) -- they deliberately get no per-vertex
+    attribute at all.
 
     When *assignment* is supplied the ``emissivity`` attribute is resolved **per
     vertex** from the object's material slots rather than stamped as one
@@ -1806,27 +1898,46 @@ def write_frame_attributes(
 
         hist = history.get(obj.name)
         if hist is None:
-            obj["heatsim_default_temperature"] = _fallback_temperature_K(obj, defaults, default_T)
+            # No solve history at all for this object (e.g. a DIRICHLET_SOURCE whose
+            # topology changes every frame, so it was never given a per-vertex field).
+            # Still constant-fill sim_temperature/emissivity -- an absent sim_temperature
+            # makes the temperature AOV emit 0 K instead of this object's reservoir/ambient
+            # fallback (see _write_constant_fill_attributes).
+            fallback_T = _fallback_temperature_K(obj, defaults, default_T)
+            obj["heatsim_default_temperature"] = fallback_T
+            _log.warning(
+                "[heatsim.adapter] '%s': no solve history for this object; sim_temperature "
+                "constant-filled at %.2f K instead of left absent.", obj.name, fallback_T,
+            )
+            _write_constant_fill_attributes(obj, mesh, defaults, assignment, fallback_T)
             continue
 
         arr = np.asarray(hist)
         n = len(mesh.vertices)
         if arr.ndim != 2 or arr.shape[0] == 0 or arr.shape[1] != n:
-            # Topology mismatch (modifiers) or empty history: fall back to a
-            # constant object-level temperature rather than writing garbage.
+            # Topology mismatch: a modifier changed the vertex count between the
+            # evaluated mesh the FEM solve ran on (``hist``'s vertex axis) and this base
+            # mesh (``n`` verts) sim_temperature must live on -- or the history is
+            # otherwise empty/malformed. Per-vertex write-back is structurally impossible
+            # either way, but the field itself is real, so constant-fill sim_temperature
+            # at the mean of its final timestep (preserves the actual heating) instead of
+            # collapsing to ambient, and instead of leaving the attribute absent (which
+            # would render as 0 K -- worse than either).
             obj["heatsim_default_temperature"] = _fallback_temperature_K(obj, defaults, default_T)
+            if arr.ndim == 2 and arr.shape[0] > 0 and arr.shape[1] > 0:
+                fill_T = float(np.mean(np.asarray(arr[timestep], dtype=np.float64)))
+            else:
+                fill_T = _fallback_temperature_K(obj, defaults, default_T)
+            _log.warning(
+                "[heatsim.adapter] '%s': solved history has %d vertex-axis entries but the "
+                "base mesh has %d vert(s) (a modifier changed the vertex count); per-vertex "
+                "sim_temperature detail was replaced by a constant fill (%.2f K).",
+                obj.name, arr.shape[1] if arr.ndim == 2 else -1, n, fill_T,
+            )
+            _write_constant_fill_attributes(obj, mesh, defaults, assignment, fill_T)
             continue
 
         row = np.asarray(arr[timestep], dtype=np.float32).reshape(-1)
         _write_point_float_attr(mesh, "sim_temperature", row)
-
-        material = resolve_material(obj, defaults)
-        eps_vec = None
-        if assignment is not None:
-            per_vertex = materials.resolve_vertex_materials(obj, assignment, material)
-            if per_vertex is not None:
-                eps_vec = np.asarray(per_vertex["eps"], dtype=np.float32).reshape(-1)
-        if eps_vec is None or eps_vec.shape[0] != n:
-            eps_vec = np.full(n, float(material["emissivity"]), dtype=np.float32)
-        _write_point_float_attr(mesh, "emissivity", eps_vec)
+        _write_emissivity_attr(obj, mesh, defaults, assignment, n)
         mesh.update()

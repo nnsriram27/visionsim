@@ -80,8 +80,23 @@ def surface_area_m2(verts_mm: np.ndarray, faces: np.ndarray) -> float:
     return float(np.sum(area_mm2)) / 1.0e6
 
 
-def select_for_atlas(n_verts: int, area_m2: float, density: float) -> bool:
-    """True iff this object's native vertex density is below the atlas target (it should join)."""
+def select_for_atlas(
+    n_verts: int, area_m2: float, density: float, *, writeback_possible: bool = True
+) -> bool:
+    """True iff this object should join the atlas rather than keep the per-vertex path.
+
+    Normally that's a density call: native vertex density below the atlas target means
+    the object's own vertices are too sparse to sample it well, so it joins.
+
+    ``writeback_possible=False`` overrides the density rule unconditionally. It signals
+    that the caller cannot write a per-vertex result back onto this object's base mesh
+    at all (its base and evaluated vertex counts differ, e.g. a Bevel/Subdivision/
+    Geometry-Nodes modifier) - the vertex path is not merely low-resolution here, it is
+    structurally incapable of holding the solved field, so density is moot and the atlas
+    (UV-addressed, not vertex-addressed) is the only path that can represent this object.
+    """
+    if not writeback_possible:
+        return True
     return (n_verts / max(area_m2, _AREA_EPS)) < density
 
 

@@ -340,6 +340,105 @@ def test_write_frame_attributes_vertex_mode_clears_stale_atlas_coverage_gate():
 
 
 # ---------------------------------------------------------------------------
+# write_frame_attributes constant-fill on impossible write-back (Fix 2: the 0-K
+# regression guard). Same no-bpy fake scene/mesh as above.
+# ---------------------------------------------------------------------------
+
+
+class _FakeMat:
+    """Stand-in for ``obj.heat_sim_material`` (mirrors test_heatsim_adapter.py's)."""
+
+    def __init__(self, *, always_set: bool, **values):
+        self._always_set = always_set
+        for k, v in values.items():
+            setattr(self, k, v)
+
+    def is_property_set(self, attr):  # noqa: D401 - mimics bpy_struct.is_property_set
+        return self._always_set
+
+
+def test_write_frame_attributes_shape_mismatch_writes_constant_fill(caplog):
+    """Fix 2 / 0-K regression guard: a modifier changed the vertex count between the
+    evaluated mesh the FEM solve ran on (history's vertex axis) and the base mesh
+    (n_verts). The old behaviour dropped sim_temperature entirely -- absent, so the
+    shader's `sim_temperature > 1.0` validity gate falls through to
+    heatsim_default_temperature for the RADIANCE pass but the temperature AOV (which has
+    no such gate) emits 0 K. The fix must still fill a constant sim_temperature equal to
+    the mean of the solved field's final timestep, must not leave emissivity absent
+    either, and must warn (naming the object)."""
+    obj = _FakeObj("mismatched_mesh", n_verts=4)  # base mesh: 4 verts
+    final_row = [300.0, 302.0, 304.0, 306.0, 308.0, 310.0]  # solve-time (evaluated): 6
+    history = {"mismatched_mesh": np.array([[295.0] * 6, final_row])}
+
+    scene = _FakeScene([obj])
+    with caplog.at_level("WARNING"):
+        adapter.write_frame_attributes(scene, history, -1, _DEFAULTS)
+
+    # NOT absent -- this is the actual 0-K regression guard.
+    assert "sim_temperature" in obj.data.attributes
+    vals = [d.value for d in obj.data.attributes["sim_temperature"].data]
+    expected_mean = float(np.mean(final_row))
+    assert vals == pytest.approx([expected_mean] * 4)
+    assert expected_mean > _DEFAULTS["initial_temperature_K"]  # real heating preserved
+
+    # emissivity must not be left absent either (same reasoning).
+    assert "emissivity" in obj.data.attributes
+    eps = [d.value for d in obj.data.attributes["emissivity"].data]
+    assert eps == pytest.approx([_DEFAULTS["emissivity"]] * 4)
+
+    assert any("mismatched_mesh" in rec.message for rec in caplog.records)
+
+
+def test_write_frame_attributes_missing_history_writes_fallback_fill():
+    """Fix 2: an object entirely absent from `history` (e.g. a DIRICHLET_SOURCE fluid
+    whose topology changes every frame, so no per-vertex field survives) must render at
+    its RESERVOIR temperature -- not ambient -- and must not be left with an absent
+    sim_temperature attribute."""
+    obj = _FakeObj("dirichlet_mesh", n_verts=3)
+    obj.heat_sim_material = _FakeMat(
+        always_set=True,
+        initial_temperature_K=295.0,
+        thermal_diffusivity_mm2_s=0.17,
+        density_kg_m3=1330.0,
+        specific_heat_J_kgK=880.0,
+        emissivity=0.9,
+        thermal_role="DIRICHLET_SOURCE",
+        dirichlet_temperature_K=350.0,
+    )
+
+    scene = _FakeScene([obj])
+    adapter.write_frame_attributes(scene, {}, -1, _DEFAULTS)
+
+    assert "sim_temperature" in obj.data.attributes
+    vals = [d.value for d in obj.data.attributes["sim_temperature"].data]
+    assert vals == pytest.approx([350.0, 350.0, 350.0])  # reservoir, not ambient (295 K)
+    assert obj["heatsim_default_temperature"] == pytest.approx(350.0)
+    assert "emissivity" in obj.data.attributes
+
+
+def test_atlas_participants_still_have_no_vertex_attribute():
+    """Fix 2 must not touch atlas participants: their per-pixel signal comes from the
+    atlas image, not a per-vertex mesh attribute, and an earlier fix already strips any
+    stale one left by a prior VERTEX-mode run. Confirms that invariant survives Fix 2's
+    new constant-fill branches (an atlas participant is also absent from `history`, which
+    would otherwise hit the same code path a non-participant does)."""
+    atlas_obj = _FakeObj("atlas_mesh", n_verts=5)
+    plan = _plan(
+        (8, 8),
+        {"atlas_mesh": atlas.TileSpec("atlas_mesh", (8, 8), (0, 0))},
+        {"atlas_mesh": {"xy": np.zeros((5, 2), dtype=np.int64)}},
+    )
+
+    scene = _FakeScene([atlas_obj])
+    # No history entry for the atlas object -- its signal lives in the atlas image.
+    adapter.write_frame_attributes(scene, {}, -1, _DEFAULTS, atlas_plan=plan)
+
+    assert "sim_temperature" not in atlas_obj.data.attributes
+    assert "emissivity" not in atlas_obj.data.attributes
+    assert atlas_obj["heatsim_default_temperature"] == pytest.approx(295.0)
+
+
+# ---------------------------------------------------------------------------
 # global_temperature_range already pools whatever is in `history`, TEXEL entries included
 # (they arrive there via the same _split_history/solve_scene path as VERTEX entries) --
 # this locks that behavior explicitly rather than relying on it being incidental.

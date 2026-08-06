@@ -41,6 +41,19 @@ def test_selection_area_zero_uses_eps_guard():
     assert atlas.select_for_atlas(n_verts=0, area_m2=0.0, density=500.0) is True
 
 
+def test_select_for_atlas_forces_participation_when_writeback_impossible():
+    """Fix 1: per-vertex write-back can only ever land on the BASE mesh. When a
+    topology-changing modifier (Bevel, Subdivision, Geometry Nodes, ...) makes the base
+    and evaluated vertex counts differ, that path is structurally impossible regardless
+    of density, so the object must join the atlas even if the density rule alone would
+    exclude it."""
+    density = 500.0
+    n_verts, area_m2 = 21_000, 2.0  # orchid-dense: would normally be excluded.
+    assert atlas.select_for_atlas(n_verts, area_m2, density) is False
+    assert atlas.select_for_atlas(n_verts, area_m2, density, writeback_possible=True) is False
+    assert atlas.select_for_atlas(n_verts, area_m2, density, writeback_possible=False) is True
+
+
 # ---------------------------------------------------------------------------
 # allocate: sizing
 # ---------------------------------------------------------------------------
