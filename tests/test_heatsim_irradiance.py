@@ -180,3 +180,82 @@ print('ZERO_ATTR_IGNORED_OK', round(float(alb.mean()),3), round(float(alb.std())
     out = subprocess.run([str(executable), "-b", "--python-expr", code],
                          capture_output=True, text=True)
     assert "ZERO_ATTR_IGNORED_OK" in out.stdout, out.stdout + "\n" + out.stderr
+
+
+def test_transparent_and_shadowless_meshes_do_not_occlude(executable):
+    """Glass panes, Cycles light portals and shadow-disabled props must not
+    block shortwave shadow rays; opaque and partly-transmissive ones must."""
+    code = r"""
+import bpy
+from visionsim.simulate.heatsim import irradiance_kernel as ik
+
+def mesh(name):
+    bpy.ops.mesh.primitive_plane_add()
+    o = bpy.context.active_object
+    o.name = name
+    return o
+
+def mat(name, build):
+    m = bpy.data.materials.new(name)
+    m.use_nodes = True
+    build(m)
+    return m
+
+def as_glass(m):
+    m.node_tree.nodes.new('ShaderNodeBsdfGlass')
+
+def as_transparent(m):
+    m.node_tree.nodes.new('ShaderNodeBsdfTransparent')
+
+def principled(weight):
+    def build(m):
+        n = next(x for x in m.node_tree.nodes if x.type == 'BSDF_PRINCIPLED')
+        for key in ('Transmission Weight', 'Transmission'):
+            if key in n.inputs:
+                n.inputs[key].default_value = weight
+    return build
+
+opaque = mesh('opaque')
+assert ik._casts_shadow(opaque), 'no material slots -> must occlude'
+
+glass = mesh('glass')
+glass.data.materials.append(mat('glass_m', as_glass))
+assert not ik._casts_shadow(glass), 'glass must not occlude'
+
+portal = mesh('portal')
+portal.data.materials.append(mat('portal_m', as_transparent))
+assert not ik._casts_shadow(portal), 'transparent portal must not occlude'
+
+frosted = mesh('frosted')
+frosted.data.materials.append(mat('frosted_m', principled(0.5)))
+assert ik._casts_shadow(frosted), 'half-transmissive must still occlude'
+
+clear = mesh('clear')
+clear.data.materials.append(mat('clear_m', principled(1.0)))
+assert not ik._casts_shadow(clear), 'fully transmissive principled must not occlude'
+
+# One opaque slot is enough to keep the whole object casting shadows.
+mixed = mesh('mixed')
+mixed.data.materials.append(mat('mixed_glass', as_glass))
+mixed.data.materials.append(mat('mixed_opaque', principled(0.0)))
+assert ik._casts_shadow(mixed), 'mixed slots must occlude'
+
+noshadow = mesh('noshadow')
+noshadow.visible_shadow = False
+assert not ik._casts_shadow(noshadow), 'visible_shadow=False must not occlude'
+
+# The BVH collector must agree with _casts_shadow.
+names = {'opaque', 'frosted', 'mixed'}
+collected = ik._collect_scene_meshes_world(bpy.context.scene)
+expected = sum(
+    1 for o in bpy.context.scene.objects
+    if o.type == 'MESH' and not o.hide_render and o.visible_get() and ik._casts_shadow(o)
+)
+assert len(collected) == expected, (len(collected), expected)
+print('OCCLUDER_FILTER_OK')
+"""
+    out = subprocess.run(
+        [str(executable), "-b", "--python-expr", code],
+        capture_output=True, text=True,
+    )
+    assert "OCCLUDER_FILTER_OK" in out.stdout, out.stdout + "\n" + out.stderr

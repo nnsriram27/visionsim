@@ -100,15 +100,70 @@ def _extract_world_geometry(obj: bpy.types.Object) -> Optional[Tuple[np.ndarray,
     )
 
 
+def _material_transmission(mat: Optional[bpy.types.Material]) -> float:
+    """Best-effort shortwave transmission of ``mat`` in [0, 1].
+
+    Only the unmistakably transmissive node types count: Glass/Transparent/
+    Refraction BSDFs, and Principled with its transmission input driven to a
+    constant. A linked (non-constant) transmission input is unknowable here,
+    so it reads as 0 and the object keeps casting shadows.
+    """
+    if mat is None or not mat.use_nodes or mat.node_tree is None:
+        return 0.0
+    best = 0.0
+    for node in mat.node_tree.nodes:
+        if node.type in ("BSDF_GLASS", "BSDF_TRANSPARENT", "BSDF_REFRACTION"):
+            return 1.0
+        if node.type == "BSDF_PRINCIPLED":
+            for key in ("Transmission Weight", "Transmission"):
+                socket = node.inputs.get(key)
+                if socket is None or socket.is_linked:
+                    continue
+                try:
+                    best = max(best, float(socket.default_value))
+                except (TypeError, ValueError):
+                    continue
+    return best
+
+
+# A mesh only stops casting shadows once it is essentially clear glass; a
+# partly-transmissive surface still blocks most of the beam.
+_TRANSMISSION_OCCLUDER_CUTOFF = 0.95
+
+
+def _casts_shadow(obj: bpy.types.Object) -> bool:
+    """Whether ``obj`` should block a shortwave (solar/lamp) shadow ray.
+
+    Two classes of geometry are transparent to the beam even though they are
+    renderable meshes, and treating them as solid starves every surface behind
+    them:
+
+    * Cycles ray-visibility has shadow casting switched off.
+    * Every material slot is effectively clear (glass panes, and the
+      render-only "light portal" planes that let exterior lamps into an
+      interior). Real glass is opaque in the LWIR band but transmits ~85% of
+      incident solar shortwave, which is the band this kernel integrates.
+
+    An object with no material slots is opaque by default.
+    """
+    if not getattr(obj, "visible_shadow", True):
+        return False
+    slots = [slot.material for slot in obj.material_slots if slot.material is not None]
+    if not slots:
+        return True
+    return not all(_material_transmission(mat) >= _TRANSMISSION_OCCLUDER_CUTOFF for mat in slots)
+
+
 def _collect_scene_meshes_world(scene: bpy.types.Scene) -> List[Tuple[np.ndarray, np.ndarray]]:
-    """Build the BVH input set: every renderable mesh in the scene, in
-    world meters. Used both as the receiver list (for sim objects) and
-    as occluders (so non-sim props still cast shadows)."""
+    """Build the occluder BVH input set: every renderable, shadow-casting mesh
+    in the scene, in world meters (so non-sim props still cast shadows)."""
     out: List[Tuple[np.ndarray, np.ndarray]] = []
     for obj in scene.objects:
         if obj.type != "MESH":
             continue
         if obj.hide_render or not obj.visible_get():
+            continue
+        if not _casts_shadow(obj):
             continue
         geom = _extract_world_geometry(obj)
         if geom is None:
