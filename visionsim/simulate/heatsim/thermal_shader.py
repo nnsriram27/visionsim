@@ -331,6 +331,54 @@ def _append_temperature_aov_nodes(mat: Any, aov_name: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+_DEFAULT_SURFACE_MATERIAL_NAME = "HeatSim_Default_Surface"
+
+
+def _get_default_surface_material() -> Any:
+    """A stand-in for Blender's implicit default surface, shared across the scene.
+
+    A freshly created node-based material is already Blender's default look — a
+    Principled BSDF at 0.8 grey, roughness 0.5 — which is exactly what Cycles draws
+    for a mesh with no material. Assigning it therefore leaves the RGB pass looking
+    the same while giving the surface a node tree the temperature AOV can hang off.
+    """
+    mat = bpy.data.materials.get(_DEFAULT_SURFACE_MATERIAL_NAME)
+    if mat is None:
+        mat = bpy.data.materials.new(_DEFAULT_SURFACE_MATERIAL_NAME)
+        mat.use_nodes = True
+    return mat
+
+
+def _ensure_temperature_material_slots(obj: Any) -> int:
+    """Give ``obj`` a material wherever it has none, returning how many were filled.
+
+    A value AOV is emitted by shader nodes, so a mesh with no material — or with an
+    empty slot — has nothing to write the ``temperature`` pass and renders as 0 K even
+    though the solver produced a temperature for it. kitchen1's ``Vert.005`` is exactly
+    this: 36 vertices, a valid ``sim_temperature`` attribute, and no material slot at
+    all, so it came out solid black.
+
+    Faces on an empty slot render with the default surface too, so those are filled in
+    place rather than only handling the zero-slot case.
+    """
+    mesh = getattr(obj, "data", None)
+    if mesh is None or not hasattr(mesh, "materials"):
+        return 0
+    try:
+        if len(obj.material_slots) == 0:
+            mesh.materials.append(_get_default_surface_material())
+            return 1
+        filled = 0
+        for slot in obj.material_slots:
+            if slot.material is None:
+                slot.material = _get_default_surface_material()
+                filled += 1
+        return filled
+    except Exception as exc:  # pragma: no cover - library-linked / non-editable meshes
+        _log.warning("thermal: could not assign a default surface to %r: %s", obj.name, exc)
+        return 0
+
+
 def setup_temperature_aov(scene: Any, view_layer: Any) -> str:
     """Register a ``temperature`` value AOV on *view_layer* and wire it into scene materials.
 
@@ -371,10 +419,14 @@ def setup_temperature_aov(scene: Any, view_layer: Any) -> str:
             _log.warning("Could not register temperature AOV on view layer: %s", exc)
 
     # 2. Append Attribute → OutputAOV chain to every material-using mesh in the scene.
+    #    Meshes with no usable material get one first, else they have no shader to carry
+    #    the AOV and Cycles renders them as 0 K (see _ensure_temperature_material_slots).
     patched = 0
+    filled = 0
     for obj in scene.objects:
         if obj.type != "MESH":
             continue
+        filled += _ensure_temperature_material_slots(obj)
         for slot in obj.material_slots:
             mat = slot.material
             if mat is None or not mat.use_nodes:
@@ -382,7 +434,10 @@ def setup_temperature_aov(scene: Any, view_layer: Any) -> str:
             _append_temperature_aov_nodes(mat, aov_name)
             patched += 1
 
-    _log.debug("setup_temperature_aov: AOV %r registered; %d material slot(s) patched", aov_name, patched)
+    _log.debug(
+        "setup_temperature_aov: AOV %r registered; %d material slot(s) patched, %d filled with the default surface",
+        aov_name, patched, filled,
+    )
     return aov_name
 
 

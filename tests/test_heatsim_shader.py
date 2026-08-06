@@ -171,3 +171,71 @@ def test_enter_restore_round_trip(executable):
     )
     out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
     assert "ROUND_TRIP_OK" in out.stdout, out.stderr
+
+
+def test_meshes_without_materials_get_a_temperature_carrying_surface(executable):
+    """A mesh with no material (or an empty slot) has no shader to write the value
+    AOV, so it renders 0 K however well it was simulated. It must be given one."""
+    code = r"""
+import bpy
+from visionsim.simulate.heatsim import thermal_shader
+
+for o in list(bpy.data.objects):
+    bpy.data.objects.remove(o, do_unlink=True)
+
+def plane(name):
+    bpy.ops.mesh.primitive_plane_add()
+    o = bpy.context.active_object
+    o.name = name
+    return o
+
+bare = plane('bare')
+bare.data.materials.clear()
+assert len(bare.material_slots) == 0
+
+authored = plane('authored')
+m = bpy.data.materials.new('authored_m')
+m.use_nodes = True
+authored.data.materials.append(m)
+
+half = plane('half')
+half.data.materials.append(bpy.data.materials.new('half_m'))
+half.data.materials['half_m'].use_nodes = True
+half.data.materials.append(None)
+assert any(s.material is None for s in half.material_slots)
+
+sc = bpy.context.scene
+thermal_shader.setup_temperature_aov(sc, bpy.context.view_layer)
+
+def aov_count(obj):
+    n = 0
+    for slot in obj.material_slots:
+        mat = slot.material
+        assert mat is not None, f'{obj.name}: still has an empty slot'
+        n += sum(1 for node in mat.node_tree.nodes if node.type == 'OUTPUT_AOV')
+    return n
+
+for o in (bare, authored, half):
+    assert len(o.material_slots) > 0, f'{o.name}: no material slot'
+    assert aov_count(o) > 0, f'{o.name}: no temperature AOV on its material'
+
+# The stand-in must not disturb the authored material.
+assert authored.material_slots[0].material.name == 'authored_m'
+
+# It is shared, not one material per object.
+default_name = thermal_shader._DEFAULT_SURFACE_MATERIAL_NAME
+assert bare.material_slots[0].material.name == default_name
+assert sum(1 for m in bpy.data.materials if m.name.startswith(default_name)) == 1
+
+# Idempotent: a second pass must not add more slots.
+before = [len(o.material_slots) for o in (bare, authored, half)]
+thermal_shader.setup_temperature_aov(sc, bpy.context.view_layer)
+assert [len(o.material_slots) for o in (bare, authored, half)] == before
+
+print('DEFAULT_SURFACE_OK')
+"""
+    out = subprocess.run(
+        [str(executable), "-b", "--python-expr", code],
+        capture_output=True, text=True,
+    )
+    assert "DEFAULT_SURFACE_OK" in out.stdout, out.stdout + "\n" + out.stderr
