@@ -114,6 +114,24 @@ def grouped_opaque(tree):
 
 check('grouped_opaque', grouped_opaque, True)
 
+# Only the ACTIVE Group Output feeds the instance. A leftover inactive one wired
+# to an opaque shader must not turn a clear pane into a shadow caster.
+stale = bpy.data.node_groups.new('StaleGroup', 'ShaderNodeTree')
+stale.interface.new_socket('Shader', in_out='OUTPUT', socket_type='NodeSocketShader')
+live_out = stale.nodes.new('NodeGroupOutput')
+live_out.is_active_output = True
+stale.links.new(stale.nodes.new('ShaderNodeBsdfGlass').outputs[0], live_out.inputs[0])
+dead_out = stale.nodes.new('NodeGroupOutput')
+dead_out.is_active_output = False
+stale.links.new(stale.nodes.new('ShaderNodeBsdfDiffuse').outputs[0], dead_out.inputs[0])
+
+def grouped_stale(tree):
+    n = tree.nodes.new('ShaderNodeGroup')
+    n.node_tree = stale
+    return n
+
+check('grouped_stale_output', grouped_stale, False)
+
 # An empty material slot renders opaque, so [None, glass] must keep its shadow.
 empty_and_glass = mesh('empty_and_glass')
 empty_and_glass.data.materials.append(None)

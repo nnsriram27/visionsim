@@ -14,6 +14,12 @@ here instead of in the vendored kernel:
 Getting this wrong is asymmetric: wrongly skipping a mesh deletes a real shadow,
 while wrongly keeping one starves every surface behind it. Anything that cannot
 be resolved statically therefore reads as opaque.
+
+Known limitation: a node group's *external* inputs are followed regardless of
+whether the group routes them to its output internally, so an unused Shader-type
+group input wired to an opaque shader reads as opaque. Resolving that properly
+means mapping internal Group Input nodes back to external sockets; the failure
+direction is a spurious shadow rather than a deleted one, so it is left alone.
 """
 
 from __future__ import annotations
@@ -65,6 +71,18 @@ def principled_is_clear(node: bpy.types.Node) -> bool:
     return False
 
 
+def _active_output(tree: bpy.types.NodeTree, node_type: str) -> Optional[bpy.types.Node]:
+    """The output node Blender actually renders from, or None if there is none.
+
+    A tree may hold several output nodes; only the active one contributes. When
+    none is flagged active (Blender allows that) the first is the best guess.
+    """
+    outputs = [n for n in tree.nodes if n.type == node_type]
+    if not outputs:
+        return None
+    return next((n for n in outputs if getattr(n, "is_active_output", False)), outputs[0])
+
+
 def surface_shader_nodes(tree: bpy.types.NodeTree) -> Optional[List[bpy.types.Node]]:
     """Shader nodes actually reachable from the active Material Output's Surface.
 
@@ -80,10 +98,9 @@ def surface_shader_nodes(tree: bpy.types.NodeTree) -> Optional[List[bpy.types.No
     Cycles draws no surface there, so nothing can block a ray. That is distinct
     from an empty list, which means a surface exists but reached no shader.
     """
-    outputs = [n for n in tree.nodes if n.type == "OUTPUT_MATERIAL"]
-    if not outputs:
+    active = _active_output(tree, "OUTPUT_MATERIAL")
+    if active is None:
         return None
-    active = next((n for n in outputs if getattr(n, "is_active_output", False)), outputs[0])
     surface = active.inputs.get("Surface")
     if surface is None or not surface.is_linked:
         return None
@@ -102,10 +119,12 @@ def surface_shader_nodes(tree: bpy.types.NodeTree) -> Optional[List[bpy.types.No
 
         group_tree = getattr(node, "node_tree", None)
         if node.type == "GROUP" and group_tree is not None:
-            for inner in group_tree.nodes:
-                if inner.type != "GROUP_OUTPUT":
-                    continue
-                for socket in inner.inputs:
+            # Only the active Group Output feeds the instance, exactly as with the
+            # Material Output above. Following an inactive leftover as well would let
+            # a stale opaque branch mark a clear pane as a shadow caster.
+            group_output = _active_output(group_tree, "GROUP_OUTPUT")
+            if group_output is not None:
+                for socket in group_output.inputs:
                     for link in socket.links:
                         stack.append(link.from_node)
 
