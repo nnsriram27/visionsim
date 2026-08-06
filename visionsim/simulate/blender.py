@@ -1783,6 +1783,17 @@ class BlenderService(rpyc.Service):
         self._thermal_animated_defaults = None
         self._thermal_atlas_plan = None
 
+        # Cycles' persistent data keeps the device-side scene alive between frames, but
+        # the thermal passes swap materials and AOV wiring on every frame. That
+        # combination intermittently renders a surface's temperature as 0 K: over a
+        # 50-frame classroom sequence it blanked whole objects in 6 frames on one run and
+        # 2 on the next (up to 31% of a frame), and which frames broke changed run to run.
+        # Turning it off for thermal runs drops the 0 K fraction from ~1.9% to ~0.03%
+        # (background only) and makes the sequence deterministic.
+        if self.scene.render.use_persistent_data:
+            self.log.info("thermal: disabling Cycles persistent data (stale AOV state between frames)")
+            self.scene.render.use_persistent_data = False
+
         if animated and domain == "MESH":
             self.log.warning(
                 "thermal: animated mode requires domain='POINTS' (got 'MESH'); falling back "
