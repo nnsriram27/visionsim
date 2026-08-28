@@ -1,4 +1,4 @@
-# Vendored from heat-sim-blender:addon/lib/irradiance_kernel.py @ 543ee81
+# Vendored from heat-sim-blender:addon/lib/irradiance_kernel.py @ e5b4afe
 """Direct-Kernel orchestrator: per-vertex irradiance without Cycles bakes.
 
 This is the alternative to `irradiance.bake_irradiance_for_active_frame()`

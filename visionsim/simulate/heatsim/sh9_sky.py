@@ -1,4 +1,4 @@
-# Vendored from heat-sim-blender:addon/lib/sh9_sky.py @ 543ee81
+# Vendored from heat-sim-blender:addon/lib/sh9_sky.py @ e5b4afe
 """SH9 sky-dome prefilter for the Direct Kernel irradiance source.
 
 Implements the Ramamoorthi & Hanrahan 2001 "An Efficient Representation

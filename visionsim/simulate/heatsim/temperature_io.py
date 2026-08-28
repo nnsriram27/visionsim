@@ -1,4 +1,4 @@
-# Vendored from heat-sim-blender:addon/lib/temperature_io.py @ 543ee81
+# Vendored from heat-sim-blender:addon/lib/temperature_io.py @ e5b4afe
 """External `.npz` storage for per-object FEM temperature histories.
 
 The .blend keeps only the live-display `sim_temperature` vertex attribute

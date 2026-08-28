@@ -1,7 +1,7 @@
 # Vendored files
 
 Source repository: `heat-sim-blender` (sibling repo at `/home/sriram/research/heat-sim-blender`)
-Source commit: `543ee81` (`543ee814488742eb6147e2296d0d29ce385f97d2`)
+Source commit: `e5b4afe` (`e5b4afe13cf82530456f4ebc199b9601a78f51b6`)
 
 ## Files
 
@@ -53,7 +53,7 @@ imports. Follow that pattern for anything new.
 
 ### solver.py (from heatsim_fem.py)
 
-1. **Provenance header** added as first line: `# Vendored from heat-sim-blender:addon/lib/heatsim_fem.py @ 543ee81`
+1. **Provenance header** added as first line: `# Vendored from heat-sim-blender:addon/lib/heatsim_fem.py @ e5b4afe`
 2. **Import rewrite** — intra-package relative imports replaced with absolute visionsim paths:
    - `from . import constants` → `from visionsim.simulate.heatsim import constants`
    - `from .robust_laplacian_backend import (HAS_ROBUST_LAPLACIAN, ROBUST_IMPORT_ERROR, mesh_laplacian_and_mass, point_cloud_laplacian_and_mass,)` → `from visionsim.simulate.heatsim.laplacian import (...)`
@@ -62,14 +62,14 @@ imports. Follow that pattern for anything new.
 
 ### laplacian.py (from robust_laplacian_backend.py)
 
-1. **Provenance header** added as first line: `# Vendored from heat-sim-blender:addon/lib/robust_laplacian_backend.py @ 543ee81`
+1. **Provenance header** added as first line: `# Vendored from heat-sim-blender:addon/lib/robust_laplacian_backend.py @ e5b4afe`
 2. No import rewrites required (file has no local imports).
 3. No print statements to route.
 4. **Clamp `n_neighbors` to `len(points)-1`** in `point_cloud_laplacian_and_mass` (defensive, matches scipy fallback; prevents robust_laplacian crash on small point clouds).
 
 ### constants.py (from constants.py)
 
-1. **Provenance header** added as first line: `# Vendored from heat-sim-blender:addon/lib/constants.py @ 543ee81`
+1. **Provenance header** added as first line: `# Vendored from heat-sim-blender:addon/lib/constants.py @ e5b4afe`
 2. No import rewrites required (file has no local imports).
 3. No print statements to route.
 
@@ -105,7 +105,7 @@ imports. Follow that pattern for anything new.
 
 ### temperature_io.py (from temperature_io.py)
 
-1. **Provenance header** added as first line: `# Vendored from heat-sim-blender:addon/lib/temperature_io.py @ 543ee81`
+1. **Provenance header** added as first line: `# Vendored from heat-sim-blender:addon/lib/temperature_io.py @ e5b4afe`
 2. No import rewrites required (file has no intra-package local imports; only stdlib, `bpy`, `numpy`).
 3. **Logger added**: `import logging`, `_log = logging.getLogger("rich")`; all unconditional `print(...)` → `_log.debug(...)`.
 

@@ -1,4 +1,4 @@
-# Vendored from heat-sim-blender:addon/lib/light_models.py @ 543ee81
+# Vendored from heat-sim-blender:addon/lib/light_models.py @ e5b4afe
 """Per-light analytic diffuse-irradiance forms for the Direct Kernel.
 
 Each light type contributes one of:

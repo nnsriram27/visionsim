@@ -1,4 +1,4 @@
-# Vendored from heat-sim-blender:addon/lib/robust_laplacian_backend.py @ 543ee81
+# Vendored from heat-sim-blender:addon/lib/robust_laplacian_backend.py @ e5b4afe
 """
 Optional integration with `robust_laplacian` (Sharp & Crane SGP 2020).
 

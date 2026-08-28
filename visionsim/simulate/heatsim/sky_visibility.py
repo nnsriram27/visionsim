@@ -1,4 +1,4 @@
-# Vendored from heat-sim-blender:addon/lib/sky_visibility.py @ 543ee81
+# Vendored from heat-sim-blender:addon/lib/sky_visibility.py @ e5b4afe
 """Per-vertex Bent Normal + Sky AO bake for the Direct Kernel sky term.
 
 The SH9 sky prefilter implicitly assumes every vertex sees the full
