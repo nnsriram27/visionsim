@@ -194,7 +194,7 @@ value takes down all 358 at once.
 
 | hypothesis | evidence against |
 |---|---|
-| the Cycles bake (new code) | `DIRECT_KERNEL` reproduced the identical 99.80% NaN |
+| ~~the Cycles bake~~ | **RETRACTED - the bake IS the trigger. See the correction below.** |
 | degenerate geometry | 0 non-finite world coords, 0 zero-scale axes, 0 empty meshes, no object over 500 m |
 | an invalid preset in the sidecar | all 29 preset names in all 8 sidecars validate against `_PRESET_TABLE` |
 | NaN entering through the solve inputs | instrumented: `u_prev`, `B_step`, `Minv`, `M`, `L`, `alpha`, `rho`, `c`, `eps`, `irradiance`, `boundary_mask` **all finite** |
@@ -203,7 +203,38 @@ value takes down all 358 at once.
 | poor mass conditioning | real (M spans 4.7e-15 to 1.13) but **officebuilding is worse** on every measure and succeeds |
 | stale bytecode shadowing the fixes | all **62** installed `.pyc` files validate against their sources; 0 stale |
 
-### The awkward part: it no longer reproduces
+### Correction: the bake is the trigger after all
+
+The row above was wrong and is left struck through rather than deleted, because the
+mistake is the instructive part. It rested on a **single** `DIRECT_KERNEL` run that
+returned 99.80% NaN. Repeated properly, that result does not hold:
+
+| configuration | runs | result |
+|---|---|---|
+| `DIRECT_KERNEL` | **5** | 0.00% NaN every time, identical max 368.0 K |
+| `CYCLES_BAKE` | 1 | **99.80% NaN**, range [295.0, 295.0] |
+| `CYCLES_BAKE` + `bake_samples=1024` | 1 | **99.80% NaN** - unchanged |
+
+So `CYCLES_BAKE` reproduces the failure and `DIRECT_KERNEL` does not, which matches the
+fact that `bathroom1_v1` was rendered with the bake. **The lesson is the obvious one: one
+run is not a measurement.** A single observation was promoted to a ruled-out row in a
+table, and it then steered the investigation away from the actual culprit for hours. The
+five-run `DIRECT_KERNEL` result is trustworthy; the one-run bake result should itself be
+repeated before it is leaned on too hard.
+
+This also retires the "it only fails under concurrent load" correlation recorded below -
+the real split was `CYCLES_BAKE` vs `DIRECT_KERNEL`, and the two failing runs happened to
+be the bake ones.
+
+**Raising bake samples does not fix it.** The natural hypothesis, given that bathroom1 is
+lit *only* by a ~100 m2 emissive plane and is therefore the worst case in the dataset for
+a noisy bake, was that extreme bake outliers were driving the divergence. At 1024 fixed
+samples - a measured 3x noise reduction, see section 7 - the NaN is bit-for-bit as bad.
+Whatever the bake does to this scene is **structural, not statistical**.
+
+### The remaining puzzle
+
+
 
 After the investigation the same scene solves **cleanly and deterministically** — five
 consecutive runs (`DIRECT_KERNEL`, 1 and 2 frames, instrumented and not) all returned
