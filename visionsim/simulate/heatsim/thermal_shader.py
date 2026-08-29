@@ -48,6 +48,7 @@ _KEY_WORLD: str = "orig_world"
 _KEY_MATERIALS: str = "orig_materials"
 _KEY_LIGHT_HIDE_RENDER: str = "light_hide_render"
 _KEY_LIGHT_HIDE_VIEWPORT: str = "light_hide_viewport"
+_KEY_CLAMP: str = "orig_sample_clamp"
 
 
 # ---------------------------------------------------------------------------
@@ -554,6 +555,38 @@ def enter_thermal_scene(scene: Any, *, radiance_scale: float) -> dict:
                 obj.hide_viewport = True
 
 
+        # -- Disable sample clamping for the gray-body pass ---------------------
+        # The scene's Cycles clamps were authored for its RGB render, where pixel
+        # values are O(1). This pass is radiometric: it renders eps*sigma*T^4, which
+        # for a 300 K surface is ~500 and for a 450 K surface ~2300. A clamp tuned for
+        # the beauty render therefore truncates the physics.
+        #
+        # Measured on visionsim50/classroom (sample_clamp_direct = 5.5): every pixel
+        # collapsed to ~15 regardless of its solved temperature -- pixels at 350 K+ read
+        # 15.58 where sigma*T^4 demands 1170, a 75x shortfall, and the image went flat
+        # (p1-p99 of 14.86-15.84 across a field spanning 295-384 K). kitchen1 is correct
+        # only by luck: its sample_clamp_direct is already 0.
+        #
+        # Emission seen straight down the camera ray is a DIRECT sample, so the direct
+        # clamp is the damaging one; the indirect clamp is disabled too because the
+        # (1-eps)*L_in reflection term is genuinely indirect and equally out of scale.
+        # Both are saved and restored by restore_scene().
+        cy = getattr(scene, "cycles", None)
+        if cy is not None:
+            saved_clamp: dict[str, Any] = {}
+            for attr in ("sample_clamp_direct", "sample_clamp_indirect"):
+                if hasattr(cy, attr):
+                    saved_clamp[attr] = getattr(cy, attr)
+                    try:
+                        setattr(cy, attr, 0.0)  # 0 == disabled in Cycles
+                    except Exception as exc:  # pragma: no cover - read-only build
+                        _log.debug("Could not clear cycles.%s: %s", attr, exc)
+                        saved_clamp.pop(attr, None)
+            if saved_clamp:
+                _log.info("thermal: cleared Cycles sample clamps for the radiance pass (%s)",
+                          ", ".join(f"{k}={v}" for k, v in saved_clamp.items()))
+            state[_KEY_CLAMP] = saved_clamp
+
         # -- Save world and replace with a uniform gray thermal world -----------
         orig_world = scene.world
         state[_KEY_WORLD] = orig_world.name if orig_world is not None else None
@@ -600,6 +633,15 @@ def restore_scene(scene: Any, state: dict) -> None:
         for mat_name in saved:
             mat = bpy.data.materials.get(mat_name) if mat_name else None
             obj.data.materials.append(mat)
+
+    # -- Restore Cycles sample clamps -------------------------------------------
+    cy = getattr(scene, "cycles", None)
+    if cy is not None:
+        for attr, value in (state.get(_KEY_CLAMP, {}) or {}).items():
+            try:
+                setattr(cy, attr, value)
+            except Exception as exc:  # pragma: no cover
+                _log.debug("Could not restore cycles.%s: %s", attr, exc)
 
     # -- Restore light visibility -----------------------------------------------
     hide_render: dict[str, bool] = state.get(_KEY_LIGHT_HIDE_RENDER, {})
