@@ -108,13 +108,46 @@ Not implemented here deliberately: changing solver behaviour partway through a t
 sequence would have made the scenes non-comparable, which is the whole point of running
 them together.
 
-## 4. Open question: emissivity is not reaching the radiance pass
+## 4. Per-material emissivity never reaches the radiance render
 
-`_DEFAULT_EMISSIVITY = 0.9` is hardcoded in `thermal_shader.py`, and per-material
-emissivity from the sidecar presets never reaches the radiance render. The measured ratio
-of exactly 1/0.9 says the render is emitting `sigma*T^4` — i.e. eps = 1.0 — so the
-declared default is not being applied either.
+**First reading of the 1.1114 ratio was wrong, and the error is instructive.** It looked
+like `thermal_radiance` was emitting `sigma*T^4` at eps = 1.0, ignoring the declared
+`_DEFAULT_EMISSIVITY = 0.9`. Reading the shader shows it does apply eps:
 
-For a **LWIR** modality this matters: emissivity contrast between materials is a large part
-of what a thermal camera actually sees, and a scene rendered at uniform eps = 1.0 loses it.
-Worth a separate investigation; it is orthogonal to everything above.
+```
+out = Mix(Fac = 1 - eps, A = Emission(eps-weighted sigma*T^4), B = Diffuse)
+    = eps*sigma*T^4*scale + (1 - eps)*L_in
+```
+
+The measured ratio is the **cavity effect**, not a missing factor. In a closed interior
+near radiative equilibrium the reflected term `(1-eps)*L_in` is filled by surroundings at
+a similar temperature, so `L_in ~ sigma*T^4` and the two terms sum back to `sigma*T^4`.
+An enclosure behaves as a blackbody regardless of its wall emissivity — textbook, and
+exactly what a *correct* gray-body shader should produce here. The near-perfect constancy
+of the ratio is evidence the shader is right, not evidence it is broken.
+
+**The real gap is a different one.** `_DEFAULT_EMISSIVITY` is baked into the Mix Fac as a
+**scene-wide constant**. The radiance shader reads exactly four attributes —
+`sim_temperature`, `heatsim_default_temperature`, the atlas UV layer and the atlas
+coverage gate — and there is **no emissivity attribute node in the graph at all**.
+Meanwhile `adapter.py` (`_write_emissivity_attr`) does write a per-vertex `emissivity`
+POINT attribute from the sidecar presets, and its own docstring says this is
+*"so per-slot emissivity reaches the gray-body radiance"*. It does not. The attribute is
+written and then never read by the shader.
+
+The magnitude of what is lost: the preset table spans **eps 0.05 (`aluminium_polished`) to
+0.98 (`skin`)**, a 20x range across 29 presets, and the sidecars authored for these scenes
+lean on it — officebuilding alone assigns `stainless_steel` (eps = 0.16) to 8 materials.
+Every one of them renders at 0.9.
+
+This matters specifically because the modality is **LWIR**. Emissivity contrast is a large
+part of what a thermal camera actually distinguishes — a polished metal surface reads dark
+and mirror-like against a matte wall at the same physical temperature, and that cue is
+absent here by construction. Note the asymmetry: emissivity *does* reach the FEM solve
+(`adapter.py` passes `emissivity_map=combined.eps`), so it correctly governs radiative
+cooling in the physics. It is only the render that flattens it.
+
+Fixing it looks small — add a `ShaderNodeAttribute` for `emissivity` and drive the Mix Fac
+from `1 - eps` per-vertex instead of a constant, with the existing constant as the fallback
+when the attribute is absent. The atlas path would need the same treatment the temperature
+chain already has. Not attempted here; it is orthogonal to this audit.
