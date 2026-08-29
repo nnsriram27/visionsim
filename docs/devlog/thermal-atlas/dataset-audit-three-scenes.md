@@ -151,3 +151,84 @@ Fixing it looks small — add a `ShaderNodeAttribute` for `emissivity` and drive
 from `1 - eps` per-vertex instead of a constant, with the existing constant as the fallback
 when the attribute is absent. The atlas path would need the same treatment the temperature
 chain already has. Not attempted here; it is orthogonal to this audit.
+
+## 5. diningroom — result
+
+600/600 frames, and the cleanest of the three.
+
+| metric | value |
+|---|---|
+| non-finite radiance px, all 600 frames | **0** |
+| `r/(eps*sigma*T^4)` | 1.091 - 1.111 |
+| T max over all frames | 415.3 K |
+| interior spread (p1-p99) | 16.7 - 38.9 K |
+| sub-295 K px | 0.3891% |
+
+**The clamp-clearing fix is confirmed on the scene that most needed it.** diningroom carries
+the dataset's harshest Cycles clamp (`sample_clamp_*` = 0.5). With the clamps inherited from
+the RGB settings the radiance pass would be pinned near the clamp value and the ratio would
+collapse the way the classroom's did to 0.0287; instead it sits at ~1.1, i.e. `r ~ sigma*T^4`.
+
+Visually the field is structured and physical: sunlit walls heat, the dark chairs and
+tabletop stay near ambient, and radiance tracks temperature closely. T max of 415.3 K is
+consistent with sunlit surfaces and needs no special explanation. This scene was also the
+control — no emissive materials — and it behaves the same under the bake as the kernel
+would, which is the expected result.
+
+## 6. bathroom1 — the render failed, and the cause is not yet identified
+
+**Do not use `bathroom1_v1`.** Its temperature pass is **89.4% NaN across all 600 frames**,
+and the finite remainder sits at exactly 295.00 K, the untouched initial condition. Only a
+handful of objects render at all; the rest are holes. The radiance pass contains no
+non-finite values, which is why the earlier headline check (`non-finite radiance px = 0`)
+passed and the failure was caught only when temperature percentiles came back `nan`.
+**Lesson: check both passes for non-finite values, not just radiance.**
+
+In the solve cache the pattern is unambiguous: **all 358 objects, 99.80% NaN each**. The
+arrays are `(501, n_nodes)` and 1/501 = 0.2%, so **only the initial condition survived** —
+the solve went non-finite on the very first timestep, globally. That is the signature of
+the global assembly: every object is concatenated into one linear system, so one poisoned
+value takes down all 358 at once.
+
+### Ruled out by measurement
+
+| hypothesis | evidence against |
+|---|---|
+| the Cycles bake (new code) | `DIRECT_KERNEL` reproduced the identical 99.80% NaN |
+| degenerate geometry | 0 non-finite world coords, 0 zero-scale axes, 0 empty meshes, no object over 500 m |
+| an invalid preset in the sidecar | all 29 preset names in all 8 sidecars validate against `_PRESET_TABLE` |
+| NaN entering through the solve inputs | instrumented: `u_prev`, `B_step`, `Minv`, `M`, `L`, `alpha`, `rho`, `c`, `eps`, `irradiance`, `boundary_mask` **all finite** |
+| a NaN-producing Laplacian | `robust_laplacian.point_cloud_laplacian` on the 124,318-point cloud returns 0 NaN in `L` and 0 NaN/zero/negative in `M` |
+| the 30 exact-duplicate points | deduplicating changes nothing; officebuilding has **57,352** exact duplicates and solves fine |
+| poor mass conditioning | real (M spans 4.7e-15 to 1.13) but **officebuilding is worse** on every measure and succeeds |
+| stale bytecode shadowing the fixes | all **62** installed `.pyc` files validate against their sources; 0 stale |
+
+### The awkward part: it no longer reproduces
+
+After the investigation the same scene solves **cleanly and deterministically** — five
+consecutive runs (`DIRECT_KERNEL`, 1 and 2 frames, instrumented and not) all returned
+**0.00% NaN and an identical max of 368.0 K**, with a sensible field of 302.8-366.7 K,
+median 335.9 K. So bathroom1 is not intrinsically broken; something made two consecutive
+runs diverge and then stopped.
+
+The one property that distinguishes the two failing runs from the five successes is that
+**both failures occurred while another render was running concurrently on a different
+GPU**, and all five successes ran on an otherwise idle machine. That is suggestive, not
+conclusive, and the mechanism by which load would inject NaN into a solve whose inputs are
+all verified finite is not obvious.
+
+What the evidence does support: the solve for this scene is **marginally stable**. It is
+assembled globally in **float32** (`scipy_to_torch_sparse` casts to `torch.float32`) over a
+system whose mass entries span 14 orders of magnitude, with per-row `|L|/M` reaching
+3.5e15 on 5 rows. A system that conditioned only needs a small perturbation to diverge, and
+float32 gives roughly 7 digits to absorb it. **The natural hardening step is to solve in
+float64**, and to add a non-finite guard that fails loudly at the first diverged step
+instead of writing 183 MB of NaN and rendering 600 frames from it.
+
+### Standing recommendation
+
+Any batch run over the wider dataset should assert on the solve before rendering: if
+`temperatures.npz` contains non-finite values, stop. The current pipeline exits 0 and
+produces a complete, plausible-looking, entirely unusable render — the most expensive
+failure mode there is, and the fourth instance in this project of the pipeline succeeding
+loudly while producing nothing useful (see `README.md`'s trap list).
