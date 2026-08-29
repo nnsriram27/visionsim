@@ -32,6 +32,7 @@ dataset).
 | File | What it is |
 |---|---|
 | `progress-ledger.md` | Running record of every root cause, with the evidence and the measurements that confirmed each fix. Includes corrections where an earlier diagnosis turned out wrong. |
+| `texel-noise-investigation.md` | Why TEXEL renders are ~6× noisier than VERTEX. Three bugs fixed (AOV accumulation through transparent surfaces, non-mesh objects rendering at 0 K, bilinear blending of the atlas validity mask); the remaining spatial mottling traced to the texel-domain discretisation, with nine hypotheses eliminated by measurement. Also records an unsound solve cache and solver defaults shadowed four levels deep. |
 | `design-spec.md` | Why the atlas exists: decoupling simulation and render resolution from mesh vertex density, so a 4-vertex plane can still render a detailed thermal field. |
 | `implementation-plan.md` | The staged plan the work followed. |
 | `task-N-brief.md` / `task-N-report.md` | Per-task briefs and their outcome reports. |
@@ -62,6 +63,19 @@ Recorded so they are not mistaken for oversights:
 - **Atlas tiles are not fully rasterized.** Around 1.2% of kitchen1 pixels sample an
   unwritten texel and fall back to the per-object default of 295 K instead of a
   solved value, showing flat where there should be a gradient.
+  *Update 2026-08-29:* partly addressed — see `texel-noise-investigation.md` §3.3.
+  The unwritten texels were also blending *below* the solve floor, because the
+  {0,1} validity mask is sampled with `Linear` interpolation so colour and alpha
+  fall toward zero together. Thresholding the gate and raising
+  `_ATLAS_DILATE_ITERATIONS` 1 → 8 cut sub-floor pixels 3394 → 28. The dilation
+  count is the reason holes persisted: 25 invalid components of 1–462 texels sat
+  inside tile interiors against a one-texel margin.
+- **TEXEL is ~6× spatially noisier than VERTEX** (2.330 K vs 0.382 K ripple) and no
+  tunable parameter changes it — sampling, denoising, PCG tolerance, texel density,
+  shadow-ray count and kNN conditioning were each eliminated by measurement. Traced
+  to the kNN point-cloud Laplacian built over UV-rasterized texel positions, whose
+  3D spacing is irregular. Fixing it properly means a cotangent FEM operator on the
+  texel triangulation. See `texel-noise-investigation.md` §4.
 - **Node-group external inputs** in `occluders.py` are followed whether or not the
   group routes them to its output internally. Documented in that module's docstring;
   the failure direction is a spurious shadow rather than a deleted one.
