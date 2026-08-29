@@ -673,10 +673,23 @@ def build_atlas_plan(scene: Any, sim_objects: list, cfg: dict) -> AtlasPlan:
 # call). Each dilate pass grows a tile's valid region by at most 1px, and TWO adjacent
 # tiles dilate toward each other from both sides of the gap -- so the gap must be wide
 # enough for both expansions with no meeting point, or the middle gap texels would be
-# filled with the MEAN of two unrelated objects' temperatures. 2*1 <= 3 holds with one
-# spare gap texel; see the design spec's "seam bleeding" risk note.
-_ATLAS_DILATE_ITERATIONS = 1
-_ATLAS_PACKING_PADDING = 3
+# filled with the MEAN of two unrelated objects' temperatures. The assert below enforces
+# it; see the design spec's "seam bleeding" risk note.
+#
+# One iteration is not enough. A single pass protects only a 1-texel ring, but the atlas
+# also contains INTERIOR holes -- texels inside a tile that no solved element scattered
+# into. Measured on visionsim50/kitchen1: 25 invalid components inside/near tile interiors
+# sized 1-462 texels, far beyond a one-texel margin. Render-time bilinear filtering then
+# straddles those valid/invalid edges and drags T_effective under the solve floor (2665
+# sub-295 K pixels in a single frame; they disappear under render_domain=VERTEX).
+#
+# 8 passes fill a hole of radius <= 8 texels outright, and the shader thresholds the atlas
+# alpha so anything still unfilled falls back to the object-level default rather than
+# blending a half-zeroed colour (see thermal_shader._build_temperature_source_chain).
+# Padding grows in lockstep to keep neighbouring tiles from meeting; the cost is a modest
+# increase in packed atlas area.
+_ATLAS_DILATE_ITERATIONS = 8
+_ATLAS_PACKING_PADDING = 17
 assert 2 * _ATLAS_DILATE_ITERATIONS <= _ATLAS_PACKING_PADDING, "dilation would bridge tile padding"
 
 

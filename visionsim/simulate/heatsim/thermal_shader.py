@@ -39,6 +39,11 @@ _AMBIENT_K: float = 295.372
 _THERMAL_WORLD_NAME: str = "HeatSim_Thermal_World"
 
 # Keys inside the opaque state dict returned by enter_thermal_scene.
+# Object types that render geometry and can therefore carry a material patched with the
+# temperature AOV chain. Only MESH supports the per-vertex `sim_temperature` attribute; the
+# rest rely entirely on the stamped object-level default (see stamp_default_temperatures).
+_RENDERABLE_GEOMETRY_TYPES: frozenset[str] = frozenset({"MESH", "CURVE", "SURFACE", "META", "FONT"})
+
 _KEY_WORLD: str = "orig_world"
 _KEY_MATERIALS: str = "orig_materials"
 _KEY_LIGHT_HIDE_RENDER: str = "light_hide_render"
@@ -167,10 +172,30 @@ def _build_temperature_source_chain(nodes: Any, links: Any, new_node: Any = None
     atlas_gate_attr.attribute_type = "OBJECT"
     atlas_gate_attr.location = (x0 + 200.0, y0 - 420.0)
 
+    # The atlas alpha is a hard {0, 1} validity mask, but the image is sampled with Linear
+    # interpolation (and CLIP, which returns (0,0,0,0) outside a tile), so at a valid ->
+    # invalid boundary BOTH the colour and the alpha blend toward zero at the same rate.
+    # A half-blended texel then yields a half-open gate over a half-darkened temperature:
+    #
+    #     T_valid = 296.2 K (a=1) beside an invalid texel (T=0, a=0)
+    #       -> sampled Red = 148.1 K, sampled alpha = 0.50
+    #       -> Mix(Factor=0.50, A=295.37, B=148.1) = 221.7 K
+    #
+    # which is below the 295 K solve floor. Measured on visionsim50/kitchen1: 2665 such
+    # pixels in one frame (they vanish entirely under render_domain=VERTEX). Thresholding
+    # the alpha back to {0, 1} keeps the gate categorical: a texel is either valid --
+    # sample the atlas -- or it is not, and we fall back to the object-level vertex path
+    # rather than blending a partially-zeroed colour into the result.
+    atlas_alpha_valid = _new("ShaderNodeMath")
+    atlas_alpha_valid.operation = "GREATER_THAN"
+    atlas_alpha_valid.location = (x0 + 300.0, y0 - 340.0)
+    atlas_alpha_valid.inputs[1].default_value = 0.5
+    links.new(atlas_tex.outputs["Alpha"], atlas_alpha_valid.inputs[0])
+
     atlas_gate = _new("ShaderNodeMath")
     atlas_gate.operation = "MULTIPLY"
     atlas_gate.location = (x0 + 420.0, y0 - 380.0)
-    links.new(atlas_tex.outputs["Alpha"], atlas_gate.inputs[0])
+    links.new(atlas_alpha_valid.outputs["Value"], atlas_gate.inputs[0])
     links.new(atlas_gate_attr.outputs["Fac"], atlas_gate.inputs[1])
 
     # T_effective = Mix(Factor=gate, A=T_vertex, B=atlas temperature)
@@ -299,6 +324,37 @@ def _append_temperature_aov_nodes(mat: Any, aov_name: str) -> None:
     try:
         # -- Temperature source: vertex path + atlas mix (see _build_temperature_source_chain) --
         temp_effective_socket = _build_temperature_source_chain(nodes, links, new_node=_new, x0=-600.0, y0=-400.0)
+
+        # -- First-hit gate -----------------------------------------------------
+        # Cycles accumulates a value AOV at *every* shading event along the path,
+        # weighted by throughput. A Transparent BSDF has throughput 1, so alpha-cut
+        # foliage (e.g. kitchen1's `hojas`, a MixShader over a TransparentBSDF) makes
+        # a camera ray shade one leaf after another and the AOV SUMS their
+        # temperatures: measured 2103 K on a scene whose hottest source is 350 K,
+        # with the pixel values landing on integer multiples of the leaf temperature
+        # (254 px at 2x, 57 at 3x, 16 at 4x ...). Gate on Transparent Depth == 0 so
+        # only the first surface contributes and the AOV stays a *surface*
+        # temperature, bounded by the solve.
+        #
+        # Trade-off: where a ray passes through the transparent part of a cut-out
+        # texture, the AOV reports that surface rather than the geometry behind it.
+        # That is the documented meaning of the pass ("per-pixel surface
+        # temperature") and is strictly better than an unbounded sum.
+        light_path = _new("ShaderNodeLightPath")
+        light_path.location = (-600.0, -700.0)
+
+        first_hit = _new("ShaderNodeMath")
+        first_hit.operation = "LESS_THAN"
+        first_hit.location = (-400.0, -700.0)
+        first_hit.inputs[1].default_value = 0.5
+        links.new(light_path.outputs["Transparent Depth"], first_hit.inputs[0])
+
+        gated = _new("ShaderNodeMath")
+        gated.operation = "MULTIPLY"
+        gated.location = (700.0, -400.0)
+        links.new(temp_effective_socket, gated.inputs[0])
+        links.new(first_hit.outputs["Value"], gated.inputs[1])
+        temp_effective_socket = gated.outputs["Value"]
 
         aov_node = _new("ShaderNodeOutputAOV")
     except Exception as exc:
@@ -497,6 +553,7 @@ def enter_thermal_scene(scene: Any, *, radiance_scale: float) -> dict:
                 obj.hide_render = True
                 obj.hide_viewport = True
 
+
         # -- Save world and replace with a uniform gray thermal world -----------
         orig_world = scene.world
         state[_KEY_WORLD] = orig_world.name if orig_world is not None else None
@@ -579,6 +636,24 @@ def stamp_default_temperatures(scene: Any, *, default_K: float) -> None:
     """
     t = float(default_K)
     for obj in scene.objects:
-        if obj.type != "MESH":
+        # Stamp every object that can RENDER with a patched material, not just meshes.
+        # Materials are shared datablocks: a CURVE/SURFACE/META/FONT object sharing a
+        # material with a mesh gets the temperature AOV chain patched into it by
+        # setup_temperature_aov, but a MESH-only guard here left it with neither
+        # `sim_temperature` (per-vertex, meshes only) nor this default, so BOTH
+        # ShaderNodeAttribute reads fell back to their type default 0 and the object
+        # rendered as T_effective = 0 K.
+        #
+        # Measured on visionsim50/kitchen1: `IVY_Curve` (type CURVE, visible, sharing
+        # material "MADERA BANQUETAS" with real meshes) rendered at 0 K. Being thin, almost
+        # none of its footprint is interior, so Cycles' reconstruction filter smeared those
+        # zeros into neighbouring fully-covered pixels -- 729 of the frame's 3394 sub-295 K
+        # pixels, including every extreme value (hiding the curve raised the frame minimum
+        # from 31.3 K to 224.4 K).
+        #
+        # Non-meshes cannot carry the per-vertex attribute, so the default is all they get:
+        # they render at ambient instead of absolute zero, which is correct for geometry
+        # that never took part in the solve.
+        if obj.type not in _RENDERABLE_GEOMETRY_TYPES:
             continue
         obj["heatsim_default_temperature"] = t
