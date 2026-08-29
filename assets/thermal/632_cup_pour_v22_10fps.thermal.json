@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "scene": "632_cup_pour_v22_10fps.blend",
+  "generated_by": "hand-authored from the blend's own per-object heat_sim_material values; reviewed",
+  "defaults": {},
+  "materials": {
+    "HeatSim_Irradiance_Bake": {
+      "preset": null,
+      "role": "FEM_PARTICIPANT",
+      "dirichlet_K": null,
+      "confidence": 0.9,
+      "reason": "Sole slot on 'geometry_0', the cup. This is an addon-generated irradiance-bake material, not an artist material, so its name carries no material semantics. The object already holds hand-tuned properties in the blend (alpha=80 mm2/s, rho=2300 kg/m3, c=900 J/kgK, eps=0.92) that no library preset reproduces - the closest by mass/emissivity is 'concrete' (0.5/2300/880/0.92) but its diffusivity is 160x lower, which would suppress conduction through the cup wall and destroy the validated 74 K rise. preset=null defers to the object-level heat_sim_material."
+    },
+    "HeatSim_Irradiance_Bake.001": {
+      "preset": null,
+      "role": "FEM_PARTICIPANT",
+      "dirichlet_K": null,
+      "confidence": 0.9,
+      "reason": "Sole slot on 'Plane', the table surface the cup stands on. Also an addon-generated bake material. In-blend values are alpha=3.5 mm2/s, rho=700 kg/m3, c=1700 J/kgK, eps=0.9 - a light board; 'wood' (0.082/897/2380/0.90) is the nearest preset but is 43x less diffusive. preset=null defers to the object-level heat_sim_material."
+    }
+  }
+}
