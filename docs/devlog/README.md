@@ -33,6 +33,7 @@ dataset).
 |---|---|
 | `progress-ledger.md` | Running record of every root cause, with the evidence and the measurements that confirmed each fix. Includes corrections where an earlier diagnosis turned out wrong. |
 | `texel-noise-investigation.md` | Why TEXEL renders are ~6× noisier than VERTEX. Three bugs fixed (AOV accumulation through transparent surfaces, non-mesh objects rendering at 0 K, bilinear blending of the atlas validity mask); the remaining spatial mottling traced to the texel-domain discretisation, with nine hypotheses eliminated by measurement. Also records an unsound solve cache and solver defaults shadowed four levels deep. |
+| `area-light-near-field-blowup.md` | The 1516 K floor spot and `inf` radiance in early frames: an unbounded 1/d² in the area-light evaluator, proven positionally (blow-up texels sit 13–18 cm from a 2.77 m panel light whose *centre* is 2 m away). A latent bug in the light model that the atlas exposed by sampling densely enough to find it — not an atlas defect. Fixed by flooring d² at the light's physical radius. |
 | `design-spec.md` | Why the atlas exists: decoupling simulation and render resolution from mesh vertex density, so a 4-vertex plane can still render a detailed thermal field. |
 | `implementation-plan.md` | The staged plan the work followed. |
 | `task-N-brief.md` / `task-N-report.md` | Per-task briefs and their outcome reports. |
@@ -70,6 +71,11 @@ Recorded so they are not mistaken for oversights:
   `_ATLAS_DILATE_ITERATIONS` 1 → 8 cut sub-floor pixels 3394 → 28. The dilation
   count is the reason holes persisted: 25 invalid components of 1–462 texels sat
   inside tile interiors against a one-texel margin.
+- **Area-light near-field singularity — FIXED 2026-08-29.** Solve points landing inside a
+  light's physical extent received unbounded 1/d² irradiance (686 W/m² on a floor texel 13 cm
+  from a 2.77 m panel light), driving a 1516 K blow-up and `inf` radiance. Scene-independent;
+  worth auditing the other ~50 scenes for temperatures above the hottest boundary condition.
+  See `area-light-near-field-blowup.md`.
 - **TEXEL is ~6× spatially noisier than VERTEX** (2.330 K vs 0.382 K ripple) and no
   tunable parameter changes it — sampling, denoising, PCG tolerance, texel density,
   shadow-ray count and kNN conditioning were each eliminated by measurement. Traced
