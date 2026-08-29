@@ -263,3 +263,130 @@ Any batch run over the wider dataset should assert on the solve before rendering
 produces a complete, plausible-looking, entirely unusable render — the most expensive
 failure mode there is, and the fourth instance in this project of the pipeline succeeding
 loudly while producing nothing useful (see `README.md`'s trap list).
+
+## 7. Bake sample starvation (the blotching)
+
+Reported from the rendered videos: the temperature and radiance passes look blotchy across
+every `CYCLES_BAKE` scene. The hypothesis put to me -- that the bake's sample count was too
+low -- was correct, and the mechanism is worse than a plain low cap.
+
+`bake_irradiance_map` never set a sample count; it inherited whatever the blend carried.
+Every visionsim50 scene checked ships:
+
+| setting | value | Blender default |
+|---|---|---|
+| `cycles.samples` | 256 | 4096 |
+| `cycles.use_adaptive_sampling` | **True** | True |
+| `cycles.adaptive_threshold` | **0.05** | **0.01** |
+
+The threshold is the real problem: at 5x looser than default, adaptive terminates texels far
+below even the 256 cap.
+
+Measured on diningroom's two largest objects, relative noise against a 7x7 median:
+
+| config | Cube.012 | Bamboo Planter | bake time |
+|---|---|---|---|
+| 256 + adaptive 0.05 (shipped) | **9.62%** | **19.24%** | 2.2 s |
+| 512 fixed | 4.01% | 9.62% | 2.7 s |
+| **1024 fixed (chosen)** | **3.06%** | **7.85%** | 3.4 s |
+| 2048 fixed | 2.40% | 6.64% | 5.1 s |
+| 1024 fixed, denoising OFF | 3.06% | 7.85% | 3.4 s |
+| 1024 + adaptive 0.01 | 4.17% | 8.98% | 3.4 s |
+
+The mean is unchanged across configs (0.5336 -> 0.5452), so this is pure variance, not bias.
+
+**Why it shows up as several-Kelvin blotches.** A steady-state surface satisfies
+absorbed = eps*sigma*T^4, so T ~ E^(1/4) and a relative error in E is a quarter of that in T:
+9.6% in E is ~2.4% in T, which at 300 K is **~7 K**. That is the observed scale. Confirmed in
+the solved atlas itself (mean |A - median7| = 3.26 K, p99 = 24 K), so it is a property of the
+temperature field, not of the render.
+
+Two results worth keeping because they contradict the obvious guesses:
+
+- **Denoising does nothing for a bake.** Output is identical to four decimal places with
+  `use_denoising` on and off. `bpy.ops.object.bake` does not run the denoiser the way a
+  rendered pass does. This retires "denoise the bake", which was ranked as the *preferred*
+  fix in `cycles-irradiance-source.md` section 7 -- that recommendation was wrong.
+- **Adaptive sampling must be disabled, not tightened.** At a matched 1024 cap, adaptive at
+  the stock 0.01 threshold measured *worse* than fixed sampling (4.17% vs 3.06%), because it
+  still cuts texels short.
+
+Fixed in `bake_irradiance_map`, which now takes an explicit sample count, disables adaptive
+sampling for the bake and restores both afterwards. Exposed as
+`--config.thermal.bake-samples`, default 1024. Cost is ~1.55x the bake, and 2048 was rejected
+as buying only a further 1.28x for another 1.5x of time.
+
+## 8. The bug underneath: irradiance baked against the wrong mesh
+
+The same review raised a second observation -- that some diningroom objects (the black
+chairs) looked far too cold. That turned out to be a much larger defect than the blotching,
+and it had been silently corrupting **every** `CYCLES_BAKE` render produced in this project.
+
+**The solver and the bake disagreed about which mesh they were describing.**
+
+| | mesh used |
+|---|---|
+| solver nodes (`adapter._extract_geometry`) | `obj.evaluated_get(depsgraph).data` -- **modifiers applied** |
+| Cycles bake per-vertex sampling (`irradiance.py`) | `obj.data` -- **original** |
+
+When a modifier changes the vertex count the two disagree, `_combine` drops a flux array whose
+length does not match the node count, and **the object receives no absorbed flux at all**. It
+holds its initial temperature, warmed only by conduction from its neighbours.
+
+Measured on diningroom, per object, flux logged where it is computed and joined against the
+solved field:
+
+| group | objects | median flux | median rise |
+|---|---|---|---|
+| flux length **==** node count | 60 | 0.146 | **1.335 K** (max 43.6) |
+| flux length **!=** node count | **229 (79%)** | **1.792** | **0.332 K** (max 0.47) |
+
+Note the direction: the broken group was receiving **12x more flux** than the working one and
+still did not heat. Its rise is 0.332-0.334 K essentially regardless of the flux computed for
+it, because none of that flux was ever applied.
+
+Three independent confirmations:
+
+1. **Two instances of one asset.** `decoration_twig_branch.009` (584 verts, 584 nodes) rose
+   **33.8 K**; `.007` (584 verts, **9305** nodes) rose **0.333 K** -- same material, same
+   preset, same flux.
+2. **Identical trajectories under different flux.** `Circle.000` (flux 1.664) and `Circle.004`
+   (flux 1.102) produced bit-identical temperature curves at every one of 501 steps
+   (0.002, 0.003, 0.008, ... 0.333). Flux that reaches a solve cannot fail to separate them.
+3. **The fix moves exactly the affected set.** After sampling the evaluated mesh:
+
+| metric | before | after |
+|---|---|---|
+| median rise | 0.332 K | **31.478 K** |
+| objects pinned at ~0.33 K | 229 | **4** |
+| objects above 2 K | 60 | **254** |
+| `Circle.000` | 0.333 K | **25.413 K** (74,226 nodes vs 166 verts) |
+| `decoration_twig_branch.007` | 0.333 K | **39.831 K** |
+| `Circle.005` (already aligned) | 43.631 K | **43.632 K** -- unchanged |
+
+That last row is the regression check: objects that were already correct do not move.
+
+**Scope.** `CYCLES_BAKE` only. The Direct Kernel evaluates irradiance at the evaluated mesh's
+own vertex positions and was always aligned -- which is precisely what `_extract_geometry`'s
+docstring asserts:
+
+> The evaluated mesh's vertex order/count matches the Direct-Kernel irradiance extraction
+> (it uses the same `foreach_get('co')` path), so the returned flux aligns index-for-index.
+
+The statement was true when written, and scoped to the Direct Kernel. Porting the bake in
+`cycles-irradiance-source.md` introduced a second irradiance producer that did **not** satisfy
+it, and nothing enforced the contract. Every `CYCLES_BAKE` render in this project -- classroom
+v2/v3, officebuilding v1, diningroom v1, bathroom1 v1 -- is affected and must be redone.
+
+**The lesson.** The failure was invisible in every headline metric. Non-finite counts were
+clean, `r/(sigma*T^4)` was a textbook 1.0, spreads and maxima looked plausible, and the
+rendered images were merely *unconvincing* rather than obviously broken -- a room where most
+of the furniture sits at ambient still looks like a thermal image. It took an outside
+observation ("those chairs look too dark") to expose it. A cheap invariant would have caught
+it at the source: **assert that a flux array's length equals the node count instead of
+silently dropping it.** That guard is the natural follow-up to this fix.
+
+**Related, not yet fixed:** `bake_albedo_map` and `get_or_bake_vertex_albedo` sample
+`obj.data` the same way. The consequence there is milder -- on mismatch the albedo falls back
+to zeros, i.e. full absorption, rather than the object being dropped -- but it is the same
+latent inconsistency and should be brought onto the evaluated mesh too.
