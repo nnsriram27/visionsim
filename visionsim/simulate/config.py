@@ -188,6 +188,24 @@ class ThermalConfig:
     """FEM domain: surface point cloud (recommended) or mesh"""
     laplacian_backend: Literal["ROBUST", "IGL"] = "ROBUST"
     """Laplacian backend"""
+    irradiance_source: Literal["DIRECT_KERNEL", "CYCLES_BAKE"] = "DIRECT_KERNEL"
+    """Where absorbed flux comes from.
+
+    ``DIRECT_KERNEL`` (default) is the analytic path: per-light form factors, Embree
+    shadow rays and a 9-coefficient SH sky. Fast, but it counts ONLY objects of type
+    ``LIGHT`` plus the world sky, and models no indirect bounce. A scene lit by
+    *emissive geometry* -- the usual way an interior is daylit -- therefore receives no
+    flux from its actual light source. visionsim50/classroom is exactly this case: 6.17
+    m2 of windows carrying an emissive material at strength 20, contributing zero, so
+    the room stays at its 295 K initial condition and renders thermally flat.
+
+    ``CYCLES_BAKE`` bakes DIFFUSE DIRECT+INDIRECT per object instead, so emissive
+    meshes, indirect bounce, portals and HDRI transport are all resolved by the path
+    tracer. Costs about the same as the albedo bake already being run (measured on
+    classroom, 512px/128spp: 0.95 s/object COLOR vs 0.97 s/object DIRECT+INDIRECT) and
+    is a one-time cost for static geometry and lights -- which is the usual case here,
+    since these scenes animate the camera, not the scene. Prefer it unless geometry or
+    lights genuinely change per frame."""
     device: Literal["cuda", "cpu"] = "cuda"
     """Torch device for the solve; falls back to cpu if cuda is unavailable"""
     # --- thermal atlas (texel-domain render) ---
