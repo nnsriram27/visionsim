@@ -805,7 +805,31 @@ def bake_irradiance_map(scene, obj, texture_size: int, samples: Optional[int] = 
     if rgb_pixels is None:
         return None
 
-    mesh = obj.data
+    # Sample the EVALUATED mesh, not obj.data. The solver builds its nodes from
+    # ``adapter._extract_geometry``, which uses ``obj.evaluated_get(depsgraph).data`` --
+    # modifiers applied. Sampling the original mesh here yields a ``vertex_flux`` sized
+    # to the pre-modifier vertex count, and ``_combine`` drops a flux array whose length
+    # does not match the node count. The object then receives NO absorbed flux at all and
+    # sits at its initial temperature, heated only by conduction from its neighbours.
+    #
+    # Measured on visionsim50/diningroom before this fix: 229 of 289 objects (79%)
+    # mismatched, and every one of them landed at +0.332-0.334 K regardless of how much
+    # flux had been computed for it -- while the 60 matching objects rose a median
+    # 13.3 K per unit flux. Two instances of the same asset made it unmistakable:
+    # decoration_twig_branch.009 (584 verts, 584 nodes) rose 33.8 K, while .007
+    # (584 verts, 9305 nodes) rose 0.333 K on the same material and the same flux.
+    #
+    # This only ever affected the CYCLES_BAKE path. The Direct Kernel evaluates
+    # irradiance at the evaluated mesh's own vertex positions, so it was always aligned.
+    _eval_mesh = None
+    try:
+        _dg = bpy.context.evaluated_depsgraph_get()
+        _cand = obj.evaluated_get(_dg).data
+        if _cand is not None and len(_cand.vertices) > 0 and len(_cand.uv_layers) > 0:
+            _eval_mesh = _cand
+    except Exception:  # pragma: no cover - defensive, mirrors this module's style
+        _eval_mesh = None
+    mesh = _eval_mesh if _eval_mesh is not None else obj.data
     mesh.calc_loop_triangles()
     if len(mesh.loop_triangles) == 0:
         return None
