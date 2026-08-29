@@ -868,7 +868,9 @@ def _texel_albedo(scene: Any, obj: Any, uv_at_texel: np.ndarray, texture_size: i
     return np.clip(luma, 0.0, 1.0)
 
 
-def _texel_irradiance_cycles(scene: Any, obj: Any, uv_at_texel: np.ndarray, texture_size: int) -> np.ndarray:
+def _texel_irradiance_cycles(
+    scene: Any, obj: Any, uv_at_texel: np.ndarray, texture_size: int, samples: Optional[int] = None
+) -> np.ndarray:
     """Bilinear-sample ``obj``'s Cycles irradiance bake at texel UV centers.
 
     The Cycles counterpart to :func:`_texel_albedo`, sampling the same UVs from the
@@ -885,7 +887,7 @@ def _texel_irradiance_cycles(scene: Any, obj: Any, uv_at_texel: np.ndarray, text
     try:
         from visionsim.simulate.heatsim import irradiance
 
-        baked = irradiance.bake_irradiance_map(scene, obj, texture_size)
+        baked = irradiance.bake_irradiance_map(scene, obj, texture_size, samples=samples)
     except Exception as exc:  # pragma: no cover - defensive, mirrors irradiance.py's style
         _log.warning("[heatsim.adapter] '%s': irradiance bake failed for texel sampling: %s", obj.name, exc)
         baked = None
@@ -913,12 +915,13 @@ def _compute_irradiance_cycles(scene: Any, sim_objects: list, solver_cfg: dict, 
     from visionsim.simulate.heatsim import irradiance, irradiance_kernel
 
     texture_size = int(solver_cfg.get("irradiance_texture_size", 512))
+    bake_samples = int(solver_cfg.get("bake_samples", 1024))
     out: dict = {}
     for obj in sim_objects:
         if resolve_material(obj, defaults)["thermal_role"] == "DIRICHLET_SOURCE":
             continue  # mirrors compute_per_vertex_irradiance's own Dirichlet skip
         try:
-            baked = irradiance.bake_irradiance_map(scene, obj, texture_size)
+            baked = irradiance.bake_irradiance_map(scene, obj, texture_size, samples=bake_samples)
         except Exception as exc:  # pragma: no cover - defensive
             _log.warning("[heatsim.adapter] '%s': irradiance bake failed: %s", obj.name, exc)
             baked = None
@@ -958,6 +961,7 @@ def _compute_texel_irradiance(
     texture_size = int(solver_cfg.get("irradiance_texture_size", 512))
     n_samples_for_area = int(solver_cfg.get("direct_kernel_soft_shadow_rays", 8))
     use_cycles = str(solver_cfg.get("irradiance_source", "DIRECT_KERNEL")).upper() == "CYCLES_BAKE"
+    bake_samples = int(solver_cfg.get("bake_samples", 1024))
     by_name = {o.name: o for o in sim_objects}
 
     backend = bvh_backend.best_available()
@@ -977,7 +981,7 @@ def _compute_texel_irradiance(
         if use_cycles:
             # Cycles bake gives INCIDENT irradiance; apply (1 - albedo) to match the
             # Direct Kernel's absorbed-flux contract.
-            flux = _texel_irradiance_cycles(scene, obj, uv, texture_size) * (1.0 - albedo)
+            flux = _texel_irradiance_cycles(scene, obj, uv, texture_size, samples=bake_samples) * (1.0 - albedo)
         else:
             flux = irradiance_kernel.compute_irradiance_at_points(
                 scene, positions, normals, albedo, backend=backend, n_samples_for_area=n_samples_for_area

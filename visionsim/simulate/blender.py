@@ -1515,6 +1515,7 @@ class BlenderService(rpyc.Service):
         domain: Literal["POINTS", "MESH"],
         laplacian_backend: Literal["ROBUST", "IGL"],
         irradiance_source: Literal["DIRECT_KERNEL", "CYCLES_BAKE"] = "DIRECT_KERNEL",
+        bake_samples: int = 1024,
         device: Literal["cuda", "cpu"],
         assignments: str | None = None,
     ) -> tuple[dict, dict, Path, Any]:
@@ -1558,6 +1559,7 @@ class BlenderService(rpyc.Service):
             "laplacian_backend": laplacian_backend,
             "device": device,
             "irradiance_source": irradiance_source,
+            "bake_samples": bake_samples,
         }
         scene_assignment = None
         if assignments is not None:
@@ -1586,6 +1588,7 @@ class BlenderService(rpyc.Service):
         domain: Literal["POINTS", "MESH"],
         laplacian_backend: Literal["ROBUST", "IGL"],
         irradiance_source: Literal["DIRECT_KERNEL", "CYCLES_BAKE"] = "DIRECT_KERNEL",
+        bake_samples: int = 1024,
         device: Literal["cuda", "cpu"],
         assignments: str | None = None,
         render_domain: Literal["VERTEX", "TEXEL"] = "VERTEX",
@@ -1629,6 +1632,7 @@ class BlenderService(rpyc.Service):
             domain=domain,
             laplacian_backend=laplacian_backend,
             irradiance_source=irradiance_source,
+            bake_samples=bake_samples,
             device=device,
             assignments=assignments,
         )
@@ -1692,6 +1696,7 @@ class BlenderService(rpyc.Service):
         domain: Literal["POINTS", "MESH"] = "POINTS",
         laplacian_backend: Literal["ROBUST", "IGL"] = "ROBUST",
         irradiance_source: Literal["DIRECT_KERNEL", "CYCLES_BAKE"] = "DIRECT_KERNEL",
+        bake_samples: int = 1024,
         device: Literal["cuda", "cpu"] = "cuda",
         render_domain: Literal["VERTEX", "TEXEL"] = "VERTEX",
         atlas_texel_density: float = 1500.0,
@@ -1826,6 +1831,7 @@ class BlenderService(rpyc.Service):
                 domain=domain,
                 laplacian_backend=laplacian_backend,
                 irradiance_source=irradiance_source,
+                bake_samples=bake_samples,
                 device=device,
                 assignments=assignments,
             )
@@ -1876,6 +1882,7 @@ class BlenderService(rpyc.Service):
             domain=domain,
             laplacian_backend=laplacian_backend,
             irradiance_source=irradiance_source,
+            bake_samples=bake_samples,
             device=device,
             assignments=assignments,
             render_domain=render_domain,
@@ -1969,6 +1976,7 @@ class BlenderService(rpyc.Service):
         domain: Literal["POINTS", "MESH"] = "POINTS",
         laplacian_backend: Literal["ROBUST", "IGL"] = "ROBUST",
         irradiance_source: Literal["DIRECT_KERNEL", "CYCLES_BAKE"] = "DIRECT_KERNEL",
+        bake_samples: int = 1024,
         device: Literal["cuda", "cpu"] = "cuda",
         render_domain: Literal["VERTEX", "TEXEL"] = "VERTEX",
         atlas_texel_density: float = 1500.0,
@@ -2063,6 +2071,7 @@ class BlenderService(rpyc.Service):
             domain=domain,
             laplacian_backend=laplacian_backend,
             irradiance_source=irradiance_source,
+            bake_samples=bake_samples,
             device=device,
             assignments=assignments,
             render_domain=render_domain,
@@ -2088,6 +2097,7 @@ class BlenderService(rpyc.Service):
         domain: Literal["POINTS", "MESH"] = "POINTS",
         laplacian_backend: Literal["ROBUST", "IGL"] = "ROBUST",
         irradiance_source: Literal["DIRECT_KERNEL", "CYCLES_BAKE"] = "DIRECT_KERNEL",
+        bake_samples: int = 1024,
         device: Literal["cuda", "cpu"] = "cuda",
         render_domain: Literal["VERTEX", "TEXEL"] = "VERTEX",
         atlas_texel_density: float = 1500.0,

@@ -206,6 +206,19 @@ class ThermalConfig:
     is a one-time cost for static geometry and lights -- which is the usual case here,
     since these scenes animate the camera, not the scene. Prefer it unless geometry or
     lights genuinely change per frame."""
+    bake_samples: int = 1024
+    """Cycles bake samples for the irradiance map (``CYCLES_BAKE`` only).
+
+    Adaptive sampling is disabled for the bake, so this is the true per-texel sample
+    count rather than a cap. The dataset's blends ship ``samples=256`` with adaptive
+    sampling at threshold 0.05 -- five times looser than Blender's 0.01 default -- which
+    terminates texels far below the nominal cap and leaves 9.6-19.2% relative noise
+    (measured on visionsim50/diningroom). A steady-state surface sits at
+    T ~ (E/(eps*sigma))^(1/4), so that is ~2.4-4.8% in T: the several-Kelvin blotching
+    visible across the temperature and radiance passes. 1024 fixed samples cut it to
+    3.1-7.9% for ~1.55x the bake time; 2048 buys only a further 1.28x for 1.5x more
+    time. Denoising does not help a bake -- output is identical to four decimals with
+    it on and off -- so sample count is the only lever."""
     device: Literal["cuda", "cpu"] = "cuda"
     """Torch device for the solve; falls back to cpu if cuda is unavailable"""
     # --- thermal atlas (texel-domain render) ---
