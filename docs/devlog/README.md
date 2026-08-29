@@ -33,6 +33,7 @@ dataset).
 |---|---|
 | `progress-ledger.md` | Running record of every root cause, with the evidence and the measurements that confirmed each fix. Includes corrections where an earlier diagnosis turned out wrong. |
 | `texel-noise-investigation.md` | Why TEXEL renders are ~6× noisier than VERTEX. Three bugs fixed (AOV accumulation through transparent surfaces, non-mesh objects rendering at 0 K, bilinear blending of the atlas validity mask); the remaining spatial mottling traced to the texel-domain discretisation, with nine hypotheses eliminated by measurement. Also records an unsound solve cache and solver defaults shadowed four levels deep. |
+| `cycles-irradiance-source.md` | Why the classroom rendered thermally flat, and the fix: the analytic Direct Kernel counts only `LIGHT` objects, so a scene daylit through emissive window geometry received zero flux. Adds `irradiance_source=CYCLES_BAKE`, a path-traced DIFFUSE DIRECT+INDIRECT bake that resolves emissive meshes, bounce and portals. Interior spread 4.43 K -> 88.62 K. |
 | `area-light-near-field-blowup.md` | The 1516 K floor spot and `inf` radiance in early frames: an unbounded 1/d² in the area-light evaluator, proven positionally (blow-up texels sit 13–18 cm from a 2.77 m panel light whose *centre* is 2 m away). A latent bug in the light model that the atlas exposed by sampling densely enough to find it — not an atlas defect. Fixed by flooring d² at the light's physical radius. |
 | `design-spec.md` | Why the atlas exists: decoupling simulation and render resolution from mesh vertex density, so a 4-vertex plane can still render a detailed thermal field. |
 | `implementation-plan.md` | The staged plan the work followed. |
@@ -54,13 +55,14 @@ including several where the pipeline exits 0 while producing nothing useful:
 
 Recorded so they are not mistaken for oversights:
 
-- **The classroom scene renders thermally flat.** This is physically correct under
-  the current model rather than a bug: its world background strength is `0`, its sun
-  is 1 W/m², and its daylight arrives through emissive light-portal surfaces. The
-  irradiance kernel counts only lamp objects and the world sky term, and models no
-  indirect bounce, so 99.8% of surface points receive under 1 W/m² and stay at their
-  295 K initial condition. Changing this is a modeling decision about whether
-  emissive surfaces and bounced light should carry thermal flux.
+- **The classroom scene renders thermally flat — RESOLVED 2026-08-29.** The diagnosis
+  above was correct: the irradiance kernel counts only lamp objects and the world sky,
+  so the classroom's daylight (`dayLight_portal`, emission strength 20 over 6.17 m² of
+  windows) contributed nothing, and with no indirect bounce the room stayed at 295 K.
+  The modeling decision it flagged has now been made: `irradiance_source=CYCLES_BAKE`
+  bakes DIFFUSE DIRECT+INDIRECT with Cycles, so emissive surfaces and bounced light do
+  carry thermal flux. Interior spread 4.43 K → 88.62 K; solve 130 s → 379 s, one-time.
+  The Direct Kernel remains the default. See `cycles-irradiance-source.md`.
 - **Atlas tiles are not fully rasterized.** Around 1.2% of kitchen1 pixels sample an
   unwritten texel and fall back to the per-object default of 295 K instead of a
   solved value, showing flat where there should be a gradient.
