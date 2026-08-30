@@ -96,7 +96,25 @@ def prepare_object_bake_uv(obj: bpy.types.Object) -> None:
     if obj is None or obj.type != "MESH":
         return
     mesh = obj.data
-    if mesh is None or not getattr(mesh, "uv_layers", None):
+    # NOTE: test `is None`, not truthiness. `mesh.uv_layers` on a mesh carrying zero UV
+    # layers is an EMPTY collection, which is falsy -- so a truthiness check bailed out on
+    # exactly the meshes that need a bake UV created, while the very next block
+    # (`uv_layers.new(...)` + Smart Project) exists to create one from scratch.
+    #
+    # The cost was severe and entirely silent. An object with no authored UVs never got
+    # HeatSim_Bake_UV, so `_write_atlas_uv_layer` had no source layer, HeatSim_Atlas_UV was
+    # never written, and `adapter.build_atlas_plan` demoted the object from the atlas to the
+    # per-vertex path. There, if a modifier changed the vertex count (Subsurf, Solidify,
+    # ...), per-vertex write-back is structurally impossible, so `write_frame_attributes`
+    # constant-filled the whole object at the MEAN of its solved field.
+    #
+    # Measured on visionsim50/diningroom (289 objects, 85% with no authored UVs):
+    # 259 selected for the atlas, 231 demoted for a missing UV layer, 229 then
+    # constant-filled -- each rendering as ONE flat value. That is why every chair showed a
+    # different uniform temperature, and why officebuilding's floor (Cube.006, base 68 verts
+    # vs 408 evaluated) rendered as a flat 330.74 K plateau while its solved field actually
+    # spanned 295.8-445.8 K with a 33 K standard deviation.
+    if mesh is None or getattr(mesh, "uv_layers", None) is None:
         return
     # Skip degenerate (zero-geometry) meshes: an empty object has no albedo to
     # bake, and bpy.ops.uv.smart_project.poll() fails on it in --background mode
