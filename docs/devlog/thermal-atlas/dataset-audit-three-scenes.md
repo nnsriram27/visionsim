@@ -390,3 +390,109 @@ silently dropping it.** That guard is the natural follow-up to this fix.
 `obj.data` the same way. The consequence there is milder -- on mismatch the albedo falls back
 to zeros, i.e. full absorption, rather than the object being dropped -- but it is the same
 latent inconsistency and should be brought onto the evaluated mesh too.
+
+## 9. bathroom1 resolved: two degenerate nodes, not precision
+
+Section 6 left this open after eight hypotheses. The answer came from dumping every solver
+input immediately before the time loop:
+
+```
+diag(L)        nonfinite=2   min=-inf     -> idx [118296, 118313]
+Minv           zeros=2                    -> idx [118296, 118313]
+implied diagA  max=inf  nonfinite=2
+rho / c / rc / eps / vec_rad_A / B_step / diag(M) / alpha : all finite
+```
+
+`robust_laplacian` emitted **-inf on the Laplacian diagonal for 2 of 120,183 nodes** --
+degenerate local neighbourhoods, where coincident or near-coincident points leave the local
+tangent plane undefined (this cloud has 30 exactly-coincident points).
+
+**Why two bad nodes destroyed all 120,183.** The damage propagates through a *scalar*:
+
+1. `inf` on `diag(L)` makes that node's `diagA` inf,
+2. so the Jacobi entry `Minv = 1/clamp(diagA, min=1e-12)` becomes exactly 0,
+3. `A @ p` goes non-finite, so `denom = p . Ap` does too,
+4. PCG guards only `if denom.abs() < 1e-20: break` -- **false for both inf and NaN** --
+5. so `alpha = rz_old / denom` becomes NaN, and `x = x + alpha * p` is NaN *everywhere*.
+
+That is why the field went from perfect (295.0 K, all finite) to entirely NaN in one step,
+with no intermediate state to catch.
+
+Fixed in `laplacian.py`: non-finite Laplacian entries are detected, the affected nodes are
+isolated (row and column zeroed) with a loud warning, and non-finite/non-positive mass
+entries are replaced with the median. An isolated node still exchanges with ambient and
+still absorbs flux -- it just does not conduct -- so it degrades to a thermally
+disconnected speck instead of destroying the solve. **99.8004% NaN -> 0.0000%**, range
+[294.5, 354.6] K. No-op on well-conditioned clouds.
+
+**Two hypotheses recorded because they were wrong, and cost real time:**
+
+- **float32 precision.** A full float64 solve (`np.float32` -> `np.float64` throughout
+  `solver.py`) reproduced the NaN *identically*. Reverted -- it would have cost FP64
+  throughput on hardware that runs it at a fraction of FP32, for nothing.
+- **Irradiance magnitude.** The `CYCLES_BAKE`/`DIRECT_KERNEL` split looked like a
+  large-source effect, but `A` is assembled from `M`, `L`, `Tamb^3` and `h/(rho*c)` and
+  **never sees the irradiance** -- `vec_rad_A` linearises about ambient, not about a
+  flux-derived temperature. The bake only decided *whether the run reached* the bad node's
+  influence; it never changed the matrix.
+
+## 10. Why objects rendered as flat single-temperature patches
+
+Reported from the videos: dining chairs each showing a *different* uniform temperature, and
+officebuilding's floor a uniform orange plateau. One root cause, and it is a one-line guard.
+
+`irradiance.prepare_object_bake_uv` opened with:
+
+```python
+mesh = obj.data
+if mesh is None or not getattr(mesh, "uv_layers", None):
+    return
+```
+
+`mesh.uv_layers` on a mesh with **zero** UV layers is an *empty collection*, which is falsy.
+The guard -- clearly intended as a None-check -- therefore returned early on exactly the
+meshes that needed a UV layer, while the very next block exists to create one
+(`uv_layers.new()` + Smart Project).
+
+**The cascade, each step individually reasonable:**
+
+| step | consequence |
+|---|---|
+| no `HeatSim_Bake_UV` created | `_write_atlas_uv_layer` has no source layer |
+| no `HeatSim_Atlas_UV` written | `build_atlas_plan` cannot read it off the evaluated mesh |
+| object demoted to the per-vertex path | with a topology-changing modifier, per-vertex write-back is impossible |
+| `write_frame_attributes` constant-fills | the whole object renders as ONE value: the mean of its solved field |
+
+Measured on diningroom (289 objects, **85% with no authored UVs**):
+
+| | before | after |
+|---|---|---|
+| selected for the atlas | 259 | 259 |
+| demoted for a missing UV layer | **231** | **0** |
+| survived to rasterize | **28** | **259** |
+| constant-filled on the vertex path | 229 | -- |
+
+The visible symptoms follow exactly. Each chair was constant-filled at *its own* mean, so
+each became a differently-coloured flat patch -- the "different temperatures" was literally
+each object's mean. officebuilding's floor (`Cube.006`, base 68 verts vs 408 evaluated) was
+filled at **330.74 K**, the mean of a field genuinely spanning **295.8-445.8 K** (std 33.16 K,
+range 150 K). Its `p99` was pinned at 330.74 on five of seven sampled frames, with
+`max == p99` -- a flat shelf, which is what prompted the question.
+
+**What was already right.** `build_atlas_plan` deliberately forces atlas participation when
+per-vertex write-back is impossible (`select_for_atlas(..., writeback_possible=False)`), and
+that rule fired correctly for all 245 such objects. They were selected and *then* dropped
+downstream for want of a UV layer. The architecture was sound; one falsy-vs-None check
+disabled it for 80% of the dataset.
+
+**A wrong turn worth recording.** The demotion warning mentions "the modifier stack dropped
+the named layer", and the surrounding comment claims the code "force[s] a depsgraph update"
+before reading the evaluated mesh -- no such update call exists. That made a stale-depsgraph
+read the obvious suspect. It was tested directly and **falsified**: the layer is visible on
+the evaluated mesh both before and after an explicit `view_layer.update()`. The objects that
+failed had no layer to propagate in the first place. A plausible mechanism named in a comment
+is not evidence.
+
+**Diagnostic note.** These logs are Rich-formatted and wrap long messages across lines, so
+`grep -c` under-counts badly -- "demoted from the atlas" returned 0 when the true count was
+234. Flatten first (`tr '\n' ' '`) before counting.
