@@ -36,7 +36,12 @@ from typing import Any, Dict, Optional
 import numpy as np
 
 from visionsim.simulate.heatsim import atlas, cache, materials
-from visionsim.simulate.heatsim.constants import ATLAS_COVERAGE_PROP, ATLAS_UV_LAYER_NAME, BAKE_UV_LAYER_NAME
+from visionsim.simulate.heatsim.constants import (
+    ATLAS_COVERAGE_PROP,
+    ATLAS_UV_LAYER_NAME,
+    BAKE_UV_LAYER_NAME,
+    CYCLES_LOUT_TO_IRRADIANCE,
+)
 
 try:
     import bpy  # type: ignore
@@ -673,10 +678,23 @@ def build_atlas_plan(scene: Any, sim_objects: list, cfg: dict) -> AtlasPlan:
 # call). Each dilate pass grows a tile's valid region by at most 1px, and TWO adjacent
 # tiles dilate toward each other from both sides of the gap -- so the gap must be wide
 # enough for both expansions with no meeting point, or the middle gap texels would be
-# filled with the MEAN of two unrelated objects' temperatures. 2*1 <= 3 holds with one
-# spare gap texel; see the design spec's "seam bleeding" risk note.
-_ATLAS_DILATE_ITERATIONS = 1
-_ATLAS_PACKING_PADDING = 3
+# filled with the MEAN of two unrelated objects' temperatures. The assert below enforces
+# it; see the design spec's "seam bleeding" risk note.
+#
+# One iteration is not enough. A single pass protects only a 1-texel ring, but the atlas
+# also contains INTERIOR holes -- texels inside a tile that no solved element scattered
+# into. Measured on visionsim50/kitchen1: 25 invalid components inside/near tile interiors
+# sized 1-462 texels, far beyond a one-texel margin. Render-time bilinear filtering then
+# straddles those valid/invalid edges and drags T_effective under the solve floor (2665
+# sub-295 K pixels in a single frame; they disappear under render_domain=VERTEX).
+#
+# 8 passes fill a hole of radius <= 8 texels outright, and the shader thresholds the atlas
+# alpha so anything still unfilled falls back to the object-level default rather than
+# blending a half-zeroed colour (see thermal_shader._build_temperature_source_chain).
+# Padding grows in lockstep to keep neighbouring tiles from meeting; the cost is a modest
+# increase in packed atlas area.
+_ATLAS_DILATE_ITERATIONS = 8
+_ATLAS_PACKING_PADDING = 17
 assert 2 * _ATLAS_DILATE_ITERATIONS <= _ATLAS_PACKING_PADDING, "dilation would bridge tile padding"
 
 
@@ -850,6 +868,77 @@ def _texel_albedo(scene: Any, obj: Any, uv_at_texel: np.ndarray, texture_size: i
     return np.clip(luma, 0.0, 1.0)
 
 
+def _texel_irradiance_cycles(
+    scene: Any, obj: Any, uv_at_texel: np.ndarray, texture_size: int, samples: Optional[int] = None
+) -> np.ndarray:
+    """Bilinear-sample ``obj``'s Cycles irradiance bake at texel UV centers.
+
+    The Cycles counterpart to :func:`_texel_albedo`, sampling the same UVs from the
+    DIFFUSE DIRECT+INDIRECT bake instead of the COLOR bake. Returns *incident* W/m^2;
+    the caller applies (1 - albedo) to get absorbed flux.
+
+    On bake failure every texel gets 0 W/m^2 - the surface then simply holds its
+    initial temperature, which is the same failure mode as a missing Direct-Kernel
+    contribution and is preferable to inventing flux.
+    """
+    k = int(uv_at_texel.shape[0])
+    if k == 0:
+        return np.zeros(0, dtype=np.float64)
+    try:
+        from visionsim.simulate.heatsim import irradiance
+
+        baked = irradiance.bake_irradiance_map(scene, obj, texture_size, samples=samples)
+    except Exception as exc:  # pragma: no cover - defensive, mirrors irradiance.py's style
+        _log.warning("[heatsim.adapter] '%s': irradiance bake failed for texel sampling: %s", obj.name, exc)
+        baked = None
+    if baked is None or getattr(baked, "pixels", None) is None:
+        return np.zeros(k, dtype=np.float64)
+    lum = _sample_bilinear(baked.pixels, int(baked.width), int(baked.height), uv_at_texel)
+    return np.maximum(np.asarray(lum, dtype=np.float64) * CYCLES_LOUT_TO_IRRADIANCE, 0.0)
+
+
+def _compute_irradiance_cycles(scene: Any, sim_objects: list, solver_cfg: dict, defaults: dict) -> dict:
+    """Per-vertex irradiance from a Cycles bake -> ``{obj: (N,) float64 W/m^2 absorbed}``.
+
+    Drop-in alternative to :func:`_compute_irradiance` (the analytic Direct Kernel),
+    selected by ``solver_cfg["irradiance_source"] == "CYCLES_BAKE"``.
+
+    The Direct Kernel counts only ``LIGHT`` objects plus an unshadowed SH9 sky and
+    models no indirect bounce, so a scene lit by emissive geometry gets no flux at all
+    (visionsim50/classroom: 6.17 m^2 of emissive windows contributing exactly zero).
+    Cycles resolves emissive meshes, bounce and portals because it is a path tracer.
+
+    The bake yields *incident* irradiance, so (1 - albedo) is applied here to match the
+    Direct Kernel's absorbed-flux contract. Albedo comes from the bake that already runs
+    for the kernel path, so no extra Cycles work is introduced by the conversion.
+    """
+    from visionsim.simulate.heatsim import irradiance, irradiance_kernel
+
+    texture_size = int(solver_cfg.get("irradiance_texture_size", 512))
+    bake_samples = int(solver_cfg.get("bake_samples", 1024))
+    out: dict = {}
+    for obj in sim_objects:
+        if resolve_material(obj, defaults)["thermal_role"] == "DIRICHLET_SOURCE":
+            continue  # mirrors compute_per_vertex_irradiance's own Dirichlet skip
+        try:
+            baked = irradiance.bake_irradiance_map(scene, obj, texture_size, samples=bake_samples)
+        except Exception as exc:  # pragma: no cover - defensive
+            _log.warning("[heatsim.adapter] '%s': irradiance bake failed: %s", obj.name, exc)
+            baked = None
+        if baked is None or getattr(baked, "vertex_flux", None) is None:
+            continue
+        incident = np.asarray(baked.vertex_flux, dtype=np.float64).reshape(-1)
+        try:
+            albedo = irradiance_kernel.get_or_bake_vertex_albedo(scene, obj, texture_size)
+            albedo = np.clip(np.asarray(albedo, dtype=np.float64).reshape(-1), 0.0, 1.0)
+            if albedo.shape != incident.shape:
+                albedo = np.zeros_like(incident)
+        except Exception:
+            albedo = np.zeros_like(incident)
+        out[obj] = np.maximum(incident * (1.0 - albedo), 0.0)
+    return out
+
+
 def _compute_texel_irradiance(
     scene: Any, sim_objects: list, atlas_plan: AtlasPlan, solver_cfg: dict, defaults: dict
 ) -> dict:
@@ -871,6 +960,8 @@ def _compute_texel_irradiance(
 
     texture_size = int(solver_cfg.get("irradiance_texture_size", 512))
     n_samples_for_area = int(solver_cfg.get("direct_kernel_soft_shadow_rays", 8))
+    use_cycles = str(solver_cfg.get("irradiance_source", "DIRECT_KERNEL")).upper() == "CYCLES_BAKE"
+    bake_samples = int(solver_cfg.get("bake_samples", 1024))
     by_name = {o.name: o for o in sim_objects}
 
     backend = bvh_backend.best_available()
@@ -887,9 +978,14 @@ def _compute_texel_irradiance(
         normals = np.asarray(tex["normal"], dtype=np.float64)
         uv = np.asarray(tex["uv"], dtype=np.float64)
         albedo = _texel_albedo(scene, obj, uv, texture_size)
-        flux = irradiance_kernel.compute_irradiance_at_points(
-            scene, positions, normals, albedo, backend=backend, n_samples_for_area=n_samples_for_area
-        )
+        if use_cycles:
+            # Cycles bake gives INCIDENT irradiance; apply (1 - albedo) to match the
+            # Direct Kernel's absorbed-flux contract.
+            flux = _texel_irradiance_cycles(scene, obj, uv, texture_size, samples=bake_samples) * (1.0 - albedo)
+        else:
+            flux = irradiance_kernel.compute_irradiance_at_points(
+                scene, positions, normals, albedo, backend=backend, n_samples_for_area=n_samples_for_area
+            )
         out[obj] = np.asarray(flux, dtype=np.float64).reshape(-1)
     return out
 
@@ -901,6 +997,9 @@ def _compute_texel_irradiance(
 
 def _compute_irradiance(scene: Any, sim_objects: list, solver_cfg: dict, defaults: dict) -> dict:
     """Run the Direct-Kernel and return ``{obj: (N,) float64 W/m^2 absorbed}``."""
+    if str(solver_cfg.get("irradiance_source", "DIRECT_KERNEL")).upper() == "CYCLES_BAKE":
+        return _compute_irradiance_cycles(scene, sim_objects, solver_cfg, defaults)
+
     from visionsim.simulate.heatsim import irradiance_kernel
 
     # SimpleNamespace surrogate for the addon's scene PropertyGroup (the kernel

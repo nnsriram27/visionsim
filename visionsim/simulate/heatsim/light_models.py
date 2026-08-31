@@ -1,4 +1,4 @@
-# Vendored from heat-sim-blender:addon/lib/light_models.py @ 543ee81
+# Vendored from heat-sim-blender:addon/lib/light_models.py @ e5b4afe
 """Per-light analytic diffuse-irradiance forms for the Direct Kernel.
 
 Each light type contributes one of:
@@ -116,13 +116,23 @@ def evaluate_point(
 
     delta = light_pos.reshape(1, 3) - vert_positions.astype(np.float64)  # (N, 3)
     d2 = np.einsum("ij,ij->i", delta, delta)  # (N,)
-    d = np.sqrt(np.maximum(d2, 1e-20))  # (N,)
+    # Near-field floor: Blender models a POINT light as a sphere of radius
+    # `shadow_soft_size` (0 by default), not a literal zero-size point. Inside
+    # that radius the 1/(4*pi*d^2) point-source falloff has no physical meaning
+    # and diverges without bound as a receiver approaches the light's origin --
+    # a `max(d2, 1e-20)` numerical floor is nowhere near tight enough to catch
+    # this (see the identical, *reached* bug in evaluate_area below). Clamp d^2
+    # to at least the light's own radius (and a small absolute floor for a
+    # literal radius=0 light) so a close receiver saturates instead of exploding.
+    _radius = float(getattr(light_obj.data, "shadow_soft_size", 0.0) or 0.0)
+    d2 = np.maximum(d2, max(_radius * _radius, 1e-6))
+    d = np.sqrt(d2)  # (N,)
     L = delta / d[:, None]  # (N, 3) unit vec from vertex to light
 
     n = vert_normals.astype(np.float64)
     cos_theta = np.maximum(0.0, np.einsum("ij,ij->i", n, L))
     # Isotropic point: energy distributed over 4π steradians.
-    irr = (energy / (4.0 * math.pi * np.maximum(d2, 1e-20))) * cos_theta  # (N,) W/m²
+    irr = (energy / (4.0 * math.pi * d2)) * cos_theta  # (N,) W/m²
 
     Nv = int(vert_positions.shape[0])
     origins = (vert_positions.astype(np.float32)
@@ -158,12 +168,17 @@ def evaluate_spot(
 
     delta = light_pos.reshape(1, 3) - vert_positions.astype(np.float64)  # (N, 3)
     d2 = np.einsum("ij,ij->i", delta, delta)
-    d = np.sqrt(np.maximum(d2, 1e-20))
+    # Near-field floor: same reasoning as evaluate_point -- a SPOT light is
+    # modelled as a sphere of radius `shadow_soft_size` (0 by default), so the
+    # point-source falloff is only meaningful outside that radius.
+    _radius = float(getattr(light_obj.data, "shadow_soft_size", 0.0) or 0.0)
+    d2 = np.maximum(d2, max(_radius * _radius, 1e-6))
+    d = np.sqrt(d2)
     L = delta / d[:, None]  # vertex → light
 
     n = vert_normals.astype(np.float64)
     cos_theta_recv = np.maximum(0.0, np.einsum("ij,ij->i", n, L))
-    base = energy / (4.0 * math.pi * np.maximum(d2, 1e-20)) * cos_theta_recv
+    base = energy / (4.0 * math.pi * d2) * cos_theta_recv
 
     # Spot attenuation: cosine of angle between spot axis (light → scene)
     # and the direction from light to the vertex.
@@ -274,14 +289,27 @@ def evaluate_area(
     s = samples.reshape(K, 1, 3)
     delta = s - p.reshape(1, Nv, 3)  # (K, Nv, 3)
     d2 = np.einsum("kij,kij->ki", delta, delta)
-    d = np.sqrt(np.maximum(d2, 1e-20))
+    # Near-field floor: THE root cause of a measured >6000 K localized FEM
+    # blow-up (visionsim50/kitchen1: a floor slab's texels sitting a few cm from
+    # the base of a large, floor-adjacent area light -- e.g. a floor-to-ceiling
+    # window/panel light -- picked up a stratified sample landing within
+    # millimetres of the receiver). Each of the K stratified samples stands in
+    # for a finite sub-patch of the light's own surface (area/K, not a literal
+    # point), so the point-sampled 1/d^2 estimator is only valid at ranges large
+    # compared to that sub-patch's own size; a `max(d2, 1e-20)` numerical floor
+    # is many orders of magnitude too small to catch a genuinely close receiver.
+    # Clamp d^2 to at least the sub-patch's half-linear-size squared so a close
+    # receiver saturates at a bounded near-field value instead of diverging.
+    _patch_radius = 0.5 * math.sqrt(area / float(K))
+    d2 = np.maximum(d2, max(_patch_radius * _patch_radius, 1e-6))
+    d = np.sqrt(d2)
     L = delta / d[..., None]  # (K, Nv, 3) unit vector from vertex to sample
 
     cos_recv = np.maximum(0.0, np.einsum("ij,kij->ki", n, L))
     cos_emit = np.maximum(0.0, np.einsum("j,kij->ki", -light_normal, L))
 
     # Per-sample contribution: energy * cos_emit * cos_recv / (π * K * d²)
-    irr = (energy * cos_emit * cos_recv) / (math.pi * float(K) * np.maximum(d2, 1e-20))
+    irr = (energy * cos_emit * cos_recv) / (math.pi * float(K) * d2)
 
     origins = np.broadcast_to(
         (vert_positions.astype(np.float32) + _RAY_EPS * vert_normals.astype(np.float32)).reshape(1, Nv, 3),

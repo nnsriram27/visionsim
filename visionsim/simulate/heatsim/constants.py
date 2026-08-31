@@ -1,4 +1,4 @@
-# Vendored from heat-sim-blender:addon/lib/constants.py @ 543ee81
+# Vendored from heat-sim-blender:addon/lib/constants.py @ e5b4afe
 import math
 
 THERMAL_VIEW_LAYER_NAME = "HeatSim Thermal"

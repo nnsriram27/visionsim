@@ -1,4 +1,4 @@
-# Vendored from heat-sim-blender:addon/lib/bvh_backend.py @ 543ee81
+# Vendored from heat-sim-blender:addon/lib/bvh_backend.py @ e5b4afe
 """BVH backend abstraction for the Direct Kernel irradiance source.
 
 Two implementations:

@@ -20,7 +20,7 @@ from typing import Optional, List, Tuple, Dict, Set
 import bpy
 import numpy as np
 
-from .constants import ALBEDO_LAYER_NAME, BAKE_UV_LAYER_NAME
+from .constants import ALBEDO_LAYER_NAME, BAKE_UV_LAYER_NAME, CYCLES_LOUT_TO_IRRADIANCE, IRRADIANCE_LAYER_NAME
 from .uv_utils import snapshot_uv_states, restore_uv_states
 
 
@@ -96,7 +96,25 @@ def prepare_object_bake_uv(obj: bpy.types.Object) -> None:
     if obj is None or obj.type != "MESH":
         return
     mesh = obj.data
-    if mesh is None or not getattr(mesh, "uv_layers", None):
+    # NOTE: test `is None`, not truthiness. `mesh.uv_layers` on a mesh carrying zero UV
+    # layers is an EMPTY collection, which is falsy -- so a truthiness check bailed out on
+    # exactly the meshes that need a bake UV created, while the very next block
+    # (`uv_layers.new(...)` + Smart Project) exists to create one from scratch.
+    #
+    # The cost was severe and entirely silent. An object with no authored UVs never got
+    # HeatSim_Bake_UV, so `_write_atlas_uv_layer` had no source layer, HeatSim_Atlas_UV was
+    # never written, and `adapter.build_atlas_plan` demoted the object from the atlas to the
+    # per-vertex path. There, if a modifier changed the vertex count (Subsurf, Solidify,
+    # ...), per-vertex write-back is structurally impossible, so `write_frame_attributes`
+    # constant-filled the whole object at the MEAN of its solved field.
+    #
+    # Measured on visionsim50/diningroom (289 objects, 85% with no authored UVs):
+    # 259 selected for the atlas, 231 demoted for a missing UV layer, 229 then
+    # constant-filled -- each rendering as ONE flat value. That is why every chair showed a
+    # different uniform temperature, and why officebuilding's floor (Cube.006, base 68 verts
+    # vs 408 evaluated) rendered as a flat 330.74 K plateau while its solved field actually
+    # spanned 295.8-445.8 K with a 33 K standard deviation.
+    if mesh is None or getattr(mesh, "uv_layers", None) is None:
         return
     # Skip degenerate (zero-geometry) meshes: an empty object has no albedo to
     # bake, and bpy.ops.uv.smart_project.poll() fails on it in --background mode
@@ -206,6 +224,10 @@ def _ensure_bake_image(base_name: str, name_suffix: str, size: int):
 
 def _ensure_albedo_image(name_suffix: str, size: int):
     return _ensure_bake_image(ALBEDO_LAYER_NAME, name_suffix, size)
+
+
+def _ensure_irradiance_image(name_suffix: str, size: int):
+    return _ensure_bake_image(IRRADIANCE_LAYER_NAME, name_suffix, size)
 
 
 def _prepare_image_nodes_for_bake(obj, image, node_name: str, node_label: str):
@@ -633,6 +655,228 @@ def bake_albedo_map(scene, obj, texture_size: int) -> Optional[BakedFluxMap]:
     )
 
     obj["heat_sim_albedo_image"] = image.name
+    return BakedFluxMap(
+        image=image,
+        pixels=rgb_pixels,
+        tri_uvs=tri_uvs,
+        vertex_flux=vertex_luma,
+        width=width,
+        height=height,
+    )
+
+
+def bake_irradiance_map(scene, obj, texture_size: int, samples: Optional[int] = None) -> Optional[BakedFluxMap]:
+    """Bake incident irradiance (DIFFUSE DIRECT+INDIRECT) for a single object.
+
+    The mirror image of :func:`bake_albedo_map`: that bakes COLOR with the light
+    passes off (a texture lookup, no light transport); this bakes the light passes
+    with COLOR off, so the result is incoming light *independent of surface colour* -
+    irradiance, not radiosity.
+
+    Why this exists: the analytic Direct Kernel counts only objects of type ``LIGHT``
+    plus a world sky term. A scene lit by *emissive geometry* - the standard way an
+    interior is daylit, e.g. visionsim50/classroom's ``dayLight_portal`` material at
+    emission strength 20 across 6.17 m2 of windows - therefore receives no thermal flux
+    from its actual light source, and the kernel models no indirect bounce either.
+    Cycles resolves emissive meshes, bounce, portals and HDRI transport for free.
+
+    Cost is close to the albedo bake already run per object: both are dominated by UV
+    setup, texture allocation and BVH build rather than ray tracing. Measured on
+    classroom at 512px/128spp: 0.95 s/object COLOR vs 0.97 s/object DIRECT+INDIRECT.
+
+    ``vertex_flux`` is per-vertex irradiance in W/m2; Cycles bakes outgoing radiance so
+    it is scaled by ``CYCLES_LOUT_TO_IRRADIANCE`` (= pi).
+
+    NOTE: this is *incident* flux. The solver wants *absorbed* flux, so the caller
+    applies (1 - albedo) - see ``adapter._compute_irradiance_cycles``. The Direct
+    Kernel returns absorbed flux directly; that is the one contract difference.
+    """
+    if obj.type != "MESH":
+        return None
+
+    # Ensure object has source UVs for its real materials to sample from.
+    if _ensure_uv_layer(obj) is None:
+        return None
+
+    # Snapshot UV state so we don't permanently change the user's UV selections.
+    uv_snapshot = snapshot_uv_states([obj])
+
+    # Ensure the bake UV exists and is unwrapped.
+    prepare_object_bake_uv(obj)
+
+    # Record which UV map this bake used (bake UV, matching shared pipeline).
+    try:
+        obj["heat_sim_flux_uv"] = BAKE_UV_LAYER_NAME
+    except Exception:
+        pass
+
+    image = _ensure_irradiance_image(obj.name, texture_size)
+    _prepare_image_nodes_for_bake(obj, image, "HeatSim_Irradiance", "HeatSim Irradiance")
+
+    render = scene.render
+    bake_settings = render.bake
+    prev_engine = render.engine
+    prev_settings = (
+        getattr(bake_settings, "use_pass_direct", None),
+        getattr(bake_settings, "use_pass_indirect", None),
+        getattr(bake_settings, "use_pass_color", None),
+        getattr(bake_settings, "target", None),
+    )
+
+    view_layer = scene.view_layers.active if hasattr(scene.view_layers, "active") else scene.view_layers[0]
+    prev_active = view_layer.objects.active
+    prev_selection = [o for o in scene.objects if o.select_get()]
+    uv_override_state: Optional[_BakeMaterialUVOverride] = None
+
+    # Bake sampling is deliberately overridden rather than inherited. The dataset's
+    # blends ship `samples=256` with adaptive sampling at threshold 0.05 - five times
+    # looser than Blender's 0.01 default - so adaptive terminates texels far below the
+    # nominal cap. Measured on visionsim50/diningroom that leaves 9.6-19.2% relative
+    # noise per texel; a steady-state surface sits at T ~ (E/(eps*sigma))^(1/4), so that
+    # is ~2.4-4.8% in T, i.e. several-Kelvin blotches across the temperature field.
+    # Adaptive is switched OFF, not merely tightened: at a matched cap it measured
+    # WORSE than fixed sampling (4.17% vs 3.06%) because it still cuts texels short.
+    # Denoising is deliberately NOT touched - it provably does nothing for a bake
+    # (output identical to four decimals with it on and off), unlike a rendered pass.
+    cycles = getattr(scene, "cycles", None)
+    prev_sampling = None
+    if cycles is not None and samples is not None:
+        prev_sampling = (
+            getattr(cycles, "samples", None),
+            getattr(cycles, "use_adaptive_sampling", None),
+        )
+
+    try:
+        render.engine = "CYCLES"
+        if prev_sampling is not None:
+            if hasattr(cycles, "use_adaptive_sampling"):
+                cycles.use_adaptive_sampling = False
+            if hasattr(cycles, "samples"):
+                cycles.samples = int(samples)
+        if hasattr(bake_settings, "use_pass_direct"):
+            bake_settings.use_pass_direct = True
+        if hasattr(bake_settings, "use_pass_indirect"):
+            bake_settings.use_pass_indirect = True
+        if hasattr(bake_settings, "use_pass_color"):
+            bake_settings.use_pass_color = False
+        if hasattr(bake_settings, "target"):
+            bake_settings.target = "IMAGE_TEXTURES"
+
+        # Keep textures sampling from the original UVs while baking into BAKE_UV_LAYER_NAME.
+        uv_override_state = _install_bake_uv_material_overrides([obj], uv_snapshot)
+
+        # object.select_all.poll() fails in --background when the context is in
+        # EDIT mode; make sure we are in OBJECT mode (with a valid active object)
+        # before selecting the bake target.
+        if view_layer.objects.active is None:
+            view_layer.objects.active = obj
+        if getattr(bpy.context, "mode", "OBJECT") != "OBJECT":
+            try:
+                bpy.ops.object.mode_set(mode="OBJECT")
+            except Exception:
+                pass
+        bpy.ops.object.select_all(action="DESELECT")
+        obj.select_set(True)
+        view_layer.objects.active = obj
+
+        with bpy.context.temp_override(scene=scene, view_layer=view_layer, active_object=obj, selected_objects=[obj]):
+            bpy.ops.object.bake(type="DIFFUSE", pass_filter={"DIRECT", "INDIRECT"}, target="IMAGE_TEXTURES", margin=8, margin_type='EXTEND')
+
+    except Exception as exc:  # noqa: BLE001
+        warnings.warn(f"HeatSim irradiance bake failed for {obj.name}: {exc}")
+        return None
+    finally:
+        render.engine = prev_engine
+        if prev_sampling is not None:
+            if prev_sampling[0] is not None and hasattr(cycles, "samples"):
+                cycles.samples = prev_sampling[0]
+            if prev_sampling[1] is not None and hasattr(cycles, "use_adaptive_sampling"):
+                cycles.use_adaptive_sampling = prev_sampling[1]
+        if hasattr(bake_settings, "use_pass_direct") and prev_settings[0] is not None:
+            bake_settings.use_pass_direct = prev_settings[0]
+        if hasattr(bake_settings, "use_pass_indirect") and prev_settings[1] is not None:
+            bake_settings.use_pass_indirect = prev_settings[1]
+        if hasattr(bake_settings, "use_pass_color") and prev_settings[2] is not None:
+            bake_settings.use_pass_color = prev_settings[2]
+        if hasattr(bake_settings, "target") and prev_settings[3] is not None:
+            bake_settings.target = prev_settings[3]
+
+        _restore_bake_uv_material_overrides(uv_override_state)
+
+        # Guarded: this runs in a finally, so an unhandled poll() failure here
+        # (context left in EDIT mode) would mask the real error and abort the
+        # whole scene's bake.
+        try:
+            bpy.ops.object.select_all(action="DESELECT")
+        except Exception:
+            pass
+        for item in prev_selection:
+            try:
+                item.select_set(True)
+            except Exception:
+                pass
+        view_layer.objects.active = prev_active
+        # Restore original UV selections
+        restore_uv_states(uv_snapshot)
+
+    rgb_pixels = _image_pixels_to_rgb(image)
+    if rgb_pixels is None:
+        return None
+
+    # Sample the EVALUATED mesh, not obj.data. The solver builds its nodes from
+    # ``adapter._extract_geometry``, which uses ``obj.evaluated_get(depsgraph).data`` --
+    # modifiers applied. Sampling the original mesh here yields a ``vertex_flux`` sized
+    # to the pre-modifier vertex count, and ``_combine`` drops a flux array whose length
+    # does not match the node count. The object then receives NO absorbed flux at all and
+    # sits at its initial temperature, heated only by conduction from its neighbours.
+    #
+    # Measured on visionsim50/diningroom before this fix: 229 of 289 objects (79%)
+    # mismatched, and every one of them landed at +0.332-0.334 K regardless of how much
+    # flux had been computed for it -- while the 60 matching objects rose a median
+    # 13.3 K per unit flux. Two instances of the same asset made it unmistakable:
+    # decoration_twig_branch.009 (584 verts, 584 nodes) rose 33.8 K, while .007
+    # (584 verts, 9305 nodes) rose 0.333 K on the same material and the same flux.
+    #
+    # This only ever affected the CYCLES_BAKE path. The Direct Kernel evaluates
+    # irradiance at the evaluated mesh's own vertex positions, so it was always aligned.
+    _eval_mesh = None
+    try:
+        _dg = bpy.context.evaluated_depsgraph_get()
+        _cand = obj.evaluated_get(_dg).data
+        if _cand is not None and len(_cand.vertices) > 0 and len(_cand.uv_layers) > 0:
+            _eval_mesh = _cand
+    except Exception:  # pragma: no cover - defensive, mirrors this module's style
+        _eval_mesh = None
+    mesh = _eval_mesh if _eval_mesh is not None else obj.data
+    mesh.calc_loop_triangles()
+    if len(mesh.loop_triangles) == 0:
+        return None
+
+    # Use the bake UV layer for mapping baked pixels to vertices.
+    uv_layer = mesh.uv_layers.get(BAKE_UV_LAYER_NAME) or (mesh.uv_layers.active or mesh.uv_layers[0])
+
+    loop_indices = np.zeros((len(mesh.loop_triangles), 3), dtype=np.int32)
+    mesh.loop_triangles.foreach_get("loops", loop_indices.ravel())
+
+    uv_data = np.zeros((len(mesh.loops), 2), dtype=np.float64)
+    uv_layer.data.foreach_get("uv", uv_data.ravel())
+    tri_uvs = uv_data[loop_indices]
+
+    loop_vertex_indices = np.zeros(len(mesh.loops), dtype=np.int32)
+    mesh.loops.foreach_get("vertex_index", loop_vertex_indices)
+
+    width, height = image.size
+    vertex_luma = _image_to_vertex_irradiance(
+        loop_vertex_indices,
+        uv_data,
+        rgb_pixels,
+        width,
+        height,
+        CYCLES_LOUT_TO_IRRADIANCE,
+        len(mesh.vertices),
+    )
+
+    obj["heat_sim_irradiance_image"] = image.name
     return BakedFluxMap(
         image=image,
         pixels=rgb_pixels,

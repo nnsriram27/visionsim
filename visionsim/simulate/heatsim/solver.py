@@ -1,4 +1,4 @@
-# Vendored from heat-sim-blender:addon/lib/heatsim_fem.py @ 543ee81
+# Vendored from heat-sim-blender:addon/lib/heatsim_fem.py @ e5b4afe
 import logging
 import numpy as np
 import scipy.sparse as sp
@@ -25,6 +25,12 @@ except Exception as e:  # pragma: no cover
     igl = None
     HAS_IGL = False
     IGL_IMPORT_ERROR = str(e)
+
+
+# Default per-timestep linear-solver mode. "pcg_jacobi" = Jacobi-preconditioned CG
+# (faster, same result); "cg" = original unpreconditioned CG. Callers may override
+# per-instance via the HeatSimFEM(solver_mode=...) kwarg.
+DEFAULT_SOLVER_MODE = "pcg_jacobi"
 
 
 def scipy_to_torch_sparse(mat, device, dtype=torch.float32):
@@ -78,6 +84,63 @@ def cg_solve(mv, b, x0=None, tol=1e-6, max_iter=200):
     return x
 
 
+def sparse_diag(A):
+    """Extract the diagonal of a coalesced torch sparse COO tensor as a dense (N,) vector."""
+    A = A.coalesce()
+    idx = A.indices()
+    val = A.values()
+    n = A.shape[0]
+    d = torch.zeros(n, device=val.device, dtype=val.dtype)
+    mask = idx[0] == idx[1]
+    d[idx[0][mask]] = val[mask]
+    return d
+
+
+@torch.no_grad()
+def pcg_solve(mv, b, Minv, x0=None, tol=1e-6, max_iter=200):
+    """
+    Jacobi (diagonal) preconditioned Conjugate Gradient for SPD systems A x = b,
+    where mv(x) computes A @ x and Minv is the (N,1) inverse-diagonal preconditioner.
+
+    Converges to the SAME solution as cg_solve (identical A, b, stopping tolerance on
+    ||r||_2) but in far fewer iterations, so results match the unpreconditioned solver
+    within the tolerance while running much faster.
+    """
+    if x0 is None:
+        x = torch.zeros_like(b)
+    else:
+        x = x0.clone()
+
+    r = b - mv(x)
+    if torch.dot(r.flatten(), r.flatten()).sqrt() < tol:
+        return x
+
+    z = Minv * r
+    p = z.clone()
+    rz_old = torch.dot(r.flatten(), z.flatten())
+
+    for _ in range(max_iter):
+        Ap = mv(p)
+        denom = torch.dot(p.flatten(), Ap.flatten())
+        if denom.abs() < 1e-20:
+            break
+        alpha = rz_old / denom
+
+        x = x + alpha * p
+        r = r - alpha * Ap
+
+        if torch.dot(r.flatten(), r.flatten()).sqrt() < tol:
+            break
+
+        z = Minv * r
+        rz_new = torch.dot(r.flatten(), z.flatten())
+        beta = rz_new / rz_old
+        p = z + beta * p
+        rz_old = rz_new
+
+    return x
+
+
 class HeatSimFEM:
     """
     Memory-efficient heat simulation using torch sparse and CG.
@@ -114,6 +177,11 @@ class HeatSimFEM:
         self.laplacian_backend = kwargs.get("laplacian_backend", "IGL")
         self.robust_mollify_factor = float(kwargs.get("robust_mollify_factor", 1e-5))
         self.pointcloud_neighbors = int(kwargs.get("pointcloud_neighbors", 30))
+
+        # Linear-solver mode for the per-timestep SPD solve:
+        #   "pcg_jacobi" (default) -> Jacobi-preconditioned CG (much faster, same result)
+        #   "cg"                   -> original unpreconditioned CG (kept for A/B comparison)
+        self.solver_mode = str(kwargs.get("solver_mode", DEFAULT_SOLVER_MODE))
 
         if self.irradiance_map is not None:
             _log.debug("irradiance_map %s", self.irradiance_map.shape)
@@ -358,12 +426,38 @@ class HeatSimFEM:
         # Constant RHS across the time loop (no time-varying lighting).
         B_step = B_rad_conv_const + B_light_base
 
+        # ------------------------------------------------------------------
+        # Jacobi (diagonal) preconditioner for the constant operator A.
+        # A = M - K*dt*L (+ radiation/convection boundary diag + Tikhonov reg).
+        # Computed ONCE since A does not change across timesteps.
+        # ------------------------------------------------------------------
+        Minv = None
+        if self.solver_mode == "pcg_jacobi":
+            diagA = sparse_diag(M_t)
+            dL = sparse_diag(L_t)
+            if alpha_np is None:
+                diagA = diagA - float(self.gen_params.K) * dt * dL
+            else:
+                diagA = diagA - dt * dL
+            if vec_rad_A is not None or vec_conv_A is not None:
+                dMb = sparse_diag(M_boundary_t)
+                if vec_rad_A is not None:
+                    diagA = diagA + dMb * vec_rad_A
+                if vec_conv_A is not None:
+                    diagA = diagA + dMb * vec_conv_A
+            if reg_value > 0.0:
+                diagA = diagA + reg_value
+            Minv = (1.0 / torch.clamp(diagA, min=1e-12)).unsqueeze(1)
+
         for step in range(num_steps):
             # b = M @ u_prev + B_step
             b = torch.sparse.mm(M_t, u_prev) + B_step
 
-            # Use previous solution as initial guess for faster CG
-            u_next = cg_solve(mv, b, x0=u_prev, tol=1e-5, max_iter=200)
+            # Use previous solution as initial guess for faster convergence.
+            if Minv is not None:
+                u_next = pcg_solve(mv, b, Minv, x0=u_prev, tol=1e-5, max_iter=200)
+            else:
+                u_next = cg_solve(mv, b, x0=u_prev, tol=1e-5, max_iter=200)
 
             max_dT = float((u_next - u_prev).abs().max().item())
             # Discrete approximation to ||dT/dt||_inf in K/s. dt-invariant.
