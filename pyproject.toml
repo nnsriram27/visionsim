@@ -55,6 +55,10 @@ path = "visionsim/__init__.py"
 [tool.ruff]
 line-length = 121
 force-exclude = true
+# The heatsim modules below are vendored near-verbatim from heat-sim-blender @ e5b4afe;
+# linting them would force edits that diverge from upstream. The exemption is
+# provenance-based -- once a file is substantially rewritten here it gets linted like the
+# rest. Provenance and rationale: docs/devlog/vendoring/ on the heatsim-devdocs branch.
 exclude = [
     "visionsim/interpolate/rife/*",
     "visionsim/simulate/heatsim/solver.py",
