@@ -95,14 +95,21 @@ Sparse geometry with a large atlas allocation is where single-texel bake noise h
 room to appear, for the same reason the near-field bug surfaced there: the atlas samples
 densely enough to find defects that vertex-domain solving never touches.
 
-**Recommended fix, in preference order:**
+**Recommended fix, in preference order** -- *superseded, see the corrections below*:
 
-1. **Denoise the irradiance bake.** Cycles can denoise a bake pass directly. This is the
-   smallest change and targets fireflies specifically.
+1. ~~**Denoise the irradiance bake.**~~ **MEASURED FALSE (section 7).** `use_denoising`
+   has no effect on `bpy.ops.object.bake` -- output is identical to four decimal places
+   with it on and off. This was ranked first purely on plausibility and was never tested
+   before being written down.
 2. **Outlier-reject per object before the solve.** Clamp baked texels to some multiple of
-   a local median. Cheap and robust, but a tunable that has to be justified.
-3. **Expose and raise the bake sample count.** Addresses the cause, costs the most; the
-   bake is already ~3x the solve (`cycles-irradiance-source.md` §5).
+   a local median. Still untried, and now the most promising of the three: it targets the
+   single-texel firefly directly, which is what this section is actually about.
+3. **Expose and raise the bake sample count.** Done (section 7), and it is the *wrong*
+   tool for a firefly. Noise falls as 1/sqrt(N) -- measured 9.77% at 1024, 7.42% at 2048,
+   5.65% at 4096, 4.51% at 8192 on officebuilding's floor -- so 4x the samples buys 1.7x
+   less noise. A full 600-frame render at 4096 vs 1024 moved frame statistics by fractions
+   of a Kelvin (T max identical at 498.5 K, sub-295 K pixel count within 0.003%). Per-texel
+   noise genuinely improves; the images do not visibly change.
 
 Not implemented here deliberately: changing solver behaviour partway through a three-scene
 sequence would have made the scenes non-comparable, which is the whole point of running
