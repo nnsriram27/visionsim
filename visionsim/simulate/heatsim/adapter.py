@@ -508,7 +508,9 @@ def _write_atlas_uv_layer(obj: Any, tile: "atlas.TileSpec", atlas_size: tuple, s
     caller's own "evaluated mesh lacks the atlas UV layer" check.
     """
     mesh = getattr(obj, "data", None)
-    uv_layers = getattr(mesh, "uv_layers", None) if mesh is not None else None
+    if mesh is None:
+        return
+    uv_layers = getattr(mesh, "uv_layers", None)
     if uv_layers is None:
         return
     src = uv_layers.get(src_layer_name)
@@ -708,8 +710,8 @@ def _scatter_atlas_arrays(history: dict, atlas_plan: AtlasPlan) -> tuple[np.ndar
     (never-covered tile interior, inter-tile padding, and any unused atlas margin).
     """
     width, height = atlas_plan.layout.atlas_size
-    temp = np.zeros((height, width), dtype=np.float64)
-    valid = np.zeros((height, width), dtype=bool)
+    temp: np.ndarray = np.zeros((height, width), dtype=np.float64)
+    valid: np.ndarray = np.zeros((height, width), dtype=bool)
 
     for name, tex in atlas_plan.texels.items():
         tile = atlas_plan.layout.tiles.get(name)
@@ -778,12 +780,12 @@ def write_atlas(history: dict, atlas_plan: AtlasPlan, cache_root: Path) -> Path:
     width, height = atlas_plan.layout.atlas_size
     width, height = max(int(width), 1), max(int(height), 1)
     if atlas_plan.layout.atlas_size == (0, 0) or not atlas_plan.texels:
-        temp_dilated = np.zeros((height, width), dtype=np.float64)
-        alpha = np.zeros((height, width), dtype=np.float64)
+        temp_dilated: np.ndarray = np.zeros((height, width), dtype=np.float64)
+        alpha: np.ndarray = np.zeros((height, width), dtype=np.float64)
     else:
         temp_dilated, alpha = _scatter_atlas_arrays(history, atlas_plan)
 
-    rgba = np.zeros((height, width, 4), dtype=np.float32)
+    rgba: np.ndarray = np.zeros((height, width, 4), dtype=np.float32)
     rgba[..., 0] = temp_dilated
     rgba[..., 1] = temp_dilated
     rgba[..., 2] = temp_dilated
@@ -1148,8 +1150,15 @@ def _combine(
     """
     irradiance_scale = float(defaults.get("irradiance_scale", 1.0))
 
-    verts_l, faces_l = [], []
-    irr_l, t0_l, alpha_l, rho_l, c_l, eps_l, bmask_l = [], [], [], [], [], [], []
+    verts_l: list[np.ndarray] = []
+    faces_l: list[np.ndarray] = []
+    irr_l: list[np.ndarray] = []
+    t0_l: list[np.ndarray] = []
+    alpha_l: list[np.ndarray] = []
+    rho_l: list[np.ndarray] = []
+    c_l: list[np.ndarray] = []
+    eps_l: list[np.ndarray] = []
+    bmask_l: list[np.ndarray] = []
     layout: list = []  # (name, offset, n, kind) over the surface points
     geom_by_obj: dict = {}
     offset = 0

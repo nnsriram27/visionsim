@@ -715,6 +715,8 @@ class BlenderService(rpyc.Service):
         timestep_s: float,
         domain: Literal["POINTS", "MESH"],
         laplacian_backend: Literal["ROBUST", "IGL"],
+        irradiance_source: Literal["DIRECT_KERNEL", "CYCLES_BAKE"] = "DIRECT_KERNEL",
+        bake_samples: int = 1024,
         device: Literal["cuda", "cpu"],
         assignments: str | None = None,
     ) -> tuple[dict, dict, Path, Any]:
@@ -744,6 +746,8 @@ class BlenderService(rpyc.Service):
         timestep_s: float,
         domain: Literal["POINTS", "MESH"],
         laplacian_backend: Literal["ROBUST", "IGL"],
+        irradiance_source: Literal["DIRECT_KERNEL", "CYCLES_BAKE"] = "DIRECT_KERNEL",
+        bake_samples: int = 1024,
         device: Literal["cuda", "cpu"],
         assignments: str | None = None,
         render_domain: Literal["VERTEX", "TEXEL"] = "VERTEX",
