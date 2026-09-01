@@ -327,22 +327,28 @@ Solver
         counts **only objects of type** ``LIGHT`` plus the world sky, and models no
         indirect bounce.  ``CYCLES_BAKE`` bakes DIFFUSE DIRECT+INDIRECT per object with
         Cycles instead, so **emissive geometry, indirect bounce, portals and HDRI
-        transport** all contribute.  Prefer it for any interior daylit through emissive
-        window planes rather than lamp objects — the usual archviz construction.  On
-        ``visionsim50/classroom`` that is the difference between a flat room and a real
-        field: interior p1–p99 spread 4.43 K → 88.62 K.
+        transport** all contribute.  Prefer it whenever a scene's real light source is not
+        a lamp object — an interior daylit through emissive window planes or light
+        portals, or lit by emissive fixture panels, which is how such scenes are commonly
+        built.  The symptom of using the kernel there is a room that renders flat at its
+        initial temperature while its RGB render is well lit; switching source can change
+        the interior temperature spread by an order of magnitude.
     * - ``bake-samples``
       - ``1024``
       - Cycles samples for the irradiance bake (``CYCLES_BAKE`` only).  Adaptive sampling
         is **disabled** for the bake, so this is a true per-texel sample count rather than
-        a cap.  The default is not inherited from the blend deliberately: these scenes ship
-        ``samples = 256`` with an adaptive threshold of ``0.05`` (five times looser than
-        Blender's default), which terminates texels well below even that cap and leaves
-        9.6–19.2 % relative noise per texel.  Because a steady-state surface sits at
-        ``T ~ (E/(eps*sigma))**0.25``, that is ~2.4–4.8 % in temperature — several-Kelvin
-        blotching.  Raising this helps only as ``1/sqrt(N)``: 1024 → 4096 cuts per-texel
-        noise 9.8 % → 5.7 % but moves rendered frame statistics by fractions of a Kelvin.
-        Note that denoising does **not** help a bake; sample count is the only lever.
+        a cap.  It is set here rather than inherited from the blend on purpose: production
+        blends are usually tuned for a *look*, often with a loose adaptive-sampling
+        threshold, and adaptive sampling terminates texels well below the nominal cap.
+        That is fine for a rendered image and not fine for a physical input, because baked
+        irradiance noise propagates into the temperature field.  A steady-state surface
+        sits at ``T ~ (E/(eps*sigma))**0.25``, so a relative error in irradiance appears as
+        roughly a quarter of that in temperature — a bake left noisy at the single-digit
+        percent level shows up as several-Kelvin blotching.  Raising this only helps as
+        ``1/sqrt(N)``, so quadrupling the samples buys a little under half the noise; if a
+        bake is visibly blotchy, check first whether adaptive sampling or a shading-heavy
+        material is the real cause.  Denoising does **not** apply to a bake, so sample
+        count is the only lever here.
     * - ``device``
       - ``cuda``
       - Compute device for the solve.  Falls back to ``cpu`` automatically when
@@ -378,8 +384,9 @@ temperature per *pixel*.  ``render-domain`` chooses how.
 
 ``VERTEX`` (the default) writes the solved field back as a per-vertex
 ``sim_temperature`` attribute and lets Blender interpolate it across faces.  That is
-exact when the mesh is dense, and coarse when it is not: a 172 m² floor slab modelled as
-four vertices can only ever show a bilinear ramp, however detailed the underlying solve.
+exact when the mesh is dense, and coarse when it is not: a large floor slab modelled as a
+handful of vertices can only ever show a bilinear ramp, however detailed the underlying
+solve.  Architectural assets are full of such surfaces — big, flat, and cheap in geometry.
 
 ``TEXEL`` instead packs every participating object into a shared **temperature atlas** —
 one tile per object in UV space — and the shader samples that image.  Render resolution is
@@ -451,12 +458,15 @@ For the interior scenes this modality targets:
         --config.thermal.sim-time-s 500 --config.thermal.timestep-s 1.0
 
 ``domain POINTS`` because scene geometry is rarely clean enough for a cotangent operator;
-``render-domain TEXEL`` because interiors are full of large flat surfaces; and
-``irradiance-source CYCLES_BAKE`` because interiors are usually daylit through emissive
-geometry, which the analytic kernel does not see at all.  The defaults are deliberately the
-*conservative* choices (``VERTEX``, ``DIRECT_KERNEL``) so that enabling the modality on an
-arbitrary blend changes as little as possible; they are not the best settings for this
-dataset.
+``render-domain TEXEL`` because such scenes are full of large, coarsely-tessellated
+surfaces; and ``irradiance-source CYCLES_BAKE`` because they are typically lit by emissive
+geometry rather than lamp objects, which the analytic kernel does not see at all.
+
+The shipped defaults (``VERTEX``, ``DIRECT_KERNEL``) are deliberately the *conservative*
+choices, so that turning the modality on changes as little as possible about an arbitrary
+blend.  They are the safe starting point, not the best one for any particular scene — treat
+the block above as the setting to reach for once you know your scene has these properties,
+and the tables above as the reasoning for departing from it.
 
 
 Radiance render and file formats
