@@ -24,6 +24,8 @@ merging `heatsim` forward.
 
 ## Contents
 
+| `silent-error-handling.md` | Why 103 blind-except/try-except-pass findings are exempted in `pyproject.toml`, and the real gap that exemption hides: only 4 of 40 handlers log anything, which has already cost this project two multi-day debugging incidents. Includes the fix, scoped as its own change. |
+
 ### `thermal-atlas/`
 
 The texel-atlas thermal rendering work (LWIR modality for the ~50-scene interior
