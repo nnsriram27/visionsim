@@ -118,6 +118,7 @@ def events(
     cs_lambda_pixels: float | None = None,
     cs_tau_p_ms: float | None = None,
     scidvs: bool = False,
+    blur_sigma: float = 0.0,
     preview_step: int | None = None,
     only_preview: bool = False,
     force: bool = False,
@@ -143,6 +144,7 @@ def events(
         cs_lambda_pixels: space constant of the centre-surround surround in pixels
         cs_tau_p_ms: time constant of the surround low-pass filter in ms
         scidvs: simulate the high-gain adaptive photoreceptor of the SCIDVS pixel
+        blur_sigma: standard deviation of the Gaussian blur applied to input frames in pixels, 0 disables blurring
         preview_step: accumulate events over this many frames before saving a visualization preview. If the
             number of input frames is not a multiple of the preview step, the last few frames will be dropped.
             If None, preview is disabled.
@@ -152,6 +154,7 @@ def events(
     import json
 
     import imageio.v3 as iio
+    from scipy.ndimage import gaussian_filter
 
     from visionsim.dataset import Dataset
     from visionsim.emulate.dvs import EventEmulator
@@ -173,38 +176,37 @@ def events(
     else:
         dataset = Dataset.from_path(input_dir)
 
-    if fps is None:
-        if dataset.cameras:
-            framerates = set(cam.fps for cam in dataset.cameras)
-            if len(framerates) > 1:
-                raise ValueError("Multiple cameras with different frame rates found.")
-            fps = framerates.pop()
+    if fps is None and dataset.cameras:
+        framerates = {cam.fps for cam in dataset.cameras}
+        if len(framerates) > 1:
+            raise ValueError("Multiple cameras with different frame rates found.")
+        fps = framerates.pop()
     if fps is None:
         raise ValueError("FPS not provided and could not be inferred from dataset, please specify.")
 
     if only_preview and preview_step is None:
         preview_step = 1
 
-    emulator_kwargs = dict(
-        pos_thres=pos_thres,
-        neg_thres=neg_thres,
-        sigma_thres=sigma_thres,
-        cutoff_hz=cutoff_hz,
-        leak_rate_hz=leak_rate_hz,
-        shot_noise_rate_hz=shot_noise_rate_hz,
-        refractory_period_s=refractory_period_s,
-        photoreceptor_noise=photoreceptor_noise,
-        leak_jitter_fraction=leak_jitter_fraction,
-        noise_rate_cov_decades=noise_rate_cov_decades,
-        seed=seed,
-        cs_lambda_pixels=cs_lambda_pixels,
-        cs_tau_p_ms=cs_tau_p_ms,
-        scidvs=scidvs,
-    )
+    emulator_kwargs = {
+        "pos_thres": pos_thres,
+        "neg_thres": neg_thres,
+        "sigma_thres": sigma_thres,
+        "cutoff_hz": cutoff_hz,
+        "leak_rate_hz": leak_rate_hz,
+        "shot_noise_rate_hz": shot_noise_rate_hz,
+        "refractory_period_s": refractory_period_s,
+        "photoreceptor_noise": photoreceptor_noise,
+        "leak_jitter_fraction": leak_jitter_fraction,
+        "noise_rate_cov_decades": noise_rate_cov_decades,
+        "seed": seed,
+        "cs_lambda_pixels": cs_lambda_pixels,
+        "cs_tau_p_ms": cs_tau_p_ms,
+        "scidvs": scidvs,
+    }
     emulator = EventEmulator(**emulator_kwargs)  # type: ignore
 
     with open(output_dir / "params.json", "w") as f:
-        json.dump(emulator_kwargs | dict(fps=fps), f, indent=2)
+        json.dump(emulator_kwargs | {"fps": fps, "blur_sigma": blur_sigma}, f, indent=2)
 
     with open(events_path, "a+") as out, ElapsedProgress() as progress:
         task = progress.add_task("Writing DVS data...", total=len(dataset))
@@ -215,6 +217,8 @@ def events(
             # Values from http://en.wikipedia.org/wiki/Grayscale
             r, g, b, *_ = np.transpose(frame, (2, 0, 1))
             luma = 0.0722 * b + 0.7152 * g + 0.2126 * r
+            if blur_sigma > 0:
+                luma = gaussian_filter(luma, sigma=blur_sigma)
             events = emulator.generate_events(luma, idx / int(fps))
 
             if events is not None:
