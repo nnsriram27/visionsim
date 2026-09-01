@@ -15,20 +15,19 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass
-from typing import Optional, List, Tuple, Dict, Set
 
 import bpy
 import numpy as np
 
 from .constants import ALBEDO_LAYER_NAME, BAKE_UV_LAYER_NAME, CYCLES_LOUT_TO_IRRADIANCE, IRRADIANCE_LAYER_NAME
-from .uv_utils import snapshot_uv_states, restore_uv_states
+from .uv_utils import restore_uv_states, snapshot_uv_states
 
 
 @dataclass
 class BakedFluxMap:
     """Container for baked flux data coming from an image texture."""
 
-    image: "bpy.types.Image"
+    image: bpy.types.Image
     pixels: np.ndarray  # shape (H, W, 3) in linear space
     tri_uvs: np.ndarray  # shape (n_faces, 3, 2)
     vertex_flux: np.ndarray  # per-vertex luminance * scale
@@ -55,7 +54,7 @@ def _ensure_uv_layer(obj):
             # Using 1.6% island margin to prevent texture bleeding artifacts
             bpy.ops.uv.smart_project(island_margin=0.016)
             bpy.ops.object.mode_set(mode="OBJECT")
-        except Exception as exc:  # noqa: BLE001 - keep running but warn
+        except Exception as exc:  # keep running but warn
             warnings.warn(f"HeatSim: Failed to auto-unwrap UVs for {obj.name}: {exc}")
         finally:
             # Restore selection and active object/mode. Force OBJECT mode FIRST and
@@ -266,14 +265,14 @@ class _BakeMaterialUVOverride:
     """
 
     # (obj, slot_index, original_material) entries for slots we temporarily replaced with a copy
-    replaced_slots: List[Tuple["bpy.types.Object", int, Optional["bpy.types.Material"]]]
+    replaced_slots: list[tuple[bpy.types.Object, int, bpy.types.Material | None]]
     # (material, uv_node_name) for UVMap nodes we created
-    created_uv_nodes: List[Tuple["bpy.types.Material", str]]
+    created_uv_nodes: list[tuple[bpy.types.Material, str]]
     # (material, tex_node_name) for TexImage nodes we connected
-    patched_tex_nodes: List[Tuple["bpy.types.Material", str]]
+    patched_tex_nodes: list[tuple[bpy.types.Material, str]]
 
 
-def _pick_source_uv_for_object(obj: "bpy.types.Object", uv_snapshot_map: Dict[int, Tuple[Optional[str], Optional[str]]]) -> Optional[str]:
+def _pick_source_uv_for_object(obj: bpy.types.Object, uv_snapshot_map: dict[int, tuple[str | None, str | None]]) -> str | None:
     """
     Choose the UV map name that represents the object's 'real' texturing UVs.
     Prefer the snapshot's active_render, then active, then any non-bake UV layer.
@@ -297,7 +296,7 @@ def _pick_source_uv_for_object(obj: "bpy.types.Object", uv_snapshot_map: Dict[in
     return None
 
 
-def _apply_uv_override_to_material(mat: "bpy.types.Material", uv_name: str) -> Tuple[Optional[str], List[str]]:
+def _apply_uv_override_to_material(mat: bpy.types.Material, uv_name: str) -> tuple[str | None, list[str]]:
     """
     Ensure every unlinked Image Texture node samples using a specific UV map.
     Returns (created_uv_node_name, patched_tex_node_names).
@@ -344,7 +343,7 @@ def _apply_uv_override_to_material(mat: "bpy.types.Material", uv_name: str) -> T
     return uv_node_name, patched
 
 
-def _install_bake_uv_material_overrides(objects: List["bpy.types.Object"], uv_snapshot) -> _BakeMaterialUVOverride:
+def _install_bake_uv_material_overrides(objects: list[bpy.types.Object], uv_snapshot) -> _BakeMaterialUVOverride:
     """
     Install per-material UVMap overrides so real materials keep sampling their textures
     with the original UV map during shared UV baking.
@@ -352,13 +351,13 @@ def _install_bake_uv_material_overrides(objects: List["bpy.types.Object"], uv_sn
     Handles the tricky case where multiple objects share a material but have different
     source UV map names by temporarily copying materials per-object.
     """
-    uv_snapshot_map: Dict[int, Tuple[Optional[str], Optional[str]]] = {
+    uv_snapshot_map: dict[int, tuple[str | None, str | None]] = {
         obj.as_pointer(): state for obj, state in (uv_snapshot or [])
     }
 
     # Build material usage: mat_ptr -> {uv_names}, plus occurrences to resolve per-object copies.
-    mat_uvs: Dict[int, Set[str]] = {}
-    occurrences: List[Tuple["bpy.types.Object", int, Optional["bpy.types.Material"], Optional[str]]] = []
+    mat_uvs: dict[int, set[str]] = {}
+    occurrences: list[tuple[bpy.types.Object, int, bpy.types.Material | None, str | None]] = []
     for obj in objects:
         if obj is None or obj.type != "MESH":
             continue
@@ -371,9 +370,9 @@ def _install_bake_uv_material_overrides(objects: List["bpy.types.Object"], uv_sn
             if uv_name:
                 mat_uvs.setdefault(mat.as_pointer(), set()).add(str(uv_name))
 
-    replaced_slots: List[Tuple[bpy.types.Object, int, Optional[bpy.types.Material]]] = []
-    created_uv_nodes: List[Tuple[bpy.types.Material, str]] = []
-    patched_tex_nodes: List[Tuple[bpy.types.Material, str]] = []
+    replaced_slots: list[tuple[bpy.types.Object, int, bpy.types.Material | None]] = []
+    created_uv_nodes: list[tuple[bpy.types.Material, str]] = []
+    patched_tex_nodes: list[tuple[bpy.types.Material, str]] = []
 
     # Apply overrides
     for obj, slot_idx, mat, uv_name in occurrences:
@@ -407,7 +406,7 @@ def _install_bake_uv_material_overrides(objects: List["bpy.types.Object"], uv_sn
     )
 
 
-def _restore_bake_uv_material_overrides(state: Optional[_BakeMaterialUVOverride]) -> None:
+def _restore_bake_uv_material_overrides(state: _BakeMaterialUVOverride | None) -> None:
     if state is None:
         return
 
@@ -426,12 +425,16 @@ def _restore_bake_uv_material_overrides(state: Optional[_BakeMaterialUVOverride]
 
             # Remove links from this uv node into any TEX_IMAGE Vector inputs
             for link in list(links):
-                if link.from_node == uv_node and link.to_node and link.to_node.type == "TEX_IMAGE":
-                    if getattr(link.to_socket, "name", "") == "Vector":
-                        try:
-                            links.remove(link)
-                        except Exception:
-                            pass
+                if (
+                    link.from_node == uv_node
+                    and link.to_node
+                    and link.to_node.type == "TEX_IMAGE"
+                    and getattr(link.to_socket, "name", "") == "Vector"
+                ):
+                    try:
+                        links.remove(link)
+                    except Exception:
+                        pass
 
             # Remove the uv node itself (if still present)
             try:
@@ -457,7 +460,7 @@ def _restore_bake_uv_material_overrides(state: Optional[_BakeMaterialUVOverride]
             pass
 
 
-def _image_pixels_to_rgb(image) -> Optional[np.ndarray]:
+def _image_pixels_to_rgb(image) -> np.ndarray | None:
     """Convert a Blender image to (H, W, 3) numpy array."""
     w, h = image.size
     raw = np.array(image.pixels[:], dtype=np.float64)
@@ -517,7 +520,7 @@ def _image_to_vertex_irradiance(
     return accum / counts
 
 
-def bake_albedo_map(scene, obj, texture_size: int) -> Optional[BakedFluxMap]:
+def bake_albedo_map(scene, obj, texture_size: int) -> BakedFluxMap | None:
     """
     Bake visible diffuse albedo (COLOR pass) for a single object.
     """
@@ -556,7 +559,7 @@ def bake_albedo_map(scene, obj, texture_size: int) -> Optional[BakedFluxMap]:
     view_layer = scene.view_layers.active if hasattr(scene.view_layers, "active") else scene.view_layers[0]
     prev_active = view_layer.objects.active
     prev_selection = [o for o in scene.objects if o.select_get()]
-    uv_override_state: Optional[_BakeMaterialUVOverride] = None
+    uv_override_state: _BakeMaterialUVOverride | None = None
 
     try:
         render.engine = "CYCLES"
@@ -589,7 +592,7 @@ def bake_albedo_map(scene, obj, texture_size: int) -> Optional[BakedFluxMap]:
         with bpy.context.temp_override(scene=scene, view_layer=view_layer, active_object=obj, selected_objects=[obj]):
             bpy.ops.object.bake(type="DIFFUSE", pass_filter={"COLOR"}, target="IMAGE_TEXTURES", margin=8, margin_type='EXTEND')
 
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         warnings.warn(f"HeatSim albedo bake failed for {obj.name}: {exc}")
         return None
     finally:
@@ -665,7 +668,7 @@ def bake_albedo_map(scene, obj, texture_size: int) -> Optional[BakedFluxMap]:
     )
 
 
-def bake_irradiance_map(scene, obj, texture_size: int, samples: Optional[int] = None) -> Optional[BakedFluxMap]:
+def bake_irradiance_map(scene, obj, texture_size: int, samples: int | None = None) -> BakedFluxMap | None:
     """Bake incident irradiance (DIFFUSE DIRECT+INDIRECT) for a single object.
 
     The mirror image of :func:`bake_albedo_map`: that bakes COLOR with the light
@@ -726,7 +729,7 @@ def bake_irradiance_map(scene, obj, texture_size: int, samples: Optional[int] = 
     view_layer = scene.view_layers.active if hasattr(scene.view_layers, "active") else scene.view_layers[0]
     prev_active = view_layer.objects.active
     prev_selection = [o for o in scene.objects if o.select_get()]
-    uv_override_state: Optional[_BakeMaterialUVOverride] = None
+    uv_override_state: _BakeMaterialUVOverride | None = None
 
     # Bake sampling is deliberately overridden rather than inherited. The dataset's
     # blends ship `samples=256` with adaptive sampling at threshold 0.05 - five times
@@ -782,7 +785,7 @@ def bake_irradiance_map(scene, obj, texture_size: int, samples: Optional[int] = 
         with bpy.context.temp_override(scene=scene, view_layer=view_layer, active_object=obj, selected_objects=[obj]):
             bpy.ops.object.bake(type="DIFFUSE", pass_filter={"DIRECT", "INDIRECT"}, target="IMAGE_TEXTURES", margin=8, margin_type='EXTEND')
 
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         warnings.warn(f"HeatSim irradiance bake failed for {obj.name}: {exc}")
         return None
     finally:

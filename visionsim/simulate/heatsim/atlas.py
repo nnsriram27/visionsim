@@ -101,12 +101,12 @@ def select_for_atlas(
 
 
 def _round_up_to_multiple(value: int, multiple: int) -> int:
-    return int(math.ceil(value / float(multiple))) * multiple
+    return math.ceil(value / float(multiple)) * multiple
 
 
 def _tile_side(area_m2: float, density: float, tile_min: int, tile_max: int) -> int:
     texel_count = max(area_m2, 0.0) * density
-    side = int(math.ceil(math.sqrt(max(texel_count, 0.0))))
+    side = math.ceil(math.sqrt(max(texel_count, 0.0)))
     side = _round_up_to_multiple(side, 4)
     return min(max(side, tile_min), tile_max)
 
@@ -129,7 +129,7 @@ def _shelf_pack(sides: dict[str, int], padding: int) -> tuple[dict[str, tuple[in
     items = sorted(sides.items(), key=lambda kv: (-kv[1], kv[0]))
     max_side = max(side for _, side in items)
     padded_area = sum((side + padding) * (side + padding) for _, side in items)
-    width = max(max_side, int(math.ceil(math.sqrt(float(padded_area)))))
+    width = max(max_side, math.ceil(math.sqrt(float(padded_area))))
     width = _round_up_to_multiple(width, 4)
 
     positions: dict[str, tuple[int, int]] = {}
@@ -183,15 +183,9 @@ def allocate(
         rescaled = True
         sides = _sides_for_density(areas, effective_density, tile_min, tile_max)
         warnings.warn(
-            "HeatSim atlas: requested density {req:g} texels/m^2 would need {need} texels "
-            "(+{retained} retained vertices), exceeding soft_max={soft_max}; rescaling to "
-            "effective density {eff:g} texels/m^2.".format(
-                req=density,
-                need=tiles_total,
-                retained=retained_vertex_count,
-                soft_max=soft_max,
-                eff=effective_density,
-            )
+            f"HeatSim atlas: requested density {density:g} texels/m^2 would need {tiles_total} texels "
+            f"(+{retained_vertex_count} retained vertices), exceeding soft_max={soft_max}; rescaling to "
+            f"effective density {effective_density:g} texels/m^2."
         )
 
     positions, atlas_size = _shelf_pack(sides, padding)
@@ -268,10 +262,10 @@ def rasterize_tile(
         a, b, c = pts
         ia, ib, ic = idx
 
-        x_min = max(int(math.floor(min(a[0], b[0], c[0]))), 0)
-        x_max = min(int(math.ceil(max(a[0], b[0], c[0]))), width)
-        y_min = max(int(math.floor(min(a[1], b[1], c[1]))), 0)
-        y_max = min(int(math.ceil(max(a[1], b[1], c[1]))), height)
+        x_min = max(math.floor(min(a[0], b[0], c[0])), 0)
+        x_max = min(math.ceil(max(a[0], b[0], c[0])), width)
+        y_min = max(math.floor(min(a[1], b[1], c[1])), 0)
+        y_max = min(math.ceil(max(a[1], b[1], c[1])), height)
         if x_min >= x_max or y_min >= y_max:
             continue
 

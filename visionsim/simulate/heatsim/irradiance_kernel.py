@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Dict, List, Optional, Tuple
 
 import bpy
 import numpy as np
@@ -49,7 +48,7 @@ _log = logging.getLogger("rich")
 # ---------------------------------------------------------------------------
 
 
-def _extract_world_geometry(obj: bpy.types.Object) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+def _extract_world_geometry(obj: bpy.types.Object) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
     """Returns ``(world_verts (N,3) m, world_normals (N,3) unit, faces (M,3) int32)``
     for ``obj``'s evaluated mesh, or None if extraction fails. Verts are in
     meters (Blender's native unit) so the BVH backend gets consistent units."""
@@ -100,10 +99,10 @@ def _extract_world_geometry(obj: bpy.types.Object) -> Optional[Tuple[np.ndarray,
     )
 
 
-def _collect_scene_meshes_world(scene: bpy.types.Scene) -> List[Tuple[np.ndarray, np.ndarray]]:
+def _collect_scene_meshes_world(scene: bpy.types.Scene) -> list[tuple[np.ndarray, np.ndarray]]:
     """Build the occluder BVH input set: every renderable, shadow-casting mesh
     in the scene, in world meters (so non-sim props still cast shadows)."""
-    out: List[Tuple[np.ndarray, np.ndarray]] = []
+    out: list[tuple[np.ndarray, np.ndarray]] = []
     for obj in scene.objects:
         if obj.type != "MESH":
             continue
@@ -125,7 +124,7 @@ def _collect_scene_meshes_world(scene: bpy.types.Scene) -> List[Tuple[np.ndarray
 # ---------------------------------------------------------------------------
 
 
-def _read_vertex_albedo_attr(obj: bpy.types.Object, attr_name: str) -> Optional[np.ndarray]:
+def _read_vertex_albedo_attr(obj: bpy.types.Object, attr_name: str) -> np.ndarray | None:
     """Try to read a (N,) float per-vertex albedo from the named POINT/FLOAT
     attribute. Returns None if missing or wrong shape."""
     mesh = getattr(obj, "data", None)
@@ -199,7 +198,7 @@ def _bake_vertex_albedo_via_cycles(
     scene: bpy.types.Scene,
     obj: bpy.types.Object,
     texture_size: int,
-) -> Optional[np.ndarray]:
+) -> np.ndarray | None:
     """Run the existing Cycles albedo bake and reduce to (N,) per-vertex
     grayscale (luminance). Returns None on bake failure."""
     from visionsim.simulate.heatsim import irradiance
@@ -254,12 +253,12 @@ def _bake_vertex_albedo_via_cycles(
 
 def get_or_bake_vertex_albedo(
     scene: bpy.types.Scene,
-    objects: List[bpy.types.Object],
+    objects: list[bpy.types.Object],
     *,
     texture_size: int,
     attr_name: str = "albedo",
-    disk_cache: Optional[Dict[str, np.ndarray]] = None,
-) -> Dict[str, np.ndarray]:
+    disk_cache: dict[str, np.ndarray] | None = None,
+) -> dict[str, np.ndarray]:
     """For each object, return its per-vertex albedo (N,) in [0, 1].
 
     Resolution order:
@@ -273,7 +272,7 @@ def get_or_bake_vertex_albedo(
     obtained (no UVs, bake failure) are absent from the return — the caller
     should treat those as albedo=0 (full absorption) for safety.
     """
-    out: Dict[str, np.ndarray] = {}
+    out: dict[str, np.ndarray] = {}
     if disk_cache is None:
         disk_cache = {}
 
@@ -317,7 +316,7 @@ def get_or_bake_vertex_albedo(
 
 
 def _accumulate_light_contributions(
-    light_objs: List[bpy.types.Object],
+    light_objs: list[bpy.types.Object],
     vert_positions: np.ndarray,
     vert_normals: np.ndarray,
     backend,
@@ -368,7 +367,7 @@ def _accumulate_light_contributions(
 # ---------------------------------------------------------------------------
 
 
-_SKY_CACHE: Dict[str, np.ndarray] = {}
+_SKY_CACHE: dict[str, np.ndarray] = {}
 
 
 def _get_sky_coefficients(world) -> np.ndarray:
@@ -411,12 +410,12 @@ def _sky_irradiance_plain(normals: np.ndarray, sky_coeffs: np.ndarray, sky_has_e
 
 def compute_per_vertex_irradiance(
     scene: bpy.types.Scene,
-    sim_objects: List[bpy.types.Object],
+    sim_objects: list[bpy.types.Object],
     settings,
     *,
-    objects_to_compute: Optional[List[bpy.types.Object]] = None,
+    objects_to_compute: list[bpy.types.Object] | None = None,
     force_sky_revisibility: bool = False,
-) -> Dict[bpy.types.Object, dict]:
+) -> dict[bpy.types.Object, dict]:
     """Direct-Kernel replacement for ``bake_irradiance_for_active_frame``.
 
     Returns ``{obj: {"vertex_flux": (N,) float64 W/m² absorbed}}``.
@@ -474,7 +473,7 @@ def compute_per_vertex_irradiance(
     # 3b. Per-vertex sky visibility (bent normal + AO), cached on disk +
     # as mesh attributes. Skipped when sky is unenergetic or feature is off.
     enable_sky_occ = bool(getattr(settings, "enable_sky_occlusion", True))
-    sky_vis_map: Dict[str, Dict[str, np.ndarray]] = {}
+    sky_vis_map: dict[str, dict[str, np.ndarray]] = {}
     if enable_sky_occ and sky_has_energy:
         sky_vis_map = sky_visibility.get_or_bake_for_objects(
             scene, objects_to_compute, backend, settings,
@@ -485,7 +484,7 @@ def compute_per_vertex_irradiance(
     # 4. Per-receiver computation.
     n_samples_for_area = max(1, int(getattr(settings, "direct_kernel_soft_shadow_rays", 8)))
     rng = np.random.default_rng(0)
-    out: Dict[bpy.types.Object, dict] = {}
+    out: dict[bpy.types.Object, dict] = {}
 
     for obj in objects_to_compute:
         geom = _extract_world_geometry(obj)

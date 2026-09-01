@@ -28,7 +28,7 @@ import json
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import numpy as np
 
@@ -103,8 +103,8 @@ _PRESET_TABLE = (
 )
 
 
-def _build_library() -> Dict[str, ThermalPreset]:
-    library: Dict[str, ThermalPreset] = {}
+def _build_library() -> dict[str, ThermalPreset]:
+    library: dict[str, ThermalPreset] = {}
     for key, alpha, rho, c, eps, notes in _PRESET_TABLE:
         if alpha <= 0.0 or rho <= 0.0 or c <= 0.0:
             raise ValueError(f"preset {key!r}: alpha, density and specific heat must all be > 0")
@@ -116,11 +116,11 @@ def _build_library() -> Dict[str, ThermalPreset]:
     return library
 
 
-PRESETS: Dict[str, ThermalPreset] = _build_library()
+PRESETS: dict[str, ThermalPreset] = _build_library()
 """The thermal preset library, keyed by preset name."""
 
 
-def preset_keys() -> List[str]:
+def preset_keys() -> list[str]:
     """Sorted preset keys. This is the closed enum the offline assignment tool chooses from."""
     return sorted(PRESETS)
 
@@ -134,9 +134,9 @@ def preset_keys() -> List[str]:
 class MaterialEntry:
     """One material's assignment. ``preset is None`` means 'fall back to the globals'."""
 
-    preset: Optional[ThermalPreset]
+    preset: ThermalPreset | None
     role: str
-    dirichlet_K: Optional[float]
+    dirichlet_K: float | None
     confidence: float
     reason: str
 
@@ -147,15 +147,15 @@ class SceneAssignment:
 
     scene: str
     digest: str
-    default_preset: Optional[ThermalPreset]
-    materials: Dict[str, MaterialEntry]
+    default_preset: ThermalPreset | None
+    materials: dict[str, MaterialEntry]
 
-    def entry_for(self, material_name: str) -> Optional[MaterialEntry]:
+    def entry_for(self, material_name: str) -> MaterialEntry | None:
         """Return the entry for *material_name*, or ``None`` if the sidecar omits it."""
         return self.materials.get(material_name)
 
 
-def _lookup_preset(key: Any, where: str) -> Optional[ThermalPreset]:
+def _lookup_preset(key: Any, where: str) -> ThermalPreset | None:
     if key is None:
         return None
     preset = PRESETS.get(str(key))
@@ -193,7 +193,7 @@ def load_assignments(path: Path) -> SceneAssignment:
     if not isinstance(materials_block, dict):
         raise ValueError(f"{path}: 'materials' must be an object, got {type(materials_block).__name__}")
 
-    entries: Dict[str, MaterialEntry] = {}
+    entries: dict[str, MaterialEntry] = {}
     for name, spec in materials_block.items():
         where = f"{path.name}:{name}"
         if not isinstance(spec, dict):
@@ -206,7 +206,7 @@ def load_assignments(path: Path) -> SceneAssignment:
                           "treating as FEM_PARTICIPANT", UserWarning, stacklevel=2)
             role = "FEM_PARTICIPANT"
 
-        dirichlet_K: Optional[float] = None
+        dirichlet_K: float | None = None
         if spec.get("dirichlet_K") is not None:
             try:
                 value = float(spec["dirichlet_K"])
@@ -256,7 +256,7 @@ def load_assignments(path: Path) -> SceneAssignment:
 # ---------------------------------------------------------------------------
 
 
-def _slot_tables(obj: Any, assignment: SceneAssignment, fallback: Dict[str, Any]) -> Dict[str, np.ndarray]:
+def _slot_tables(obj: Any, assignment: SceneAssignment, fallback: dict[str, Any]) -> dict[str, np.ndarray]:
     """Per-slot scalar tables. Unassigned slots inherit the object-level *fallback*."""
     names = []
     for slot in obj.material_slots:
@@ -264,7 +264,7 @@ def _slot_tables(obj: Any, assignment: SceneAssignment, fallback: Dict[str, Any]
         names.append(None if material is None else str(getattr(material, "name", "")))
 
     n = len(names)
-    table: Dict[str, np.ndarray] = {key: np.empty(n, dtype=np.float64) for key in ("t0", "alpha", "rho", "c", "eps")}
+    table: dict[str, np.ndarray] = {key: np.empty(n, dtype=np.float64) for key in ("t0", "alpha", "rho", "c", "eps")}
     table["is_dirichlet"] = np.zeros(n, dtype=bool)
     fallback_T = float(fallback["initial_temperature_K"])
 
@@ -297,8 +297,8 @@ def _slot_tables(obj: Any, assignment: SceneAssignment, fallback: Dict[str, Any]
 def resolve_vertex_materials(
     obj: Any,
     assignment: SceneAssignment,
-    fallback: Dict[str, Any],
-) -> Optional[Dict[str, np.ndarray]]:
+    fallback: dict[str, Any],
+) -> dict[str, np.ndarray] | None:
     """Return per-vertex thermal arrays for *obj*, or ``None`` if slots cannot drive it.
 
     Blender stores materials on **faces**; the solver wants one value per
@@ -368,7 +368,7 @@ def resolve_vertex_materials(
         "c": float(fallback["specific_heat_J_kgK"]),
         "eps": float(fallback["emissivity"]),
     }
-    out: Dict[str, np.ndarray] = {}
+    out: dict[str, np.ndarray] = {}
     for key, default in fallback_scalar.items():
         values: np.ndarray = np.full(n_verts, default, dtype=np.float64)
         if np.any(touched):
@@ -390,9 +390,9 @@ def resolve_vertex_materials(
 def resolve_face_materials(
     obj: Any,
     assignment: SceneAssignment,
-    fallback: Dict[str, Any],
+    fallback: dict[str, Any],
     face_slots: np.ndarray,
-) -> Optional[Dict[str, np.ndarray]]:
+) -> dict[str, np.ndarray] | None:
     """Return per-FACE thermal arrays for *obj*, or ``None`` if slots cannot drive it.
 
     The texel-sim analogue of :func:`resolve_vertex_materials`: a texel belongs to exactly
@@ -431,7 +431,7 @@ def resolve_face_materials(
     table = _slot_tables(obj, assignment, fallback)
     slots = np.clip(np.asarray(face_slots, dtype=np.int64), 0, n_slots - 1)
 
-    out: Dict[str, np.ndarray] = {}
+    out: dict[str, np.ndarray] = {}
     for key in ("t0", "alpha", "rho", "c", "eps"):
         out[key] = table[key][slots]
     out["dirichlet_mask"] = table["is_dirichlet"][slots]
