@@ -1675,7 +1675,8 @@ class BlenderService(rpyc.Service):
         image.name = ATLAS_IMAGE_NAME
         try:
             image.colorspace_settings.name = "Non-Color"
-        except Exception:  # pragma: no cover - defensive, mirrors irradiance.py's style
+        except Exception:  # noqa: BLE001, S110 - see heatsim per-file-ignores in pyproject.toml
+            # pragma: no cover - defensive, mirrors irradiance.py's style
             pass
         image.pack()
 

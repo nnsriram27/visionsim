@@ -310,9 +310,8 @@ def _append_temperature_aov_nodes(mat: Any, aov_name: str) -> None:
 
     # Skip if already wired.
     for node in nodes:
-        if node.type == "OUTPUT_AOV":
-            if getattr(node, "aov_name", None) == aov_name or node.name == aov_name:
-                return
+        if node.type == "OUTPUT_AOV" and (getattr(node, "aov_name", None) == aov_name or node.name == aov_name):
+            return
 
     # Track nodes we add so we can clean up on a mid-build failure.
     added: list[Any] = []

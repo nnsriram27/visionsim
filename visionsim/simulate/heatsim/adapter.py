@@ -31,7 +31,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, Optional
+from typing import Any
 
 import numpy as np
 
@@ -165,10 +165,10 @@ def resolve_material(obj: Any, defaults: dict) -> dict:
 
     role = "FEM_PARTICIPANT"
     dirichlet_T = 0.0
-    if _is_set(mat, "thermal_role"):
-        role = str(getattr(mat, "thermal_role") or "FEM_PARTICIPANT").upper()
-    if _is_set(mat, "dirichlet_temperature_K"):
-        dirichlet_T = float(getattr(mat, "dirichlet_temperature_K") or 0.0)
+    if mat is not None and _is_set(mat, "thermal_role"):
+        role = str(mat.thermal_role or "FEM_PARTICIPANT").upper()
+    if mat is not None and _is_set(mat, "dirichlet_temperature_K"):
+        dirichlet_T = float(mat.dirichlet_temperature_K or 0.0)
 
     return {
         "initial_temperature_K": _pick("initial_temperature_K", "initial_temperature_K"),
@@ -181,7 +181,7 @@ def resolve_material(obj: Any, defaults: dict) -> dict:
     }
 
 
-def read_authored_irradiance_scale(scene: Any) -> Optional[float]:
+def read_authored_irradiance_scale(scene: Any) -> float | None:
     """Return the heat-sim addon's authored scene-level ``irradiance_scale``.
 
     The addon stores it under ``scene.heat_sim_settings.irradiance_scale``.
@@ -280,7 +280,7 @@ def global_temperature_range_animated(history: dict[str, Any], default_K: float)
 # ---------------------------------------------------------------------------
 
 
-def _extract_geometry(obj: Any) -> Optional[tuple]:
+def _extract_geometry(obj: Any) -> tuple | None:
     """``(verts_mm (N,3) float64, faces (M,3) int32, n_verts)`` for the evaluated
     mesh, or ``None`` if it has no geometry. Verts are world-space x 1000 (mm)
     and quads are triangulated, matching ``fem_adapter._extract_mesh_data``.
@@ -354,8 +354,8 @@ class AtlasPlan:
     ``_combine``.
     """
 
-    layout: "atlas.AtlasLayout"
-    texels: Dict[str, Dict[str, np.ndarray]] = field(default_factory=dict)
+    layout: atlas.AtlasLayout
+    texels: dict[str, dict[str, np.ndarray]] = field(default_factory=dict)
     density: float = 0.0
     tile_min: int = 16
     tile_max: int = 512
@@ -364,11 +364,11 @@ class AtlasPlan:
 
 
 def _atlas_digest(
-    layout: "atlas.AtlasLayout",
+    layout: atlas.AtlasLayout,
     tile_min: int,
     tile_max: int,
     soft_max: int,
-    texels: Dict[str, Dict[str, np.ndarray]],
+    texels: dict[str, dict[str, np.ndarray]],
 ) -> str:
     """Stable digest of an atlas allocation, for the solve cache key.
 
@@ -411,7 +411,7 @@ def _prepare_bake_uv(obj: Any) -> None:
     irradiance.prepare_object_bake_uv(obj)
 
 
-def _face_uv_and_slots_from_mesh(mesh: Any, uv_layer_name: str) -> Optional[tuple]:
+def _face_uv_and_slots_from_mesh(mesh: Any, uv_layer_name: str) -> tuple | None:
     """``(loop_uv (M,3,2) float64 in [0,1], face_material_index (M,) int32)`` for an
     arbitrary Blender mesh datablock, triangulated identically to
     :func:`_extract_geometry` (all triangle-polygons first, then each quad's two
@@ -473,12 +473,12 @@ def _face_uv_and_slots_from_mesh(mesh: Any, uv_layer_name: str) -> Optional[tupl
     return loop_uv, face_material_index
 
 
-def _extract_face_uv_and_slots(obj: Any, uv_layer_name: str) -> Optional[tuple]:
+def _extract_face_uv_and_slots(obj: Any, uv_layer_name: str) -> tuple | None:
     """:func:`_face_uv_and_slots_from_mesh` for ``obj``'s BASE mesh (``obj.data``)."""
     return _face_uv_and_slots_from_mesh(getattr(obj, "data", None), uv_layer_name)
 
 
-def _extract_evaluated_face_uv_and_slots(obj: Any, uv_layer_name: str) -> Optional[tuple]:
+def _extract_evaluated_face_uv_and_slots(obj: Any, uv_layer_name: str) -> tuple | None:
     """:func:`_face_uv_and_slots_from_mesh` for ``obj``'s EVALUATED mesh (post-modifier).
 
     Used to read back a UV layer (e.g. ``ATLAS_UV_LAYER_NAME``) that was written to the
@@ -494,7 +494,7 @@ def _extract_evaluated_face_uv_and_slots(obj: Any, uv_layer_name: str) -> Option
     return _face_uv_and_slots_from_mesh(mesh, uv_layer_name)
 
 
-def _write_atlas_uv_layer(obj: Any, tile: "atlas.TileSpec", atlas_size: tuple, src_layer_name: str) -> None:
+def _write_atlas_uv_layer(obj: Any, tile: atlas.TileSpec, atlas_size: tuple, src_layer_name: str) -> None:
     """Remap ``src_layer_name``'s per-loop UVs into ``tile``'s placement inside the
     shared atlas image and store the result as a fresh ``ATLAS_UV_LAYER_NAME`` UV layer
     on ``obj``'s BASE mesh (per spec ``4.1`` - the thermal AOV shader samples the atlas
@@ -577,8 +577,8 @@ def build_atlas_plan(scene: Any, sim_objects: list, cfg: dict) -> AtlasPlan:
     tile_max = int(cfg.get("atlas_tile_max", 512))
     soft_max = int(cfg.get("atlas_texel_soft_max", 500_000))
 
-    geoms: Dict[str, tuple] = {}
-    areas: Dict[str, float] = {}
+    geoms: dict[str, tuple] = {}
+    areas: dict[str, float] = {}
     retained_vertex_count = 0
     for obj in sim_objects:
         geom = _extract_geometry(obj)
@@ -605,7 +605,7 @@ def build_atlas_plan(scene: Any, sim_objects: list, cfg: dict) -> AtlasPlan:
         retained_vertex_count=retained_vertex_count, padding=_ATLAS_PACKING_PADDING,
     )
 
-    texels: Dict[str, Dict[str, np.ndarray]] = {}
+    texels: dict[str, dict[str, np.ndarray]] = {}
     for name in areas:
         obj, verts, faces, _n = geoms[name]
         tile = layout.tiles.get(name)
@@ -871,7 +871,7 @@ def _texel_albedo(scene: Any, obj: Any, uv_at_texel: np.ndarray, texture_size: i
 
 
 def _texel_irradiance_cycles(
-    scene: Any, obj: Any, uv_at_texel: np.ndarray, texture_size: int, samples: Optional[int] = None
+    scene: Any, obj: Any, uv_at_texel: np.ndarray, texture_size: int, samples: int | None = None
 ) -> np.ndarray:
     """Bilinear-sample ``obj``'s Cycles irradiance bake at texel UV centers.
 
@@ -1029,10 +1029,10 @@ def _compute_irradiance(scene: Any, sim_objects: list, solver_cfg: dict, default
 
 def _combine_texel_object(
     obj: Any,
-    tex: Dict[str, np.ndarray],
+    tex: dict[str, np.ndarray],
     flux_by_obj: dict,
     defaults: dict,
-    assignment: Optional[Any],
+    assignment: Any | None,
     irradiance_scale: float,
     verts_l: list,
     irr_l: list,
@@ -1121,9 +1121,9 @@ def _combine(
     flux_by_obj: dict,
     defaults: dict,
     solver_cfg: dict,
-    assignment: Optional[Any] = None,
-    atlas_plan: Optional[AtlasPlan] = None,
-) -> Optional[SimpleNamespace]:
+    assignment: Any | None = None,
+    atlas_plan: AtlasPlan | None = None,
+) -> SimpleNamespace | None:
     """Stack per-object geometry + material vectors into one solver-ready system.
 
     Surface vertices come first (layout records each object's slice); optional
@@ -1311,7 +1311,7 @@ def _augment_interior_points(
         mat = resolve_material(obj, defaults)
         if mat["thermal_role"] == "DIRICHLET_SOURCE":
             continue
-        target = int(round(n * ratio))
+        target = round(n * ratio)
         if target <= 0:
             continue
         try:
@@ -1480,8 +1480,8 @@ def solve_scene(
     defaults: dict,
     solver_cfg: dict,
     cache_root: Path,
-    assignment: Optional[Any] = None,
-    atlas_plan: Optional[AtlasPlan] = None,
+    assignment: Any | None = None,
+    atlas_plan: AtlasPlan | None = None,
 ) -> dict:
     """Cache-aware FEM heat solve for ``scene``.
 
@@ -1627,7 +1627,7 @@ def solve_scene_animated(
     frame_end: int,
     every_n: int,
     substeps_per_frame: int,
-    assignment: Optional[Any] = None,
+    assignment: Any | None = None,
 ) -> tuple[dict, list]:
     """Transient per-frame FEM solve over an animated scene (Phase 1 / M2).
 
@@ -1771,8 +1771,8 @@ def solve_scene_animated(
 
     orig_frame = int(scene.frame_current)
     history_rows: dict = {}
-    u_prev: Optional[np.ndarray] = None
-    n_fem_surface: Optional[int] = None
+    u_prev: np.ndarray | None = None
+    n_fem_surface: int | None = None
 
     try:
         for f in frames:
@@ -1887,7 +1887,7 @@ def _fallback_temperature_K(obj: Any, defaults: dict, default_T: float) -> float
     return default_T
 
 
-def _write_emissivity_attr(obj: Any, mesh: Any, defaults: dict, assignment: Optional[Any], n: int) -> None:
+def _write_emissivity_attr(obj: Any, mesh: Any, defaults: dict, assignment: Any | None, n: int) -> None:
     """Write the ``emissivity`` POINT attribute, per-vertex from ``assignment`` when
     available (falling back to the object's single resolved material emissivity
     otherwise). Shared by the normal per-vertex write-back path and the constant-fill
@@ -1906,7 +1906,7 @@ def _write_emissivity_attr(obj: Any, mesh: Any, defaults: dict, assignment: Opti
 
 
 def _write_constant_fill_attributes(
-    obj: Any, mesh: Any, defaults: dict, assignment: Optional[Any], fill_T: float
+    obj: Any, mesh: Any, defaults: dict, assignment: Any | None, fill_T: float
 ) -> None:
     """Constant-fill ``sim_temperature`` (and ``emissivity``) for a vertex-path object
     whose per-vertex write-back is impossible this frame (topology mismatch or missing
@@ -1929,8 +1929,8 @@ def write_frame_attributes(
     history: dict,
     timestep: int,
     defaults: dict,
-    assignment: Optional[Any] = None,
-    atlas_plan: Optional[AtlasPlan] = None,
+    assignment: Any | None = None,
+    atlas_plan: AtlasPlan | None = None,
 ) -> None:
     """Write per-vertex temperatures for the chosen ``timestep`` (use ``-1`` for last).
 

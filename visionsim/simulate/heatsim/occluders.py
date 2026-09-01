@@ -29,9 +29,8 @@ try:
 except ImportError:  # pragma: no cover - host interpreter without Blender
     bpy = None  # type: ignore
 
-from typing import List, Optional
 
-__all__ = ["casts_shadow", "material_is_clear", "surface_shader_nodes", "principled_is_clear"]
+__all__ = ["casts_shadow", "material_is_clear", "principled_is_clear", "surface_shader_nodes"]
 
 
 # A mesh only stops casting shadows once it is essentially clear glass; a
@@ -71,7 +70,7 @@ def principled_is_clear(node: bpy.types.Node) -> bool:
     return False
 
 
-def _active_output(tree: bpy.types.NodeTree, node_type: str) -> Optional[bpy.types.Node]:
+def _active_output(tree: bpy.types.NodeTree, node_type: str) -> bpy.types.Node | None:
     """The output node Blender actually renders from, or None if there is none.
 
     A tree may hold several output nodes; only the active one contributes. When
@@ -83,7 +82,7 @@ def _active_output(tree: bpy.types.NodeTree, node_type: str) -> Optional[bpy.typ
     return next((n for n in outputs if getattr(n, "is_active_output", False)), outputs[0])
 
 
-def surface_shader_nodes(tree: bpy.types.NodeTree) -> Optional[List[bpy.types.Node]]:
+def surface_shader_nodes(tree: bpy.types.NodeTree) -> list[bpy.types.Node] | None:
     """Shader nodes actually reachable from the active Material Output's Surface.
 
     Walking the graph rather than scanning ``tree.nodes`` matters in both
@@ -107,7 +106,7 @@ def surface_shader_nodes(tree: bpy.types.NodeTree) -> Optional[List[bpy.types.No
 
     seen: set = set()
     stack = [link.from_node for link in surface.links]
-    reachable: List[bpy.types.Node] = []
+    reachable: list[bpy.types.Node] = []
     while stack:
         node = stack.pop()
         # Node names are only unique within a tree, so key on the tree too.
@@ -134,7 +133,7 @@ def surface_shader_nodes(tree: bpy.types.NodeTree) -> Optional[List[bpy.types.No
     return reachable
 
 
-def material_is_clear(mat: Optional[bpy.types.Material]) -> bool:
+def material_is_clear(mat: bpy.types.Material | None) -> bool:
     """Whether ``mat`` passes essentially all shortwave light through.
 
     True only when the shaders feeding the surface output include a transmissive
