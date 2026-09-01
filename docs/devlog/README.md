@@ -26,6 +26,8 @@ merging `heatsim` forward.
 
 | `silent-error-handling.md` | Why 103 blind-except/try-except-pass findings are exempted in `pyproject.toml`, and the real gap that exemption hides: only 4 of 40 handlers log anything, which has already cost this project two multi-day debugging incidents. Includes the fix, scoped as its own change. |
 
+| `volume-conduction-gap.md` | Upstream supports per-object interior sample points (Bridson Poisson-disk, BVH ray-parity) so heat conducts through volume; visionsim's equivalent is unreachable, global, and a weaker sampler. Every cup_pour render produced here was surface-only conduction. Not ported -- scope decision. |
+
 ### `thermal-atlas/`
 
 The texel-atlas thermal rendering work (LWIR modality for the ~50-scene interior
