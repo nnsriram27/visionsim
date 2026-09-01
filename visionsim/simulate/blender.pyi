@@ -18,11 +18,10 @@ import rpyc  # type: ignore
 import rpyc.utils.registry  # type: ignore
 import rpyc.utils.server  # type: ignore
 from _typeshed import Incomplete
-from typing_extensions import ParamSpec, Self
+from typing_extensions import Self
 
 from visionsim.types import COLOR_MODES, EXR_CODECS, FILE, FILE_FORMATS, UpdateFn
 
-_P = ParamSpec("_P")
 handlers: Iterable[logging.Handler] | None
 server_log: logging.Logger
 EXPOSED_PREFIX: str
@@ -715,6 +714,8 @@ class BlenderService(rpyc.Service):
         timestep_s: float,
         domain: Literal["POINTS", "MESH"],
         laplacian_backend: Literal["ROBUST", "IGL"],
+        irradiance_source: Literal["DIRECT_KERNEL", "CYCLES_BAKE"] = "DIRECT_KERNEL",
+        bake_samples: int = 1024,
         device: Literal["cuda", "cpu"],
         assignments: str | None = None,
     ) -> tuple[dict, dict, Path, Any]:
@@ -744,6 +745,8 @@ class BlenderService(rpyc.Service):
         timestep_s: float,
         domain: Literal["POINTS", "MESH"],
         laplacian_backend: Literal["ROBUST", "IGL"],
+        irradiance_source: Literal["DIRECT_KERNEL", "CYCLES_BAKE"] = "DIRECT_KERNEL",
+        bake_samples: int = 1024,
         device: Literal["cuda", "cpu"],
         assignments: str | None = None,
         render_domain: Literal["VERTEX", "TEXEL"] = "VERTEX",

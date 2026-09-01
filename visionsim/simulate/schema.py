@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from functools import cached_property
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from peewee import (
     FloatField,
@@ -143,24 +143,22 @@ class _Metadata:
         if Path(path).exists():
             Path(path).unlink()
 
-        db = SqliteDatabase(path, pragmas=_DEFAULT_PRAGMAS)
+        db = SqliteDatabase(str(path), pragmas=_DEFAULT_PRAGMAS)
 
-        with db.connection_context():
-            with db.atomic():
-                with db.bind_ctx(_MODELS):
-                    db.create_tables(_MODELS, safe=True)
+        with db.connection_context(), db.atomic(), db.bind_ctx(_MODELS):
+            db.create_tables(_MODELS, safe=True)
 
-                    for index, transform in enumerate(transforms):
-                        camera, _ = _Camera.get_or_create(
-                            **{k: v for k, v in transform.items() if k in _Camera._meta.fields}  # type: ignore
-                        )
-                        data, _ = _Data.get_or_create(**{k: v for k, v in transform.items() if k in _Data._meta.fields})  # type: ignore
-                        _Frame.create(
-                            id=index,
-                            camera=camera,
-                            data=data,
-                            **{k: v for k, v in transform.items() if k in _Frame._meta.fields},  # type: ignore
-                        )
+            for index, transform in enumerate(transforms):
+                camera, _ = _Camera.get_or_create(
+                    **{k: v for k, v in transform.items() if k in _Camera._meta.fields}  # type: ignore
+                )
+                data, _ = _Data.get_or_create(**{k: v for k, v in transform.items() if k in _Data._meta.fields})  # type: ignore
+                _Frame.create(
+                    id=index,
+                    camera=camera,
+                    data=data,
+                    **{k: v for k, v in transform.items() if k in _Frame._meta.fields},  # type: ignore
+                )
         return cls(path)
 
     def iter_dense_transforms(self, rename_to: str = "file_path", exclude_none: bool = True) -> Iterator[dict[str, Any]]:
@@ -173,27 +171,29 @@ class _Metadata:
         Yields:
             Iterator[dict[str, Any]]: Dictionaries containing all relevant frame data
         """
-        db = SqliteDatabase(self.path, pragmas=_DEFAULT_PRAGMAS)
-        with db.connection_context():
-            with db.bind_ctx(_MODELS):
-                for transform in _Frame.select(*_MODELS).join(_Camera).switch(_Frame).join(_Data).dicts():
-                    # Remove database-specific IDs and Foreign Keys
-                    transform.pop("id")
-                    transform.pop("camera")
-                    transform.pop("data")
+        db = SqliteDatabase(str(self.path), pragmas=_DEFAULT_PRAGMAS)
+        with db.connection_context(), db.bind_ctx(_MODELS):
+            query = cast(
+                "Iterable[dict[str, Any]]", _Frame.select(*_MODELS).join(_Camera).switch(_Frame).join(_Data).dicts()
+            )
+            for transform in query:
+                # Remove database-specific IDs and Foreign Keys
+                transform.pop("id")
+                transform.pop("camera")
+                transform.pop("data")
 
-                    # peewee aliases duplicate "id" columns from joined models as
-                    # "id_2", "id_3", … (version-dependent), so strip them too.
-                    for k in [k for k in transform if k.startswith("id_")]:
+                # peewee aliases duplicate "id" columns from joined models as
+                # "id_2", "id_3", … (version-dependent), so strip them too.
+                for k in [k for k in transform if k.startswith("id_")]:
+                    transform.pop(k)
+
+                if exclude_none:
+                    none_keys = [k for k, v in transform.items() if v is None]
+                    for k in none_keys:
                         transform.pop(k)
 
-                    if exclude_none:
-                        none_keys = [k for k, v in transform.items() if v is None]
-                        for k in none_keys:
-                            transform.pop(k)
-
-                    transform[rename_to] = transform.pop("path")
-                    yield transform
+                transform[rename_to] = transform.pop("path")
+                yield transform
 
     def to_dense_transforms(self, *args, **kwargs) -> list[dict[str, Any]]:
         """Same as :meth:`iter_dense_transforms` but returns a list instead of a generator."""
@@ -202,7 +202,7 @@ class _Metadata:
     @cached_property
     def cameras(self) -> list[dict[str, Any]]:
         """List of defined cameras."""
-        db = SqliteDatabase(self.path, pragmas=_DEFAULT_PRAGMAS)
-        with db.connection_context():
-            with db.bind_ctx(_MODELS):
-                return list(_Camera.select().dicts())
+        db = SqliteDatabase(str(self.path), pragmas=_DEFAULT_PRAGMAS)
+        with db.connection_context(), db.bind_ctx(_MODELS):
+            query = cast("Iterable[dict[str, Any]]", _Camera.select().dicts())
+            return list(query)

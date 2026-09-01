@@ -295,8 +295,8 @@ def rasterize_tile(
             continue
 
         gy, gx = np.nonzero(mask)
-        gxs = gx + x_min
-        gys = gy + y_min
+        gxs: np.ndarray = gx + x_min
+        gys: np.ndarray = gy + y_min
         keep = ~covered[gys, gxs]
         if not keep.any():
             continue

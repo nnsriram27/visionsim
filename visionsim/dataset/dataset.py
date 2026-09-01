@@ -28,29 +28,39 @@ class PathTransforms:
     ``offset`` as well. For instance, if ``paths`` points to a png, a npy of shape (4, H, W, C), and another png, an
     index of 3 will return the path to the numpy file and an offset of 3."""
 
-    def __init__(self, paths: Sequence[Path], iter_npys: bool = True, **kwargs) -> None:
+    def __init__(
+        self, paths: Sequence[Path], iter_npys: bool = True, root: str | os.PathLike | None = None, **kwargs
+    ) -> None:
         """Initialize a sequence of "dummy" transform dictionaries from a set of paths.
 
         Args:
             paths (Sequence[Path]): Paths to yield from
             iter_npys (bool, optional): If true, yield from numpy arrays will before
                 moving on to next path. Defaults to True.
+            root (str | os.PathLike | None, optional): Root directory to resolve relative paths against.
+                Defaults to None.
             **kwargs (dict[str, Any]): Additional key/value pairs to include in each transform dict.
         """
+        self.root = Path(root).resolve() if root else None
         if iter_npys:
-            lengths = [len(np.load(str(path), mmap_mode="r")) if path.suffix.lower() == ".npy" else 1 for path in paths]
+            lengths = [
+                len(np.load(str(self.root / path if self.root else path), mmap_mode="r"))
+                if path.suffix.lower() == ".npy"
+                else 1
+                for path in paths
+            ]
         else:
             lengths = [len(paths)]
 
         self.iter_npys = iter_npys
-        self.cumulative_lengths = np.cumsum(lengths)
+        self.cumulative_lengths: npt.NDArray[np.intp] = np.cumsum(lengths)
         self.lengths = lengths
         self.paths = paths
         self.kwargs = kwargs
 
     def __len__(self) -> int:
         """Length of dataset"""
-        return self.cumulative_lengths[-1]
+        return int(self.cumulative_lengths[-1])
 
     def __getitem__(self, idx: int) -> dict[str, int | Path]:
         """Return dummy transform dict at provided index.
@@ -64,10 +74,10 @@ class PathTransforms:
         """
         if self.iter_npys:
             path_idx = int(np.searchsorted(self.cumulative_lengths, idx, side="right"))
-            transform = {"file_path": self.paths[path_idx]}
+            transform: dict[str, int | Path] = {"file_path": self.paths[path_idx]}
 
             if self.paths[path_idx].suffix.lower() == ".npy":
-                transform["offset"] = (idx - self.cumulative_lengths[path_idx]) % self.lengths[path_idx]
+                transform["offset"] = int((idx - self.cumulative_lengths[path_idx]) % self.lengths[path_idx])
         else:
             transform = {"file_path": self.paths[idx]}
         return transform | self.kwargs
@@ -162,7 +172,7 @@ class Dataset(torch.utils.data.Dataset):
         if any(not (Path(root or "") / p).exists() for p in paths):
             raise ValueError("Some paths do not exist!")
 
-        transforms = PathTransforms(paths=[Path(p) for p in paths], iter_npys=iter_npys, **kwargs)
+        transforms = PathTransforms(paths=[Path(p) for p in paths], iter_npys=iter_npys, root=root, **kwargs)
         return cls(transforms=cast(Sequence, transforms), root=root, cameras=cameras)
 
     @classmethod
@@ -197,7 +207,7 @@ class Dataset(torch.utils.data.Dataset):
     @staticmethod
     def _slice_bitpacked_array(
         data: npt.NDArray,
-        idx: tuple[int | slice, ...] = tuple(),
+        idx: tuple[int | slice, ...] = (),
         bitpack_dim: Literal[0, 1, 2] | None = None,
         unpacked_size: int | None = None,
     ) -> int | npt.NDArray:
@@ -256,7 +266,7 @@ class Dataset(torch.utils.data.Dataset):
     @staticmethod
     def load_data(
         path: str | os.PathLike,
-        idx: tuple[int | slice, ...] = tuple(),
+        idx: tuple[int | slice, ...] = (),
         auto_collapse: bool = True,
         bitpack_dim: Literal[0, 1, 2] | None = None,
         unpacked_size: int | None = None,
@@ -301,8 +311,8 @@ class Dataset(torch.utils.data.Dataset):
             return Dataset._slice_bitpacked_array(data, idx=idx, bitpack_dim=bitpack_dim, unpacked_size=unpacked_size)
         elif Path(path).suffix.lower() == ".exr":
             with OpenEXR.File(str(path)) as f:
-                if len(f.channels()) == 1 and list(f.channels().keys())[0] in ("RGBA", "RGB", "V"):
-                    data = list(f.channels().values())[0].pixels
+                if len(f.channels()) == 1 and next(iter(f.channels().keys())) in ("RGBA", "RGB", "V"):
+                    data = next(iter(f.channels().values())).pixels
 
                     if data.ndim == 2:
                         data = data[..., np.newaxis]
@@ -373,4 +383,4 @@ class Dataset(torch.utils.data.Dataset):
         elif frame_idx.size:
             data, transform = zip(*(self[tuple(np.atleast_1d(i).tolist() + sub_slice)] for i in frame_idx))
             return data, transform
-        return tuple(), tuple()
+        return (), ()
