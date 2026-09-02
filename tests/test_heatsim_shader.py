@@ -256,3 +256,70 @@ print('DEFAULT_SURFACE_OK')
         capture_output=True, text=True,
      check=False)
     assert "DEFAULT_SURFACE_OK" in out.stdout, out.stdout + "\n" + out.stderr
+
+
+def test_radiance_matches_gray_body_for_per_vertex_emissivity(executable):
+    """Rendered radiance must equal eps*sigma*T^4 + (1-eps)*sigma*T_amb^4, per surface.
+
+    Two defects made this false. The gray-body shader baked ONE emissivity constant into
+    the mix factor and assigned that single material to every mesh, so the per-vertex
+    ``emissivity`` attribute the solve writes was never read and every surface radiated as
+    if eps=0.9. And the thermal world emitted ``_AMBIENT_K`` (295.372 -- a temperature)
+    where the reflected ``(1 - eps)`` term needs a radiance, ``sigma*T_amb^4`` (431.6).
+
+    The second was a ~4% error while eps was pinned at 0.9 and invisible; it dominates at
+    low emissivity, where a surface is mostly a mirror. Both matter for LWIR: the preset
+    library spans eps 0.05 (polished aluminium) to 0.98 (skin), and a low-emissivity
+    surface reading close to ambient IS the physical behaviour that makes polished metal
+    hard to measure with a thermal camera.
+    """
+    code = r"""
+import bpy, numpy as np, tempfile, os
+from visionsim.simulate.heatsim import thermal_shader as ts
+
+SIGMA = 5.670374419e-8
+T_AMB = ts._AMBIENT_K
+T_HOT = 350.0
+
+def render_with(eps):
+    for o in list(bpy.data.objects):
+        bpy.data.objects.remove(o, do_unlink=True)
+    sc = bpy.context.scene
+    sc.render.engine = 'CYCLES'; sc.cycles.device = 'CPU'; sc.cycles.samples = 16
+    sc.render.resolution_x = sc.render.resolution_y = 32
+    sc.render.film_transparent = True
+    bpy.ops.mesh.primitive_plane_add(size=3.0, location=(0, 0, 0))
+    o = bpy.context.active_object; me = o.data; n = len(me.vertices)
+    for name, val in (("sim_temperature", T_HOT), ("emissivity", eps)):
+        a = me.attributes.new(name=name, type='FLOAT', domain='POINT')
+        a.data.foreach_set("value", np.full(n, val, dtype=np.float32))
+    o["heatsim_default_temperature"] = T_HOT
+    bpy.ops.object.camera_add(location=(0, 0, 6)); sc.camera = bpy.context.object
+    sc.camera.data.type = 'ORTHO'; sc.camera.data.ortho_scale = 4.0
+    state = ts.enter_thermal_scene(sc, radiance_scale=1.0)
+    try:
+        out = os.path.join(tempfile.mkdtemp(), "r.exr")
+        sc.render.image_settings.file_format = 'OPEN_EXR'
+        sc.render.image_settings.color_depth = '32'
+        sc.render.filepath = out
+        bpy.ops.render.render(write_still=True)
+    finally:
+        ts.restore_scene(sc, state)
+    img = bpy.data.images.load(out); w, h = img.size
+    px = np.array(img.pixels[:], dtype=np.float64).reshape(h, w, 4)
+    lit = px[:, :, 3] > 0.5
+    return float(np.median(px[:, :, 0][lit]))
+
+for eps in (0.05, 0.50, 0.98):
+    got = render_with(eps)
+    want = eps * SIGMA * T_HOT**4 + (1.0 - eps) * SIGMA * T_AMB**4
+    rel = abs(got - want) / want
+    assert rel < 0.02, f"eps={eps}: rendered {got:.2f}, gray body predicts {want:.2f} ({rel:.1%} off)"
+
+# And the emissivity must actually be read per surface, not collapsed to one constant.
+lo, hi = render_with(0.05), render_with(0.98)
+assert hi - lo > 300.0, f"emissivity barely changed radiance: {lo:.1f} vs {hi:.1f}"
+print("GRAY_BODY_EMISSIVITY_OK")
+"""
+    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True, check=False)
+    assert "GRAY_BODY_EMISSIVITY_OK" in out.stdout, out.stdout + out.stderr

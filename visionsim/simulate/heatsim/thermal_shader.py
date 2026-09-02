@@ -210,6 +210,61 @@ def _build_temperature_source_chain(nodes: Any, links: Any, new_node: Any = None
     return mix.outputs["Result"]
 
 
+def _build_emissivity_source_chain(nodes: Any, links: Any, x0: float, y0: float) -> Any:
+    """Per-vertex emissivity socket, falling back to ``_DEFAULT_EMISSIVITY``.
+
+    ``adapter._write_emissivity_attr`` stamps an ``emissivity`` POINT attribute on every
+    object it writes back (both the per-vertex path and the constant-fill fallback), from
+    the sidecar's per-slot presets where one is supplied. A mesh that never went through
+    the solve has no such attribute, and Blender returns 0.0 for a missing float
+    attribute -- which would mean "perfect mirror, emits nothing". So a value of exactly
+    0 is treated as absent and replaced by the default.
+
+    Emissivity is what an LWIR camera actually distinguishes: the preset library spans
+    0.05 (polished aluminium) to 0.98 (skin), and at 350 K that is the difference between
+    42 and 750 W/m^2 emitted from surfaces at the same physical temperature. Baking one
+    constant into the mix factor made every material in the scene radiate identically.
+
+    Returns:
+        The output socket (float ``Value``) carrying the effective per-pixel emissivity.
+    """
+    eps_attr = nodes.new("ShaderNodeAttribute")
+    eps_attr.attribute_name = "emissivity"
+    eps_attr.attribute_type = "GEOMETRY"
+    eps_attr.location = (x0, y0)
+
+    # is_valid = emissivity > 0  (a missing attribute reads as 0.0)
+    eps_valid = nodes.new("ShaderNodeMath")
+    eps_valid.operation = "GREATER_THAN"
+    eps_valid.location = (x0 + 200.0, y0 + 100.0)
+    eps_valid.inputs[1].default_value = 0.0
+    links.new(eps_attr.outputs["Fac"], eps_valid.inputs[0])
+
+    # delta = emissivity - default
+    eps_delta = nodes.new("ShaderNodeMath")
+    eps_delta.operation = "SUBTRACT"
+    eps_delta.location = (x0 + 200.0, y0 - 40.0)
+    links.new(eps_attr.outputs["Fac"], eps_delta.inputs[0])
+    eps_delta.inputs[1].default_value = _DEFAULT_EMISSIVITY
+
+    # effective = default + is_valid * delta   (branch-free select)
+    eps_eff = nodes.new("ShaderNodeMath")
+    eps_eff.operation = "MULTIPLY_ADD"
+    eps_eff.location = (x0 + 400.0, y0)
+    links.new(eps_delta.outputs["Value"], eps_eff.inputs[0])
+    links.new(eps_valid.outputs["Value"], eps_eff.inputs[1])
+    eps_eff.inputs[2].default_value = _DEFAULT_EMISSIVITY
+
+    # Clamp to [0, 1]; a sidecar cannot produce an out-of-range value, but a hand-edited
+    # attribute could, and a negative mix factor is meaningless.
+    eps_clamped = nodes.new("ShaderNodeClamp")
+    eps_clamped.location = (x0 + 600.0, y0)
+    eps_clamped.inputs["Min"].default_value = 0.0
+    eps_clamped.inputs["Max"].default_value = 1.0
+    links.new(eps_eff.outputs["Value"], eps_clamped.inputs["Value"])
+    return eps_clamped.outputs["Result"]
+
+
 def _build_gray_body_material(radiance_scale: float) -> Any:
     """Create (or return a cached) gray-body emission material for thermal rendering.
 
@@ -221,7 +276,8 @@ def _build_gray_body_material(radiance_scale: float) -> Any:
 
     ``T_eff`` is read from per-vertex ``sim_temperature`` (falling back to the per-object
     ``heatsim_default_temperature`` custom property when the attribute is absent).
-    Emissivity is a fixed constant ``_DEFAULT_EMISSIVITY`` baked into the Mix Fac.
+    Emissivity is read per-vertex from the ``emissivity`` attribute, falling back to
+    ``_DEFAULT_EMISSIVITY`` where that attribute is absent.
 
     Args:
         radiance_scale: Scalar multiplier after σ·T⁴ — tune this to adjust rendered
@@ -276,10 +332,19 @@ def _build_gray_body_material(radiance_scale: float) -> Any:
     diffuse.inputs["Color"].default_value = (1.0, 1.0, 1.0, 1.0)
     diffuse.inputs["Roughness"].default_value = 0.0  # Lambertian
 
+    # Fac = 1 - ε so the Emission slot gets weight ε and Diffuse gets weight 1-ε.
+    # ε is per-vertex, not a scene-wide constant -- see _build_emissivity_source_chain.
+    eps_socket = _build_emissivity_source_chain(nodes, links, x0=-800.0, y0=-260.0)
+    one_minus_eps = nodes.new("ShaderNodeMath")
+    one_minus_eps.operation = "SUBTRACT"
+    one_minus_eps.location = (440.0, 60.0)
+    one_minus_eps.inputs[0].default_value = 1.0
+    links.new(eps_socket, one_minus_eps.inputs[1])
+
     mix_shader = nodes.new("ShaderNodeMixShader")
     mix_shader.location = (640.0, 340.0)
-    # Fac = 1 - ε so the Emission slot gets weight ε and Diffuse gets weight 1-ε.
     mix_shader.inputs["Fac"].default_value = 1.0 - _DEFAULT_EMISSIVITY
+    links.new(one_minus_eps.outputs["Value"], mix_shader.inputs["Fac"])
     links.new(emission.outputs["Emission"], mix_shader.inputs[1])
     links.new(diffuse.outputs["BSDF"], mix_shader.inputs[2])
 
@@ -590,16 +655,27 @@ def enter_thermal_scene(scene: Any, *, radiance_scale: float) -> dict:
         orig_world = scene.world
         state[_KEY_WORLD] = orig_world.name if orig_world is not None else None
 
-        thermal_world = bpy.data.worlds.get(_THERMAL_WORLD_NAME)
+        # The world is what the gray body's (1 - eps) term reflects, so it must be a
+        # RADIANCE in the same units the emission term produces -- sigma*T_amb^4 scaled by
+        # radiance_scale -- not the ambient temperature itself. Emitting `_AMBIENT_K`
+        # (295.372) directly mixed a Kelvin value into a radiance image. That was a ~4%
+        # error while emissivity was pinned at 0.9, and dominates once a low-emissivity
+        # surface is rendered: at eps=0.05 the reflected term is 95% of the pixel.
+        #
+        # The name carries radiance_scale for the same reason the material's does: the
+        # world is cached by name, so two scales must not share one datablock.
+        _ambient_radiance = _SIGMA_SI * (_AMBIENT_K**4) * float(radiance_scale)
+        world_name = f"{_THERMAL_WORLD_NAME}_vs_{radiance_scale:.6g}"
+        thermal_world = bpy.data.worlds.get(world_name)
         if thermal_world is None:
-            thermal_world = bpy.data.worlds.new(_THERMAL_WORLD_NAME)
+            thermal_world = bpy.data.worlds.new(world_name)
             thermal_world.use_nodes = True
             wnodes = thermal_world.node_tree.nodes
             wlinks = thermal_world.node_tree.links
             wnodes.clear()
             bg = wnodes.new("ShaderNodeBackground")
             bg.inputs["Color"].default_value = (1.0, 1.0, 1.0, 1.0)
-            bg.inputs["Strength"].default_value = _AMBIENT_K
+            bg.inputs["Strength"].default_value = _ambient_radiance
             wout = wnodes.new("ShaderNodeOutputWorld")
             wlinks.new(bg.outputs["Background"], wout.inputs["Surface"])
         scene.world = thermal_world
