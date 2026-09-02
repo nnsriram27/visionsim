@@ -27,9 +27,7 @@ from .uv_utils import restore_uv_states, snapshot_uv_states
 class BakedFluxMap:
     """Container for baked flux data coming from an image texture."""
 
-    image: bpy.types.Image
     pixels: np.ndarray  # shape (H, W, 3) in linear space
-    tri_uvs: np.ndarray  # shape (n_faces, 3, 2)
     vertex_flux: np.ndarray  # per-vertex luminance * scale
     width: int
     height: int
@@ -675,7 +673,6 @@ def bake_albedo_map(scene, obj, texture_size: int) -> BakedFluxMap | None:
 
     uv_data = np.zeros((len(mesh.loops), 2), dtype=np.float64)
     uv_layer.data.foreach_get("uv", uv_data.ravel())
-    tri_uvs = uv_data[loop_indices]
 
     loop_vertex_indices = np.zeros(len(mesh.loops), dtype=np.int32)
     mesh.loops.foreach_get("vertex_index", loop_vertex_indices)
@@ -693,9 +690,7 @@ def bake_albedo_map(scene, obj, texture_size: int) -> BakedFluxMap | None:
 
     obj["heat_sim_albedo_image"] = image.name
     return BakedFluxMap(
-        image=image,
         pixels=rgb_pixels,
-        tri_uvs=tri_uvs,
         vertex_flux=vertex_luma,
         width=width,
         height=height,
@@ -873,7 +868,6 @@ def bake_irradiance_map(scene, obj, texture_size: int, samples: int | None = Non
 
     uv_data = np.zeros((len(mesh.loops), 2), dtype=np.float64)
     uv_layer.data.foreach_get("uv", uv_data.ravel())
-    tri_uvs = uv_data[loop_indices]
 
     loop_vertex_indices = np.zeros(len(mesh.loops), dtype=np.int32)
     mesh.loops.foreach_get("vertex_index", loop_vertex_indices)
@@ -891,9 +885,7 @@ def bake_irradiance_map(scene, obj, texture_size: int, samples: int | None = Non
 
     obj["heat_sim_irradiance_image"] = image.name
     return BakedFluxMap(
-        image=image,
         pixels=rgb_pixels,
-        tri_uvs=tri_uvs,
         vertex_flux=vertex_luma,
         width=width,
         height=height,

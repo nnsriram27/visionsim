@@ -22,7 +22,7 @@ _DEFAULTS = {
     "emissivity": 0.5,
     "irradiance_scale": 1.0,
 }
-_SOLVER_CFG = {"domain": "POINTS", "interior_points": False}
+_SOLVER_CFG = {"domain": "POINTS"}
 
 
 class _Poly:

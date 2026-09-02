@@ -18,7 +18,7 @@ wrong units silently corrupt the physics:
   (``NUM_FRAME_DELTA = timestep_s * 60`` so ``dt = NUM_FRAME_DELTA / 60``;
   ``record_time == sim_time`` records every step).
 
-The module imports ``bpy``/``mathutils`` defensively so it stays importable (for
+The module imports ``bpy`` defensively so it stays importable (for
 linting / type-checking) outside Blender; the bpy-coupled solver and Direct-Kernel
 irradiance modules are imported lazily inside :func:`solve_scene`.
 """
@@ -45,10 +45,8 @@ from visionsim.simulate.heatsim.constants import (
 
 try:
     import bpy  # type: ignore
-    import mathutils  # type: ignore
 except ImportError:  # pragma: no cover - only hit outside Blender
     bpy = None  # type: ignore
-    mathutils = None  # type: ignore
 
 _log = logging.getLogger("rich")
 
@@ -421,7 +419,7 @@ def _face_uv_and_slots_from_mesh(mesh: Any, uv_layer_name: str) -> tuple | None:
     from the SAME mesh - base or evaluated). Reads UVs from the named UV layer on
     ``mesh.loops``. Returns ``None`` if the mesh has no polygons or lacks that UV layer.
 
-    Shared core for :func:`_extract_face_uv_and_slots` (base mesh) and
+    Shared core for :func:`_extract_evaluated_face_uv_and_slots`, which reads the
     :func:`_extract_evaluated_face_uv_and_slots` (evaluated mesh).
     """
     if mesh is None:
@@ -471,11 +469,6 @@ def _face_uv_and_slots_from_mesh(mesh: Any, uv_layer_name: str) -> tuple | None:
     loop_uv = np.vstack(uv_parts).astype(np.float64)
     face_material_index = np.concatenate(slot_parts).astype(np.int32)
     return loop_uv, face_material_index
-
-
-def _extract_face_uv_and_slots(obj: Any, uv_layer_name: str) -> tuple | None:
-    """:func:`_face_uv_and_slots_from_mesh` for ``obj``'s BASE mesh (``obj.data``)."""
-    return _face_uv_and_slots_from_mesh(getattr(obj, "data", None), uv_layer_name)
 
 
 def _extract_evaluated_face_uv_and_slots(obj: Any, uv_layer_name: str) -> tuple | None:
@@ -987,8 +980,13 @@ def _compute_texel_irradiance(
     bake_samples = int(solver_cfg.get("bake_samples", 1024))
     by_name = {o.name: o for o in sim_objects}
 
-    backend = bvh_backend.best_available()
-    backend.build_for_meshes(irradiance_kernel._collect_scene_meshes_world(scene))
+    # Only the Direct Kernel traces shadow rays; building a whole-scene BVH for the
+    # Cycles path costs a full build that is then never queried. Still built exactly
+    # once (pre-loop), not per object.
+    backend = None
+    if not use_cycles:
+        backend = bvh_backend.best_available()
+        backend.build_for_meshes(irradiance_kernel._collect_scene_meshes_world(scene))
 
     out: dict = {}
     for name, tex in atlas_plan.texels.items():
@@ -1149,7 +1147,7 @@ def _combine(
 
     Surface vertices come first (layout records each object's slice); optional
     interior POINTS-mode samples are appended afterwards by
-    :func:`_augment_interior_points` so the surface slices stay valid.
+    the surface slices stay valid.
 
     When *assignment* (a parsed thermal sidecar) is supplied and an object has
     usable material slots, alpha/rho/c/eps/T0 and the Dirichlet mask are resolved
@@ -1291,122 +1289,7 @@ def _combine(
         layout=layout,
     )
 
-    ratio = float(solver_cfg.get("interior_point_ratio", 0.0))
-    if str(solver_cfg.get("domain", "POINTS")).upper() == "POINTS" and ratio > 0.0:
-        _augment_interior_points(combined, sim_objects, geom_by_obj, defaults, ratio)
-
     return combined
-
-
-def _augment_interior_points(
-    combined: SimpleNamespace, sim_objects: list, geom_by_obj: dict, defaults: dict, ratio: float
-) -> None:
-    """Append optional interior volume samples (POINTS mode) per object.
-
-    Off by default (the vendored ``heat_sim_material`` schema has no point-volume
-    fields). When enabled via ``solver_cfg['interior_point_ratio']`` we draw
-    rejection samples inside each closed mesh using a mathutils BVH ray-parity
-    test - a compact stand-in for upstream's Bridson sampler (we only need extra
-    interior nodes, not blue-noise spacing). Interior nodes carry the object's
-    default material, zero incident flux, and are excluded from the boundary.
-    Best-effort: any failure simply adds no interior points.
-
-    Known per-vertex-materials gap: materials here are resolved object-level via
-    :func:`resolve_material`, not per vertex via :func:`materials.resolve_vertex_materials`,
-    so interior POINTS-domain samples do not reflect per-slot material variation.
-    """
-    if mathutils is None:
-        return
-    extra_v: list = []
-    extra_irr: list = []
-    extra_t0: list = []
-    extra_alpha: list = []
-    extra_rho: list = []
-    extra_c: list = []
-    extra_eps: list = []
-    for obj in sim_objects:
-        geom = geom_by_obj.get(obj)
-        if geom is None:
-            continue
-        verts, faces, n = geom
-        mat = resolve_material(obj, defaults)
-        if mat["thermal_role"] == "DIRICHLET_SOURCE":
-            continue
-        target = round(n * ratio)
-        if target <= 0:
-            continue
-        try:
-            pts = _sample_interior(verts, faces, target, _stable_seed(obj.name))
-        except Exception as exc:  # pragma: no cover - defensive
-            _log.debug("[heatsim.adapter] interior sampling failed for %s: %s", obj.name, exc)
-            pts = np.zeros((0, 3), dtype=np.float64)
-        if pts.shape[0] == 0:
-            continue
-        k = int(pts.shape[0])
-        extra_v.append(pts)
-        extra_irr.append(np.zeros(k, dtype=np.float64))
-        extra_t0.append(np.full(k, mat["initial_temperature_K"], dtype=np.float64))
-        extra_alpha.append(np.full(k, mat["thermal_diffusivity_mm2_s"], dtype=np.float64))
-        extra_rho.append(np.full(k, mat["density_kg_m3"], dtype=np.float64))
-        extra_c.append(np.full(k, mat["specific_heat_J_kgK"], dtype=np.float64))
-        extra_eps.append(np.full(k, mat["emissivity"], dtype=np.float64))
-
-    if not extra_v:
-        return
-    combined.verts = np.vstack([combined.verts, np.vstack(extra_v)])
-    combined.irradiance = np.concatenate([combined.irradiance, np.concatenate(extra_irr)])
-    combined.t0 = np.concatenate([combined.t0, np.concatenate(extra_t0)])
-    combined.alpha = np.concatenate([combined.alpha, np.concatenate(extra_alpha)])
-    combined.density = np.concatenate([combined.density, np.concatenate(extra_rho) / _KGM3_TO_KGMM3])
-    combined.c = np.concatenate([combined.c, np.concatenate(extra_c)])
-    combined.eps = np.concatenate([combined.eps, np.concatenate(extra_eps)])
-    combined.boundary_mask = np.concatenate(
-        [combined.boundary_mask, np.zeros(int(np.vstack(extra_v).shape[0]), dtype=bool)]
-    )
-
-
-def _stable_seed(name: str) -> int:
-    # Use a cryptographic hash so the seed is stable across processes regardless
-    # of PYTHONHASHSEED (Python's built-in hash() is randomised per process).
-    return int(hashlib.sha256(name.encode()).hexdigest(), 16) % (2**31)
-
-
-def _sample_interior(verts: np.ndarray, faces: np.ndarray, target: int, seed: int) -> np.ndarray:
-    """Rejection-sample up to ``target`` points inside a closed mesh (mm)."""
-    bb_min = verts.min(axis=0)
-    bb_max = verts.max(axis=0)
-    bb_diag = float(np.linalg.norm(bb_max - bb_min))
-    if bb_diag <= 1e-9:
-        return np.zeros((0, 3), dtype=np.float64)
-    verts_v = [mathutils.Vector((float(v[0]), float(v[1]), float(v[2]))) for v in verts]
-    faces_t = [tuple(int(i) for i in f) for f in np.asarray(faces, dtype=np.int32)]
-    bvh = mathutils.bvhtree.BVHTree.FromPolygons(verts_v, faces_t, all_triangles=True)
-    ray_dir = mathutils.Vector((0.873, 0.417, 0.254)).normalized()
-    rng = np.random.default_rng(seed)
-    out: list = []
-    for _ in range(target * 40):
-        if len(out) >= target:
-            break
-        p = bb_min + rng.random(3) * (bb_max - bb_min)
-        origin = mathutils.Vector((float(p[0]), float(p[1]), float(p[2])))
-        hits = 0
-        cur = origin
-        for _bounce in range(256):
-            loc, _nrm, _idx, _dist = bvh.ray_cast(cur, ray_dir, bb_diag * 3.0)
-            if loc is None:
-                break
-            hits += 1
-            cur = loc + ray_dir * (bb_diag * 1e-6)
-        if hits % 2 == 1:
-            out.append(p)
-    if not out:
-        return np.zeros((0, 3), dtype=np.float64)
-    return np.ascontiguousarray(np.array(out, dtype=np.float64))
-
-
-# ---------------------------------------------------------------------------
-# Solver drive + history split
-# ---------------------------------------------------------------------------
 
 
 def _run_solver(combined: SimpleNamespace, solver_cfg: dict, defaults: dict) -> np.ndarray:
@@ -1482,8 +1365,6 @@ def _split_history(history: np.ndarray, combined: SimpleNamespace) -> dict:
             f"the solver drops.  Use POINTS domain (the supported M1 path) or ensure "
             f"every vertex is referenced by at least one face."
         )
-    if combined.surface_count > 0 and u.ndim == 2 and u.shape[1] > combined.surface_count:
-        u = u[:, : combined.surface_count]
     out: dict = {}
     for name, off, n, _kind in combined.layout:
         out[name] = np.ascontiguousarray(u[:, off : off + n])
@@ -1675,7 +1556,6 @@ def solve_scene_animated(
     into the FEM participants comes from the Dirichlet reservoir's *position* via
     the shared POINTS Laplacian, which is sufficient for a "hot pour" testbed.
     Known v1 limitation: interior-point-volume samples (POINTS domain,
-    ``interior_point_ratio`` > 0) are reseeded at their configured initial
     temperature every frame rather than carried forward (deformation-aware
     interior continuity is an explicit M2 non-goal).
 
