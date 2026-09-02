@@ -8,9 +8,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-import thermal_assign  # noqa: E402
+import thermal_assign
 
-from visionsim.simulate.heatsim.materials import MAX_DIRICHLET_K, MIN_DIRICHLET_K, preset_keys  # noqa: E402
+from visionsim.simulate.heatsim.materials import MAX_DIRICHLET_K, MIN_DIRICHLET_K, preset_keys
 
 # --- dump -------------------------------------------------------------------
 

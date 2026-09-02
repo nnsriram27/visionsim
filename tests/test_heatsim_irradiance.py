@@ -40,7 +40,7 @@ print('ALBEDO_BAKE_OK', px.shape, round(mean, 3), round(float(px.std()), 3))
     out = subprocess.run(
         [str(executable), "-b", "--python-expr", code],
         capture_output=True, text=True,
-    )
+     check=False)
     assert "ALBEDO_BAKE_OK" in out.stdout, out.stdout + "\n" + out.stderr
 
 
@@ -94,7 +94,7 @@ print('VARYING_ALBEDO_OK', round(float(vals.mean()), 3), round(float(vals.std())
     out = subprocess.run(
         [str(executable), "-b", "--python-expr", code],
         capture_output=True, text=True,
-    )
+     check=False)
     assert "VARYING_ALBEDO_OK" in out.stdout, out.stdout + "\n" + out.stderr
 
 
@@ -114,7 +114,7 @@ print('AUTHORED_SCALE_OK')
     out = subprocess.run(
         [str(executable), "-b", "--python-expr", code],
         capture_output=True, text=True,
-    )
+     check=False)
     assert "AUTHORED_SCALE_OK" in out.stdout, out.stdout + "\n" + out.stderr
 
 
@@ -145,7 +145,7 @@ assert float(alb.std()) > 0.05, f'zeros cache was served instead of re-baking (s
 print('ZERO_CACHE_IGNORED_OK', round(float(alb.mean()),3), round(float(alb.std()),3))
 """
     out = subprocess.run([str(executable), "-b", "--python-expr", code],
-                         capture_output=True, text=True)
+                         capture_output=True, text=True, check=False)
     assert "ZERO_CACHE_IGNORED_OK" in out.stdout, out.stdout + "\n" + out.stderr
 
 
@@ -178,5 +178,5 @@ assert float(alb.std()) > 0.05, f'zeros attribute was served instead of re-bakin
 print('ZERO_ATTR_IGNORED_OK', round(float(alb.mean()),3), round(float(alb.std()),3))
 """
     out = subprocess.run([str(executable), "-b", "--python-expr", code],
-                         capture_output=True, text=True)
+                         capture_output=True, text=True, check=False)
     assert "ZERO_ATTR_IGNORED_OK" in out.stdout, out.stdout + "\n" + out.stderr

@@ -78,7 +78,7 @@ assert mean_frame5 > mean_frame1, (mean_frame1, mean_frame5)
 print('ANIMATED_SOLVE_OK', round(mean_frame1, 4), round(mean_frame5, 4))
 """
     ).replace("{tmp_path}", str(tmp_path))
-    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
+    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True, check=False)
     assert "ANIMATED_SOLVE_OK" in out.stdout, out.stdout + "\n" + out.stderr
 
 
@@ -133,7 +133,7 @@ assert np.isfinite(plate_hist).all(), 'non-finite temperatures after a topology 
 print('ANIMATED_RESIZE_OK', plate_hist.shape)
 """
     ).replace("{tmp_path}", str(tmp_path))
-    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
+    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True, check=False)
     assert "ANIMATED_RESIZE_OK" in out.stdout, out.stdout + "\n" + out.stderr
 
 
@@ -160,7 +160,7 @@ assert plate['heatsim_default_temperature'] == 295.0, plate['heatsim_default_tem
 print('DIRICHLET_FALLBACK_OK')
 """
     )
-    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
+    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True, check=False)
     assert "DIRICHLET_FALLBACK_OK" in out.stdout, out.stdout + "\n" + out.stderr
 
 
@@ -237,7 +237,7 @@ assert box_obj['heatsim_default_temperature'] == 369.0, box_obj['heatsim_default
 print('ANIMATED_RENDER_WRITE_OK', round(mean_early, 4), round(mean_late, 4))
 """
     ).replace("{tmp_path}", str(tmp_path))
-    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
+    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True, check=False)
     assert "ANIMATED_RENDER_WRITE_OK" in out.stdout, out.stdout + "\n" + out.stderr
 
 
@@ -295,7 +295,7 @@ assert states[-1, 1] != 295.0, 'non-pinned vertex did not evolve at all'
 
 print('DIRICHLET_SUBSTEP_PIN_OK')
 """
-    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
+    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True, check=False)
     assert "DIRICHLET_SUBSTEP_PIN_OK" in out.stdout, out.stdout + "\n" + out.stderr
 
 
@@ -337,5 +337,5 @@ assert mean_8 >= mean_2, (mean_2, mean_8)
 print('SUBSTEP_MONOTONIC_OK', round(mean_2, 4), round(mean_8, 4))
 """
     ).replace("{tmp_path}", str(tmp_path))
-    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
+    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True, check=False)
     assert "SUBSTEP_MONOTONIC_OK" in out.stdout, out.stdout + "\n" + out.stderr

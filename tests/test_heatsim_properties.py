@@ -14,5 +14,5 @@ def test_object_thermal_props_register(executable):
         "assert hasattr(o,'heat_simulation_enabled');"
         "print('THERMAL_PROPS_OK')"
     )
-    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
+    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True, check=False)
     assert "THERMAL_PROPS_OK" in out.stdout, out.stderr

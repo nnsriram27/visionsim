@@ -10,14 +10,14 @@ import pytest
 
 from visionsim.simulate.heatsim import adapter, materials
 
-_DEFAULTS = dict(
-    initial_temperature_K=300.0,
-    thermal_diffusivity_mm2_s=0.42,
-    density_kg_m3=1234.0,
-    specific_heat_J_kgK=777.0,
-    emissivity=0.5,
-    irradiance_scale=1.0,
-)
+_DEFAULTS = {
+    "initial_temperature_K": 300.0,
+    "thermal_diffusivity_mm2_s": 0.42,
+    "density_kg_m3": 1234.0,
+    "specific_heat_J_kgK": 777.0,
+    "emissivity": 0.5,
+    "irradiance_scale": 1.0,
+}
 _SOLVER_CFG = {"domain": "POINTS", "interior_points": False}
 
 
@@ -258,7 +258,7 @@ def _big_plane_geom(side_mm=10_000.0):
     return verts, faces, 4
 
 
-_ATLAS_CFG = dict(atlas_texel_density=50.0, atlas_tile_min=16, atlas_tile_max=512, atlas_texel_soft_max=500_000)
+_ATLAS_CFG = {"atlas_texel_density": 50.0, "atlas_tile_min": 16, "atlas_tile_max": 512, "atlas_texel_soft_max": 500_000}
 
 
 def test_uv_failure_demotes_to_vertex_path_with_warning(monkeypatch, caplog):
@@ -686,7 +686,7 @@ assert all(n == 8 for n in captured_n_samples), captured_n_samples
 
 print('TEXEL_BVH_ONCE_AND_SHADOW_RAYS_OK')
 """
-    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
+    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True, check=False)
     assert "TEXEL_BVH_ONCE_AND_SHADOW_RAYS_OK" in out.stdout, out.stdout + "\n" + out.stderr
 
 
@@ -755,7 +755,7 @@ assert T_hist.min() > 200 and T_hist.max() < 2000, (float(T_hist.min()), float(T
 
 print('TEXEL_PIPELINE_OK', n_texels, len(plane.data.vertices))
 """
-    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
+    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True, check=False)
     assert "TEXEL_PIPELINE_OK" in out.stdout, out.stdout + "\n" + out.stderr
 
 
@@ -843,5 +843,5 @@ assert ATLAS_UV_LAYER_NAME in plane.data.uv_layers
 
 print('TOPOLOGY_MODIFIER_ATLAS_PROMOTED_OK', n_texels, base_n_verts, eval_n_verts)
 """
-    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
+    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True, check=False)
     assert "TOPOLOGY_MODIFIER_ATLAS_PROMOTED_OK" in out.stdout, out.stdout + "\n" + out.stderr

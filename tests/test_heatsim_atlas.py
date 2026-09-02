@@ -487,7 +487,7 @@ def test_rasterize_performance_sanity():
 
     # Build a grid of small quads (2 triangles each) tiling the UV unit square, so triangles are
     # spatially local (like real UV islands) rather than degenerate/overlapping garbage.
-    grid_n = int(math.ceil(math.sqrt(n_tris / 2)))
+    grid_n = math.ceil(math.sqrt(n_tris / 2))
     step = 1.0 / grid_n
     verts = []
     faces = []

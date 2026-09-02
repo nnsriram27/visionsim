@@ -40,11 +40,11 @@ import sys
 import urllib.request
 import warnings
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from visionsim.simulate.heatsim.materials import (  # noqa: E402
+from visionsim.simulate.heatsim.materials import (
     MAX_DIRICHLET_K,
     MIN_DIRICHLET_K,
     PRESETS,
@@ -78,17 +78,17 @@ def _socket(node: Any, name: str) -> Any:
     return float(value)
 
 
-def _describe(material: Any) -> Dict[str, Any]:
+def _describe(material: Any) -> dict[str, Any]:
     """Name, textures, a Principled-BSDF summary, and emission state.
 
     The BSDF numbers are context for the model, never a decision rule: these scenes
     are artist-authored for looks, so wood shows up with metallic=0.51 and glass
     with metallic=1.0. Emission is the one reliable signal.
     """
-    bsdf: Dict[str, Any] = {}
+    bsdf: dict[str, Any] = {}
     emission = {"is_emissive": False, "strength": 0.0}
-    textures: List[str] = []
-    node_types: List[str] = []
+    textures: list[str] = []
+    node_types: list[str] = []
 
     if getattr(material, "use_nodes", False):
         for node in getattr(getattr(material, "node_tree", None), "nodes", []):
@@ -122,7 +122,7 @@ def _describe(material: Any) -> Dict[str, Any]:
             "emission": emission, "node_types": sorted(set(node_types))}
 
 
-def collect_scene_materials(scene: Any, bpy_data: Any) -> Dict[str, Any]:
+def collect_scene_materials(scene: Any, bpy_data: Any) -> dict[str, Any]:
     """Build the material inventory for *scene*.
 
     ``face_area_share`` is what makes review tractable: it ranks materials by how
@@ -138,8 +138,8 @@ def collect_scene_materials(scene: Any, bpy_data: Any) -> Dict[str, Any]:
             continue
         objects.append(obj)
 
-    area_by_material: Dict[str, float] = {}
-    objects_by_material: Dict[str, List[str]] = {}
+    area_by_material: dict[str, float] = {}
+    objects_by_material: dict[str, list[str]] = {}
     n_vertices = 0
 
     for obj in objects:
@@ -147,7 +147,7 @@ def collect_scene_materials(scene: Any, bpy_data: Any) -> Dict[str, Any]:
         if mesh is None:
             continue
         n_vertices += len(getattr(mesh, "vertices", []))
-        slot_names: List[Optional[str]] = []
+        slot_names: list[str | None] = []
         for slot in getattr(obj, "material_slots", []):
             material = getattr(slot, "material", None)
             slot_names.append(None if material is None else str(material.name))
@@ -181,7 +181,7 @@ def collect_scene_materials(scene: Any, bpy_data: Any) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def build_prompt(dump: Dict[str, Any]) -> str:
+def build_prompt(dump: dict[str, Any]) -> str:
     """Render the per-scene prompt: the closed preset menu, then the material inventory."""
     menu = "\n".join(
         f"- {key}: alpha={p.alpha_mm2_s} mm2/s, rho={p.density_kg_m3} kg/m3, "
@@ -241,7 +241,7 @@ using the exact name string given:
 """
 
 
-def parse_assignments_content(content: str) -> List[Dict[str, Any]]:
+def parse_assignments_content(content: str) -> list[dict[str, Any]]:
     """Extract the ``assignments`` list from a chat-completion message body.
 
     Reasoning-capable models (GLM, several others) wrap their answer in a
@@ -267,7 +267,7 @@ def parse_assignments_content(content: str) -> List[Dict[str, Any]]:
     return list(parsed["assignments"])
 
 
-def request_assignments(dump: Dict[str, Any]) -> List[Dict[str, Any]]:  # pragma: no cover - network
+def request_assignments(dump: dict[str, Any]) -> list[dict[str, Any]]:  # pragma: no cover - network
     """POST the prompt to an OpenAI-compatible ``/chat/completions`` endpoint."""
     api_key = os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY")
     if not api_key:
@@ -282,17 +282,17 @@ def request_assignments(dump: Dict[str, Any]) -> List[Dict[str, Any]]:  # pragma
         "response_format": {"type": "json_object"},
         "temperature": 0,
     }).encode("utf-8")
-    request = urllib.request.Request(  # noqa: S310 - operator-supplied endpoint
+    request = urllib.request.Request(
         f"{base_url}/chat/completions",
         data=body,
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
     )
-    with urllib.request.urlopen(request, timeout=600) as response:  # noqa: S310
+    with urllib.request.urlopen(request, timeout=600) as response:
         payload = json.loads(response.read().decode("utf-8"))
     return parse_assignments_content(payload["choices"][0]["message"]["content"])
 
 
-def apply_guards(dump: Dict[str, Any], raw_assignments: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+def apply_guards(dump: dict[str, Any], raw_assignments: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     """Deterministically correct the model's output. Warns on every correction.
 
     1. An assignment for a material not in the scene is dropped.
@@ -308,7 +308,7 @@ def apply_guards(dump: Dict[str, Any], raw_assignments: List[Dict[str, Any]]) ->
     """
     known = set(preset_keys())
     scene_materials = {m["name"]: m for m in dump["materials"]}
-    out: Dict[str, Dict[str, Any]] = {}
+    out: dict[str, dict[str, Any]] = {}
 
     for item in raw_assignments:
         name = str(item.get("material", ""))
@@ -367,13 +367,13 @@ def apply_guards(dump: Dict[str, Any], raw_assignments: List[Dict[str, Any]]) ->
         out[name] = {"preset": preset, "role": role, "dirichlet_K": dirichlet_K,
                      "confidence": float(item.get("confidence", 0.0)), "reason": str(item.get("reason", ""))}
 
-    for name in scene_materials:
+    for name, entry in scene_materials.items():
         if name not in out:
             # Ground truth beats absence: an EMISSION node IS a heat source even if
             # the model skipped the material entirely. That is a different, more
             # consequential correction than "unassigned", so it gets its own warning
             # rather than the generic "marking unassigned" one.
-            if scene_materials[name].get("emission", {}).get("is_emissive"):
+            if entry.get("emission", {}).get("is_emissive"):
                 warnings.warn(f"thermal assign: no assignment returned for {name!r}, but it has an "
                               "EMISSION node; forcing DIRICHLET_SOURCE", UserWarning, stacklevel=2)
                 role = "DIRICHLET_SOURCE"
@@ -388,7 +388,7 @@ def apply_guards(dump: Dict[str, Any], raw_assignments: List[Dict[str, Any]]) ->
     return out
 
 
-def to_sidecar(dump: Dict[str, Any], guarded: Dict[str, Dict[str, Any]], scene_name: str) -> Dict[str, Any]:
+def to_sidecar(dump: dict[str, Any], guarded: dict[str, dict[str, Any]], scene_name: str) -> dict[str, Any]:
     """Wrap guarded assignments in the envelope ``materials.load_assignments`` reads."""
     ordered = [m["name"] for m in dump["materials"]]
     return {
@@ -425,14 +425,14 @@ tr.flagged { background: #fffaf5; }
 def _swatch(base_color: Any) -> str:
     if not base_color or len(base_color) < 3:
         return '<span class="swatch" style="background:#fff"></span>'
-    r, g, b = (max(0, min(255, int(round(float(x) ** (1 / 2.2) * 255)))) for x in base_color[:3])
+    r, g, b = (max(0, min(255, round(float(x) ** (1 / 2.2) * 255))) for x in base_color[:3])
     return f'<span class="swatch" style="background:rgb({r},{g},{b})"></span>'
 
 
-def build_report(dump: Dict[str, Any], sidecar: Dict[str, Any]) -> str:
+def build_report(dump: dict[str, Any], sidecar: dict[str, Any]) -> str:
     """Render the review contact sheet, ordered by the surface area each material covers."""
     entries = dict(sidecar.get("materials", {}))
-    rows: List[str] = []
+    rows: list[str] = []
     n_unassigned = n_sources = n_low = 0
 
     for material in dump["materials"]:
@@ -461,8 +461,8 @@ def build_report(dump: Dict[str, Any], sidecar: Dict[str, Any]) -> str:
         row_class = ' class="flagged"' if tags else ""
         swatch = _swatch((material.get("bsdf") or {}).get("base_color"))
         preset_cell = html.escape(preset_key) if preset_key else "&mdash;"
-        alpha_cell = "{:g}".format(preset.alpha_mm2_s) if preset else "&mdash;"
-        eps_cell = "{:.2f}".format(preset.emissivity_ir) if preset else "&mdash;"
+        alpha_cell = f"{preset.alpha_mm2_s:g}" if preset else "&mdash;"
+        eps_cell = f"{preset.emissivity_ir:.2f}" if preset else "&mdash;"
         bar_px = max(1, int(share * 120))
         reason = html.escape(str(entry.get("reason", "")))
         objects = html.escape(", ".join(material.get("objects", [])[:4]))

@@ -37,7 +37,7 @@ assert lo == 300.0 and (hi - lo) >= 1.0, (lo, hi)
 
 print('RANGE_OK', round(tmin, 3), round(tmax, 3))
 """
-    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
+    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True, check=False)
     assert "RANGE_OK" in out.stdout, out.stdout + "\n" + out.stderr
 
 
@@ -66,5 +66,5 @@ assert abs(lo.color[0] - 0.18995) > 1e-3, 'colormap is still turbo, not inferno'
 
 print('INFERNO_NODEGROUP_OK')
 """
-    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
+    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True, check=False)
     assert "INFERNO_NODEGROUP_OK" in out.stdout, out.stdout + "\n" + out.stderr

@@ -191,5 +191,5 @@ print('OCCLUDER_FILTER_OK')
     out = subprocess.run(
         [str(executable), "-b", "--python-expr", code],
         capture_output=True, text=True,
-    )
+     check=False)
     assert "OCCLUDER_FILTER_OK" in out.stdout, out.stdout + "\n" + out.stderr

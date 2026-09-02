@@ -7,13 +7,13 @@ from visionsim.simulate.heatsim import adapter
 
 # Distinctive globals so a leaked PropertyGroup default can never masquerade as a
 # global fallback (the PropertyGroup ships emissivity=0.9, density=1330.0).
-_GLOBAL_DEFAULTS = dict(
-    initial_temperature_K=300.0,
-    thermal_diffusivity_mm2_s=0.42,
-    density_kg_m3=1234.0,
-    specific_heat_J_kgK=777.0,
-    emissivity=0.5,
-)
+_GLOBAL_DEFAULTS = {
+    "initial_temperature_K": 300.0,
+    "thermal_diffusivity_mm2_s": 0.42,
+    "density_kg_m3": 1234.0,
+    "specific_heat_J_kgK": 777.0,
+    "emissivity": 0.5,
+}
 
 
 class _FakeMat:
@@ -29,7 +29,7 @@ class _FakeMat:
         for k, v in values.items():
             setattr(self, k, v)
 
-    def is_property_set(self, attr):  # noqa: D401 - mimics bpy_struct.is_property_set
+    def is_property_set(self, attr):
         return self._always_set
 
 
@@ -172,7 +172,7 @@ assert np.isfinite(irr).all() and irr.max() > 0.0, float(irr.max())
 
 print('THERMAL_ADAPTER_OK')
 """
-    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
+    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True, check=False)
     assert "THERMAL_ADAPTER_OK" in out.stdout, out.stderr
 
 
@@ -236,7 +236,7 @@ assert obj_a.data.name == mesh_a_name and obj_b.data.name == mesh_b_name
 
 print('SHARED_MESH_OK')
 """
-    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
+    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True, check=False)
     assert "SHARED_MESH_OK" in out.stdout, out.stderr
 
 

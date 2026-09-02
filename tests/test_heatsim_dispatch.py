@@ -29,7 +29,6 @@ class _RecordingClient:
     def __getattr__(self, name: str):
         def _record(*args, **kwargs):
             self.calls.append((name, args, kwargs))
-            return None
 
         return _record
 
@@ -49,8 +48,8 @@ def test_render_job_dispatches_thermal_prepare_then_include():
     assert names[i + 1] == "include_thermal", names
 
     expected = asdict(config.thermal)
-    prep_name, prep_args, prep_kwargs = client.calls[i]
-    incl_name, incl_args, incl_kwargs = client.calls[i + 1]
+    _prep_name, prep_args, prep_kwargs = client.calls[i]
+    _incl_name, incl_args, incl_kwargs = client.calls[i + 1]
     assert prep_args == () and incl_args == ()
     assert prep_kwargs == expected
     assert incl_kwargs == expected

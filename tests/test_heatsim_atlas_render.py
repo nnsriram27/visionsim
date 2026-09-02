@@ -79,7 +79,7 @@ assert abs(px[5, 0, 0] - 0.0) < 1e-6, px[5, 0]
 
 print('WRITE_ATLAS_OK')
 """
-    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
+    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True, check=False)
     assert "WRITE_ATLAS_OK" in out.stdout, out.stdout + "\n" + out.stderr
 
     # Absolute-value check: read the EXR with the standalone OpenEXR package (never bpy --
@@ -123,7 +123,7 @@ assert np.all(px[3::4] == 0.0)  # every alpha channel is 0 (nothing valid)
 
 print('WRITE_ATLAS_EMPTY_OK')
 """
-    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
+    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True, check=False)
     assert "WRITE_ATLAS_EMPTY_OK" in out.stdout, out.stdout + "\n" + out.stderr
 
 
@@ -154,7 +154,7 @@ def test_scatter_atlas_arrays_dilation_does_not_bridge_inter_tile_padding():
     plan = adapter.AtlasPlan(layout=layout, texels=texels, digest="bleedtest")
     history = {"tile_a": np.array([[400.0]]), "tile_b": np.array([[300.0]])}
 
-    temp, alpha = adapter._scatter_atlas_arrays(history, plan)
+    temp, _alpha = adapter._scatter_atlas_arrays(history, plan)
 
     b_start = 4 + pad
     tile_b_region = temp[:, b_start : b_start + 4]
@@ -198,7 +198,7 @@ class _FakeAttrs(dict):
         super().__init__()
         self._n = n
 
-    def new(self, name, type, domain):  # noqa: A002 - mirrors bpy signature
+    def new(self, name, type, domain):
         self[name] = _FakeAttr(self._n)
         return self[name]
 
@@ -244,13 +244,13 @@ class _FakeScene:
         self.objects = objects
 
 
-_DEFAULTS = dict(
-    initial_temperature_K=295.0,
-    thermal_diffusivity_mm2_s=0.17,
-    density_kg_m3=1330.0,
-    specific_heat_J_kgK=880.0,
-    emissivity=0.9,
-)
+_DEFAULTS = {
+    "initial_temperature_K": 295.0,
+    "thermal_diffusivity_mm2_s": 0.17,
+    "density_kg_m3": 1330.0,
+    "specific_heat_J_kgK": 880.0,
+    "emissivity": 0.9,
+}
 
 
 def test_write_frame_attributes_texel_objects_get_fallback_only():
@@ -353,7 +353,7 @@ class _FakeMat:
         for k, v in values.items():
             setattr(self, k, v)
 
-    def is_property_set(self, attr):  # noqa: D401 - mimics bpy_struct.is_property_set
+    def is_property_set(self, attr):
         return self._always_set
 
 
@@ -543,7 +543,7 @@ assert 'temperature' in service.render_layers.outputs
 
 print('TEXEL_E2E_OK')
 """
-    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
+    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True, check=False)
     assert "TEXEL_E2E_OK" in out.stdout, out.stdout + "\n" + out.stderr
 
 
@@ -615,7 +615,7 @@ assert abs(plane_obj['heatsim_default_temperature'] - 350.0) < 1e-6, plane_obj['
 
 print('DIRICHLET_FALLBACK_OK')
 """
-    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
+    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True, check=False)
     assert "DIRICHLET_FALLBACK_OK" in out.stdout, out.stdout + "\n" + out.stderr
 
 
