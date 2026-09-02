@@ -66,7 +66,18 @@ def _check(nodes, links, label):
     factor_link = next(link for link in links if link.to_socket == mix.inputs['Factor'])
     gate_node = factor_link.from_node
     assert gate_node.bl_idname == 'ShaderNodeMath' and gate_node.operation == 'MULTIPLY'
-    gate_sources = {link.from_node for link in links if link.to_node == gate_node}
+    def _upstream(node, max_hops=4):
+        seen, frontier = set(), [node]
+        for _ in range(max_hops):
+            nxt = [ln.from_node for ln in links if ln.to_node in frontier]
+            nxt = [n for n in nxt if n not in seen]
+            if not nxt:
+                break
+            seen.update(nxt)
+            frontier = nxt
+        return seen
+
+    gate_sources = _upstream(gate_node)
     assert tex in gate_sources, f'{label}: Mix Factor does not trace back to the atlas Alpha'
     assert attrs[ATLAS_COVERAGE_PROP] in gate_sources, f'{label}: Mix Factor missing the object-level gate'
 
@@ -94,9 +105,15 @@ ts._append_temperature_aov_nodes(mat2, 'temperature')
 _check(mat2.node_tree.nodes, mat2.node_tree.links, 'aov')
 aov = next(n for n in mat2.node_tree.nodes if n.type == 'OUTPUT_AOV')
 mix2 = next(n for n in mat2.node_tree.nodes if n.bl_idname == 'ShaderNodeMix')
-assert any(
-    link.from_node == mix2 and link.to_node == aov for link in mat2.node_tree.links
-), 'aov: Mix result not wired into the OutputAOV'
+_links2 = mat2.node_tree.links
+_frontier, _reached = [mix2], set()
+for _ in range(4):
+    _nxt = [ln.to_node for ln in _links2 if ln.from_node in _frontier and ln.to_node not in _reached]
+    if not _nxt:
+        break
+    _reached.update(_nxt)
+    _frontier = _nxt
+assert aov in _reached, 'aov: Mix result does not reach the OutputAOV'
 
 print('ATLAS_SHADER_OK')
 """

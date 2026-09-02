@@ -39,9 +39,15 @@ from visionsim.simulate.heatsim import adapter, atlas
 
 # One object, one 6x6 tile at atlas offset (0,0). Two solved texels at (1,1) and (4,4)
 # (far apart so their dilation margins don't overlap and mask each other's zeros).
-tile = atlas.TileSpec(obj_name='obj', size=(6, 6), offset=(0, 0))
-layout = atlas.AtlasLayout(atlas_size=(6, 6), tiles={{'obj': tile}}, effective_density=500.0, rescaled=False)
-texels = {{'obj': {{'xy': np.array([[1, 1], [4, 4]], dtype=np.int64)}}}}
+# Size the tile from the dilation count so an unwritten region provably survives: the
+# margin grows by one texel per pass, so a corner further than that from every solved
+# texel must stay alpha=0. Hardcoding a 6x6 tile silently stopped testing anything when
+# _ATLAS_DILATE_ITERATIONS was raised from 1 to 8 -- the margin then covered the whole tile.
+_D = adapter._ATLAS_DILATE_ITERATIONS
+_N = 2 * _D + 6          # room for two solved texels and an untouched corner
+tile = atlas.TileSpec(obj_name='obj', size=(_N, _N), offset=(0, 0))
+layout = atlas.AtlasLayout(atlas_size=(_N, _N), tiles={{'obj': tile}}, effective_density=500.0, rescaled=False)
+texels = {{'obj': {{'xy': np.array([[1, 1], [_N - 2, _N - 2]], dtype=np.int64)}}}}
 plan = adapter.AtlasPlan(layout=layout, texels=texels, digest='rt')
 
 history = {{'obj': np.array([[300.0, 300.0], [310.0, 320.0]])}}  # (T=2, K=2); final row used
@@ -54,7 +60,7 @@ assert 'rt' in str(out_path.parent.name)
 import bpy
 img = bpy.data.images.load(str(out_path))
 w, h = img.size
-assert (w, h) == (6, 6), (w, h)
+assert (w, h) == (_N, _N), (w, h)
 px = np.array(img.pixels[:], dtype=np.float64).reshape(h, w, 4)
 
 # Scattered texels: match (within EXR write/load round-trip precision -- Blender's
@@ -62,9 +68,9 @@ px = np.array(img.pixels[:], dtype=np.float64).reshape(h, w, 4)
 # image, so a few mK of drift is expected and harmless for a Kelvin-scale field)
 # at (x=1,y=1) -> 310.0 and (x=4,y=4) -> 320.0, alpha=1.
 assert abs(px[1, 1, 0] - 310.0) < 0.05, px[1, 1]
-assert abs(px[4, 4, 0] - 320.0) < 0.05, px[4, 4]
+assert abs(px[_N - 2, _N - 2, 0] - 320.0) < 0.05, px[_N - 2, _N - 2]
 assert px[1, 1, 3] == 1.0
-assert px[4, 4, 3] == 1.0
+assert px[_N - 2, _N - 2, 3] == 1.0
 
 # A direct 8-neighbor of a solved texel is inside the dilation margin: alpha=1 (valid
 # coverage per the dilated mask) and a nonzero temperature pulled from that neighbor
@@ -74,8 +80,11 @@ assert px[1, 2, 0] > 0.0, px[1, 2]
 
 # Far corner, well outside the (small, capped) dilation margin from either solved texel:
 # still unwritten -> alpha=0, temperature left at the initialized zero.
-assert px[5, 0, 3] == 0.0, px[5, 0]
-assert abs(px[5, 0, 0] - 0.0) < 1e-6, px[5, 0]
+unwritten = np.argwhere(px[:, :, 3] == 0.0)
+assert unwritten.size > 0, 'dilation covered the whole tile; margin is not bounded'
+_r, _c = unwritten[0]
+assert px[_r, _c, 3] == 0.0, px[_r, _c]
+assert px[_r, _c, 0] == 0.0, ('unwritten texel carries a temperature', px[_r, _c])
 
 print('WRITE_ATLAS_OK')
 """
@@ -97,8 +106,12 @@ print('WRITE_ATLAS_OK')
     r_raw = np.frombuffer(exr.channel("R", float_t), dtype=np.float32).reshape(h, w)
     # OpenEXR rows are top-down while Blender's Image.pixels buffer (and the (x, y) texel
     # coordinates used above) are bottom-up, so the on-disk row is (h - 1 - y).
+    # Same geometry the Blender-side half used: tile side derived from the dilation count,
+    # with the second solved texel at (_N - 2, _N - 2).
+    _n = 2 * adapter._ATLAS_DILATE_ITERATIONS + 6
+    assert (w, h) == (_n, _n), (w, h)
     assert abs(float(r_raw[h - 1 - 1, 1]) - 310.0) < 1e-2, r_raw[h - 1 - 1, 1]
-    assert abs(float(r_raw[h - 1 - 4, 4]) - 320.0) < 1e-2, r_raw[h - 1 - 4, 4]
+    assert abs(float(r_raw[h - 1 - (_n - 2), _n - 2]) - 320.0) < 1e-2, r_raw[h - 1 - (_n - 2), _n - 2]
 
 
 def test_write_atlas_no_texels_writes_empty_placeholder(executable, tmp_path):
@@ -140,15 +153,18 @@ def test_scatter_atlas_arrays_dilation_does_not_bridge_inter_tile_padding():
     region by 1 texel/pass) stays strictly less than the packing `_ATLAS_PACKING_PADDING`
     gap between tiles."""
     pad = adapter._ATLAS_PACKING_PADDING
-    tile_a = atlas.TileSpec("tile_a", (4, 4), (0, 0))
-    tile_b = atlas.TileSpec("tile_b", (4, 4), (4 + pad, 0))
-    atlas_size = (4 + pad + 4, 4)
+    # Tiles must be wider than the dilation margin, or the margin swallows the tile and
+    # the test stops distinguishing "did not bridge" from "filled everything".
+    side = 2 * adapter._ATLAS_DILATE_ITERATIONS + 2
+    tile_a = atlas.TileSpec("tile_a", (side, side), (0, 0))
+    tile_b = atlas.TileSpec("tile_b", (side, side), (side + pad, 0))
+    atlas_size = (side + pad + side, side)
     layout = atlas.AtlasLayout(atlas_size=atlas_size, tiles={"tile_a": tile_a, "tile_b": tile_b},
                                 effective_density=500.0, rescaled=False)
     # Solved texel at each tile's edge closest to the other tile, so any bleed shows up
     # as fast as possible.
     texels = {
-        "tile_a": {"xy": np.array([[3, 0]], dtype=np.int64)},
+        "tile_a": {"xy": np.array([[side - 1, 0]], dtype=np.int64)},
         "tile_b": {"xy": np.array([[0, 0]], dtype=np.int64)},
     }
     plan = adapter.AtlasPlan(layout=layout, texels=texels, digest="bleedtest")
@@ -156,16 +172,16 @@ def test_scatter_atlas_arrays_dilation_does_not_bridge_inter_tile_padding():
 
     temp, _alpha = adapter._scatter_atlas_arrays(history, plan)
 
-    b_start = 4 + pad
-    tile_b_region = temp[:, b_start : b_start + 4]
-    tile_a_region = temp[:, 0:4]
+    b_start = side + pad
+    tile_b_region = temp[:, b_start : b_start + side]
+    tile_a_region = temp[:, 0:side]
     # The gap's near-A column may legitimately carry tile A's dilated value (and the
     # near-B column may legitimately carry tile B's) -- that's the single-texel push-out
     # margin working as intended. What must never happen is A's temperature reaching
     # tile B's region or the gap column immediately adjacent to B (and symmetrically for
     # B's temperature reaching tile A's side).
     gap_near_b = temp[:, b_start - 1 : b_start]
-    gap_near_a = temp[:, 4:5]
+    gap_near_a = temp[:, side : side + 1]
     assert not np.any(np.isclose(tile_b_region, 400.0)), tile_b_region
     assert not np.any(np.isclose(gap_near_b, 400.0)), gap_near_b
     assert not np.any(np.isclose(tile_a_region, 300.0)), tile_a_region
