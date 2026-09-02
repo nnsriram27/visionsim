@@ -306,13 +306,49 @@ Solver
         higher cost; the solve runs ``sim-time-s / timestep-s`` steps.
     * - ``domain``
       - ``POINTS``
-      - FEM domain.  ``POINTS`` solves on a surface point cloud (recommended,
-        robust to imperfect meshes); ``MESH`` solves on the mesh connectivity
-        directly.
+      - FEM domain.  **Leave this on** ``POINTS`` **for scene content.**  It solves on a
+        surface point cloud and does not care about mesh connectivity, so it tolerates
+        the non-manifold, mixed quad/ngon, duplicated-vertex geometry that ordinary
+        archviz assets are full of.  ``MESH`` solves on the mesh connectivity directly,
+        which is only appropriate for clean, **fully triangulated, manifold** meshes —
+        see ``laplacian-backend`` below for why.
     * - ``laplacian-backend``
       - ``ROBUST``
-      - Discrete-Laplacian construction.  ``ROBUST`` tolerates non-manifold or
-        low-quality meshes; ``IGL`` uses the libigl cotangent Laplacian.
+      - Discrete-Laplacian construction.  ``ROBUST`` builds a point-cloud Laplacian that
+        tolerates non-manifold and low-quality meshes.  ``IGL`` uses the libigl
+        **cotangent** Laplacian, which is defined per triangle: on quads or ngons it is
+        either undefined or silently poor, and degenerate (zero-area, sliver) triangles
+        make the cotangent weights blow up.  Prefer ``ROBUST`` unless you know the mesh
+        is triangulated and clean.
+    * - ``irradiance-source``
+      - ``DIRECT_KERNEL``
+      - Where absorbed flux comes from.  ``DIRECT_KERNEL`` is the analytic path: per-light
+        form factors, Embree shadow rays and a 9-coefficient SH sky.  It is fast, but it
+        counts **only objects of type** ``LIGHT`` plus the world sky, and models no
+        indirect bounce.  ``CYCLES_BAKE`` bakes DIFFUSE DIRECT+INDIRECT per object with
+        Cycles instead, so **emissive geometry, indirect bounce, portals and HDRI
+        transport** all contribute.  Prefer it whenever a scene's real light source is not
+        a lamp object — an interior daylit through emissive window planes or light
+        portals, or lit by emissive fixture panels, which is how such scenes are commonly
+        built.  The symptom of using the kernel there is a room that renders flat at its
+        initial temperature while its RGB render is well lit; switching source can change
+        the interior temperature spread by an order of magnitude.
+    * - ``bake-samples``
+      - ``1024``
+      - Cycles samples for the irradiance bake (``CYCLES_BAKE`` only).  Adaptive sampling
+        is **disabled** for the bake, so this is a true per-texel sample count rather than
+        a cap.  It is set here rather than inherited from the blend on purpose: production
+        blends are usually tuned for a *look*, often with a loose adaptive-sampling
+        threshold, and adaptive sampling terminates texels well below the nominal cap.
+        That is fine for a rendered image and not fine for a physical input, because baked
+        irradiance noise propagates into the temperature field.  A steady-state surface
+        sits at ``T ~ (E/(eps*sigma))**0.25``, so a relative error in irradiance appears as
+        roughly a quarter of that in temperature — a bake left noisy at the single-digit
+        percent level shows up as several-Kelvin blotching.  Raising this only helps as
+        ``1/sqrt(N)``, so quadrupling the samples buys a little under half the noise; if a
+        bake is visibly blotchy, check first whether adaptive sampling or a shading-heavy
+        material is the real cause.  Denoising does **not** apply to a bake, so sample
+        count is the only lever here.
     * - ``device``
       - ``cuda``
       - Compute device for the solve.  Falls back to ``cpu`` automatically when
@@ -339,6 +375,99 @@ Solver
       - Solve every Nth frame instead of every frame, to cut solve cost on long
         sequences.  Frames that are skipped hold the most recently solved
         field rather than triggering a fresh solve.
+
+Render domain and the temperature atlas
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The solver produces a temperature per solve node; the render has to turn that into a
+temperature per *pixel*.  ``render-domain`` chooses how.
+
+``VERTEX`` (the default) writes the solved field back as a per-vertex
+``sim_temperature`` attribute and lets Blender interpolate it across faces.  That is
+exact when the mesh is dense, and coarse when it is not: a large floor slab modelled as a
+handful of vertices can only ever show a bilinear ramp, however detailed the underlying
+solve.  Architectural assets are full of such surfaces — big, flat, and cheap in geometry.
+
+``TEXEL`` instead packs every participating object into a shared **temperature atlas** —
+one tile per object in UV space — and the shader samples that image.  Render resolution is
+then set by texel density rather than vertex density, so the same 4-vertex slab can carry
+thousands of independent temperature samples.  This is what makes large flat surfaces
+(floors, walls, ceilings, table tops) render with real spatial structure.
+
+.. list-table::
+    :header-rows: 1
+    :widths: 28 14 58
+
+    * - Parameter
+      - Default
+      - Effect
+    * - ``render-domain``
+      - ``VERTEX``
+      - ``VERTEX`` interpolates the per-vertex field across faces.  ``TEXEL`` builds the
+        atlas described above.  Use ``TEXEL`` for scenes with large, coarsely-tessellated
+        surfaces; it costs an atlas build plus one EXR per solve.
+    * - ``atlas-texel-density``
+      - ``1500.0``
+      - Target texels per m² of surface area.  Tile side is
+        ``ceil(sqrt(area_m2 * density))``, so this sets the effective spatial resolution
+        of the thermal field.  Raising it sharpens detail and grows the atlas
+        quadratically.
+    * - ``atlas-tile-min`` / ``atlas-tile-max``
+      - ``16`` / ``512``
+      - Clamp on a single object's tile side in texels.  The minimum keeps tiny objects
+        from collapsing to a single texel; the maximum stops one large object from
+        dominating the atlas.
+    * - ``atlas-texel-soft-max``
+      - ``500000``
+      - Warn-only budget for total atlas texels.  If the requested density would exceed
+        it, density is rescaled uniformly downward once and a warning is emitted; it is
+        not an exact bound.
+
+**Which objects join the atlas.**  Membership is automatic, not a per-object switch.  An
+object joins when its own vertex density is below ``atlas-texel-density`` (its vertices are
+too sparse to sample it well), and it joins **unconditionally** when a topology-changing
+modifier — Subdivision, Solidify, Bevel, Geometry Nodes — makes its base and evaluated
+vertex counts differ.  In that case the per-vertex path cannot write a result back onto the
+base mesh at all, so the atlas is the only representation that works.  Objects whose native
+density already exceeds the target keep the vertex path, since atlasing them would throw
+resolution away.
+
+.. note::
+
+   Objects that are demoted from the atlas *and* cannot take a per-vertex write-back fall
+   back to a **constant fill** at the mean of their solved field — the whole object renders
+   as one flat temperature.  If a surface looks uniformly warm where you expect a gradient,
+   check the solve log for ``demoted from the atlas`` and ``replaced by a constant fill``.
+   These logs are Rich-formatted and wrap across lines, so flatten before counting
+   (``tr '\n' ' ' < stdout.log | grep -o 'demoted from the atlas' | wc -l``).
+
+Recommended starting point
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For the interior scenes this modality targets:
+
+.. code-block:: shell
+
+    visionsim blender.render-animation scene.blend outdir/ \
+        --config.include-thermal \
+        --config.thermal.assignments assets/thermal/scene.thermal.json \
+        --config.thermal.domain POINTS \
+        --config.thermal.render-domain TEXEL \
+        --config.thermal.irradiance-source CYCLES_BAKE \
+        --config.thermal.bake-samples 1024 \
+        --config.thermal.sim-time-s 500 --config.thermal.timestep-s 1.0
+
+``domain POINTS`` because scene geometry is rarely clean enough for a cotangent operator;
+``render-domain TEXEL`` because such scenes are full of large, coarsely-tessellated
+surfaces; and ``irradiance-source CYCLES_BAKE`` because they are typically lit by emissive
+geometry rather than lamp objects, which the analytic kernel does not see at all.
+
+The shipped defaults (``VERTEX``, ``DIRECT_KERNEL``) are deliberately the *conservative*
+choices, so that turning the modality on changes as little as possible about an arbitrary
+blend.  They are the safe starting point, not the best one for any particular scene — treat
+the block above as the setting to reach for once you know your scene has these properties,
+and the tables above as the reasoning for departing from it.
+
 
 Radiance render and file formats
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

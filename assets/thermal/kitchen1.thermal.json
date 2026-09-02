@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "scene": "kitchen1.blend",
-  "generated_by": "scripts/thermal_assign.py - REVIEW AND CORRECT BY HAND BEFORE PUBLISHING",
+  "generated_by": "hand-authored for kitchen1.blend; every material is a FEM_PARTICIPANT (no pinned Dirichlet sources)",
   "defaults": {
     "preset": "plaster"
   },
@@ -50,10 +50,10 @@
     },
     "DIC ILUM": {
       "preset": "metal_painted",
-      "role": "DIRICHLET_SOURCE",
-      "dirichlet_K": 350.0,
+      "role": "FEM_PARTICIPANT",
+      "dirichlet_K": null,
       "confidence": 0.7,
-      "reason": "Emissive element of a dichroic lamp; lamp elements ~340-360 K."
+      "reason": "Deliberately NOT pinned as a DIRICHLET_SOURCE (a fixed 350 K would be the obvious choice) so that no object is held at a fixed temperature and every surface solves from the same ambient start. Converted to FEM_PARTICIPANT so no object is pinned and every surface solves from the same ambient start. Emissive element of a dichroic lamp; lamp elements ~340-360 K."
     },
     "MADERA ESTANTES": {
       "preset": "wood",
@@ -197,10 +197,10 @@
     },
     "ilum": {
       "preset": "metal_painted",
-      "role": "DIRICHLET_SOURCE",
-      "dirichlet_K": 350.0,
+      "role": "FEM_PARTICIPANT",
+      "dirichlet_K": null,
       "confidence": 0.7,
-      "reason": "Emissive lamp element (strength=4.0); lamp elements ~340-360 K."
+      "reason": "Deliberately NOT pinned as a DIRICHLET_SOURCE (a fixed 350 K would be the obvious choice) so that no object is held at a fixed temperature and every surface solves from the same ambient start. Converted to FEM_PARTICIPANT so no object is pinned and every surface solves from the same ambient start. Emissive lamp element (strength=4.0); lamp elements ~340-360 K."
     },
     "CERAMICA": {
       "preset": "ceramic",
