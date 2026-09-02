@@ -1515,6 +1515,7 @@ class BlenderService(rpyc.Service):
         laplacian_backend: Literal["ROBUST", "IGL"],
         irradiance_source: Literal["DIRECT_KERNEL", "CYCLES_BAKE"] = "DIRECT_KERNEL",
         bake_samples: int = 1024,
+        irradiance_texture_size: int = 512,
         device: Literal["cuda", "cpu"],
         assignments: str | None = None,
     ) -> tuple[dict, dict, Path, Any]:
@@ -1559,6 +1560,7 @@ class BlenderService(rpyc.Service):
             "device": device,
             "irradiance_source": irradiance_source,
             "bake_samples": bake_samples,
+            "irradiance_texture_size": irradiance_texture_size,
         }
         scene_assignment = None
         if assignments is not None:
@@ -1588,6 +1590,7 @@ class BlenderService(rpyc.Service):
         laplacian_backend: Literal["ROBUST", "IGL"],
         irradiance_source: Literal["DIRECT_KERNEL", "CYCLES_BAKE"] = "DIRECT_KERNEL",
         bake_samples: int = 1024,
+        irradiance_texture_size: int = 512,
         device: Literal["cuda", "cpu"],
         assignments: str | None = None,
         render_domain: Literal["VERTEX", "TEXEL"] = "VERTEX",
@@ -1632,6 +1635,7 @@ class BlenderService(rpyc.Service):
             laplacian_backend=laplacian_backend,
             irradiance_source=irradiance_source,
             bake_samples=bake_samples,
+            irradiance_texture_size=irradiance_texture_size,
             device=device,
             assignments=assignments,
         )
@@ -1697,6 +1701,7 @@ class BlenderService(rpyc.Service):
         laplacian_backend: Literal["ROBUST", "IGL"] = "ROBUST",
         irradiance_source: Literal["DIRECT_KERNEL", "CYCLES_BAKE"] = "DIRECT_KERNEL",
         bake_samples: int = 1024,
+        irradiance_texture_size: int = 512,
         device: Literal["cuda", "cpu"] = "cuda",
         render_domain: Literal["VERTEX", "TEXEL"] = "VERTEX",
         atlas_texel_density: float = 1500.0,
@@ -1756,6 +1761,15 @@ class BlenderService(rpyc.Service):
             domain (str, optional): FEM domain, either ``"POINTS"`` (surface point cloud, recommended) or ``"MESH"``.
                 Defaults to ``"POINTS"``.
             laplacian_backend (str, optional): Laplacian backend, either ``"ROBUST"`` or ``"IGL"``. Defaults to ``"ROBUST"``.
+            irradiance_source (str, optional): Where absorbed flux comes from. ``"DIRECT_KERNEL"`` is the
+                analytic path (lamp objects plus an SH sky, no indirect bounce); ``"CYCLES_BAKE"`` bakes
+                DIFFUSE DIRECT+INDIRECT per object, so emissive geometry and bounce contribute.
+                Defaults to ``"DIRECT_KERNEL"``.
+            bake_samples (int, optional): Cycles samples for the irradiance bake (``CYCLES_BAKE`` only), with
+                adaptive sampling disabled so this is a true per-texel count. Defaults to 1024.
+            irradiance_texture_size (int, optional): Resolution of the Cycles bakes, in pixels per side. Governs
+                the albedo bake and, under ``CYCLES_BAKE``, the irradiance bake. This is the bake's spatial
+                detail, as distinct from ``bake_samples``, which is its noise. Defaults to 512.
             device (str, optional): Torch device for the solve, either ``"cuda"`` or ``"cpu"``; falls back to ``"cpu"``
                 if cuda is unavailable. Defaults to ``"cuda"``.
             render_domain (str, optional): Where solved temperatures live for rendering: ``"VERTEX"`` (per-vertex,
@@ -1832,6 +1846,7 @@ class BlenderService(rpyc.Service):
                 laplacian_backend=laplacian_backend,
                 irradiance_source=irradiance_source,
                 bake_samples=bake_samples,
+                irradiance_texture_size=irradiance_texture_size,
                 device=device,
                 assignments=assignments,
             )
@@ -1883,6 +1898,7 @@ class BlenderService(rpyc.Service):
             laplacian_backend=laplacian_backend,
             irradiance_source=irradiance_source,
             bake_samples=bake_samples,
+            irradiance_texture_size=irradiance_texture_size,
             device=device,
             assignments=assignments,
             render_domain=render_domain,
@@ -1977,6 +1993,7 @@ class BlenderService(rpyc.Service):
         laplacian_backend: Literal["ROBUST", "IGL"] = "ROBUST",
         irradiance_source: Literal["DIRECT_KERNEL", "CYCLES_BAKE"] = "DIRECT_KERNEL",
         bake_samples: int = 1024,
+        irradiance_texture_size: int = 512,
         device: Literal["cuda", "cpu"] = "cuda",
         render_domain: Literal["VERTEX", "TEXEL"] = "VERTEX",
         atlas_texel_density: float = 1500.0,
@@ -2028,6 +2045,15 @@ class BlenderService(rpyc.Service):
             domain (str, optional): FEM domain, either ``"POINTS"`` (surface point cloud, recommended) or ``"MESH"``.
                 Defaults to ``"POINTS"``.
             laplacian_backend (str, optional): Laplacian backend, either ``"ROBUST"`` or ``"IGL"``. Defaults to ``"ROBUST"``.
+            irradiance_source (str, optional): Where absorbed flux comes from. ``"DIRECT_KERNEL"`` is the
+                analytic path (lamp objects plus an SH sky, no indirect bounce); ``"CYCLES_BAKE"`` bakes
+                DIFFUSE DIRECT+INDIRECT per object, so emissive geometry and bounce contribute.
+                Defaults to ``"DIRECT_KERNEL"``.
+            bake_samples (int, optional): Cycles samples for the irradiance bake (``CYCLES_BAKE`` only), with
+                adaptive sampling disabled so this is a true per-texel count. Defaults to 1024.
+            irradiance_texture_size (int, optional): Resolution of the Cycles bakes, in pixels per side. Governs
+                the albedo bake and, under ``CYCLES_BAKE``, the irradiance bake. This is the bake's spatial
+                detail, as distinct from ``bake_samples``, which is its noise. Defaults to 512.
             device (str, optional): Torch device for the solve, either ``"cuda"`` or ``"cpu"``; falls back to ``"cpu"``
                 if cuda is unavailable. Defaults to ``"cuda"``.
             render_domain (str, optional): Where solved temperatures live for rendering: ``"VERTEX"`` (per-vertex,
@@ -2072,6 +2098,7 @@ class BlenderService(rpyc.Service):
             laplacian_backend=laplacian_backend,
             irradiance_source=irradiance_source,
             bake_samples=bake_samples,
+            irradiance_texture_size=irradiance_texture_size,
             device=device,
             assignments=assignments,
             render_domain=render_domain,
@@ -2098,6 +2125,7 @@ class BlenderService(rpyc.Service):
         laplacian_backend: Literal["ROBUST", "IGL"] = "ROBUST",
         irradiance_source: Literal["DIRECT_KERNEL", "CYCLES_BAKE"] = "DIRECT_KERNEL",
         bake_samples: int = 1024,
+        irradiance_texture_size: int = 512,
         device: Literal["cuda", "cpu"] = "cuda",
         render_domain: Literal["VERTEX", "TEXEL"] = "VERTEX",
         atlas_texel_density: float = 1500.0,
@@ -2158,6 +2186,13 @@ class BlenderService(rpyc.Service):
                 FEM domain, either ``"POINTS"`` or ``"MESH"``. Defaults to ``"POINTS"``.
             laplacian_backend (str, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
                 ignored here. Laplacian backend, either ``"ROBUST"`` or ``"IGL"``. Defaults to ``"ROBUST"``.
+            irradiance_source (str, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
+                ignored here. Where absorbed flux comes from, either ``"DIRECT_KERNEL"`` or ``"CYCLES_BAKE"``.
+                Defaults to ``"DIRECT_KERNEL"``.
+            bake_samples (int, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
+                here. Cycles samples for the irradiance bake, adaptive sampling disabled. Defaults to 1024.
+            irradiance_texture_size (int, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal``
+                and ignored here. Resolution of the Cycles bakes in pixels per side. Defaults to 512.
             device (str, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored here.
                 Torch device, either ``"cuda"`` or ``"cpu"``. Defaults to ``"cuda"``.
             render_domain (str, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored

@@ -400,6 +400,15 @@ Solver
         bake is visibly blotchy, check first whether adaptive sampling or a shading-heavy
         material is the real cause.  Denoising does **not** apply to a bake, so sample
         count is the only lever here.
+    * - ``irradiance-texture-size``
+      - ``512``
+      - Resolution of the Cycles bakes, in pixels per side.  Governs the albedo bake and,
+        under ``CYCLES_BAKE``, the irradiance bake.  This is the bake's **spatial detail**,
+        as distinct from ``bake-samples``, which is its **noise**: more samples give a
+        smoother bake at the same resolution and cannot recover detail the resolution never
+        captured.  A large surface unwrapped into one 512 px tile gets few texels per square
+        metre however many samples you use, so raise this for scenes with big floors, walls
+        or ceilings.  Cost is quadratic in this value.
     * - ``device``
       - ``cuda``
       - Compute device for the solve.  Falls back to ``cpu`` automatically when
