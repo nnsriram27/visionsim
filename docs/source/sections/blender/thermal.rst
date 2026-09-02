@@ -201,23 +201,30 @@ These set the physical material used for every mesh that has no per-object overr
         temperature, so the rise is slower and smaller.
     * - ``emissivity``
       - ``0.9``
-      - Surface emissivity in ``[0, 1]``.  Governs **radiative cooling in the solve**:
-        higher emissivity means more radiative loss, so a lower steady-state
-        temperature.  It does **not** currently change the ``thermal_radiance`` render,
-        which emits at a fixed ε = 0.9 for every surface (see the note below).
+      - Surface emissivity in ``[0, 1]``.  Drives both halves of the modality: radiative
+        cooling in the solve (higher ε means more radiative loss, so a lower steady-state
+        temperature) and the ``thermal_radiance`` render, where a surface emits
+        ``ε·σ·T⁴`` and reflects ``(1 − ε)`` of the ambient (see the note below).
 
 .. note::
 
-   **Emissivity does not yet reach the radiance render.**  ``_build_gray_body_material``
-   bakes a single constant (``1 - 0.9``) into the shader's mix factor and assigns that one
-   material to every mesh, so ``thermal_radiance`` is always ``0.9·σ·T⁴·radiance_scale``.
-   The per-vertex ``emissivity`` attribute the solve writes is not sampled by it.
+   **What the radiance pass actually renders.**  Each surface is a gray body:
 
-   This matters for an LWIR modality: emissivity contrast is a large part of what a real
-   thermal camera distinguishes, and a polished metal surface (ε ≈ 0.05–0.2) should read
-   much darker than a matte one at the same physical temperature.  Today it does not.
-   Emissivity still correctly drives radiative cooling in the solve, so it does affect the
-   temperatures themselves — only the rendered radiance ignores it.
+   .. math::
+
+      L = \varepsilon\,\sigma T^4 \;+\; (1 - \varepsilon)\,\sigma T_{amb}^4
+
+   It emits ``ε·σ·T⁴`` from its own temperature and reflects the remaining ``(1 − ε)`` of
+   the surroundings, which the pass models as a blackbody enclosure at ambient.  Emissivity
+   is read **per vertex** from the material assignment, so different materials in one scene
+   radiate differently.
+
+   This is the contrast an LWIR camera actually sees, and it is why the preset library's
+   range matters: ``aluminium_polished`` (ε = 0.05) and ``skin`` (ε = 0.98) at the same
+   physical temperature are far apart in the image.  It is also why a low-emissivity
+   surface reads close to *ambient* rather than close to its own temperature — it is mostly
+   mirroring its surroundings, which is exactly what makes polished metal hard to measure
+   with a real thermal camera.
 
 Material presets
 ~~~~~~~~~~~~~~~~
