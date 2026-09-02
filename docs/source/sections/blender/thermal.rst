@@ -611,12 +611,6 @@ seat get different :math:`\alpha, \rho, c, \varepsilon`, and an emissive lamp el
 pinned heat source while its glass shade solves normally.  A material the sidecar does not name, or
 names with an unknown preset, falls back to the scene defaults.
 
-.. important::
-
-    ``visionsim`` itself never calls an LLM and needs no API key to *render* — it only reads the
-    committed JSON.  The sidecars are authored **offline**, by hand or with the helper tool below,
-    and reviewed before publishing.
-
 Slot-to-vertex resolution
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -638,9 +632,10 @@ area.  A vertex cannot be "partly pinned", so the pin is a majority vote, not a 
 Authoring a sidecar
 ~~~~~~~~~~~~~~~~~~~~
 
-A sidecar is a small JSON document.  Write it however you like — by hand, from a script, or
-with any tool that can follow the schema.  Nothing about rendering requires a network call
-or an API key.
+A sidecar is a small JSON document.  Author it however suits the scene — by hand for a
+handful of materials, or with a script or a language model for a scene with a hundred
+artist-named ones.  Only the schema below matters; the renderer just reads the committed
+JSON.
 
 .. code-block:: json
 
@@ -712,25 +707,22 @@ or an API key.
 Optional helper
 ^^^^^^^^^^^^^^^
 
-``scripts/thermal_assign.py`` (outside the installed package) can inventory a scene's
-materials and render an HTML review sheet, which is useful for a scene with a hundred
-artist-named materials:
+``scripts/thermal_assign.py`` (outside the installed package) is handy for larger scenes.  It
+can inventory a scene's materials — names, slot areas, node graphs, emission — as JSON, and
+render an HTML review sheet for an existing sidecar sorted by surface area:
 
 .. code-block:: bash
 
-    # inventory the scene's materials (runs inside Blender; deterministic, no network)
+    # inventory the scene's materials (runs inside Blender)
     blender -b scene.blend --python scripts/thermal_assign.py -- dump --output scene.materials.json
 
-    # render a review sheet for an existing sidecar, sorted by surface area
+    # review an existing sidecar against that inventory
     python scripts/thermal_assign.py report scene.materials.json \
         assets/thermal/scene.thermal.json --output scene.review.html
 
-It can also draft a sidecar via an OpenAI-compatible endpoint (``assign``), which needs
-``LLM_API_KEY``.  That step is entirely optional and is only a *first draft* — whatever it
-returns passes through deterministic guards (an out-of-library preset becomes unassigned
-rather than a silent guess; a material with an emission node is forced to a heat source) and
-still has to be reviewed.  Watch in particular for render helpers such as a *daylight portal*,
-which carry an emission node and would otherwise be pinned as spuriously hot sources.
+Check the high-coverage materials first — they dominate the result.  Watch for render helpers
+such as a *daylight portal*: they carry an emission node and read as a heat source, which is
+rarely what you want.
 
 Solve caching
 -------------
