@@ -14,15 +14,15 @@ from visionsim.simulate.blender import BlenderService
 from visionsim.simulate.config import ThermalConfig
 from visionsim.simulate.heatsim import adapter, materials
 
-_DEFAULTS = dict(
-    initial_temperature_K=300.0,
-    thermal_diffusivity_mm2_s=0.42,
-    density_kg_m3=1234.0,
-    specific_heat_J_kgK=777.0,
-    emissivity=0.5,
-    irradiance_scale=1.0,
-)
-_SOLVER_CFG = {"domain": "POINTS", "interior_points": False}
+_DEFAULTS = {
+    "initial_temperature_K": 300.0,
+    "thermal_diffusivity_mm2_s": 0.42,
+    "density_kg_m3": 1234.0,
+    "specific_heat_J_kgK": 777.0,
+    "emissivity": 0.5,
+    "irradiance_scale": 1.0,
+}
+_SOLVER_CFG = {"domain": "POINTS"}
 
 
 class _Poly:
@@ -50,7 +50,7 @@ class _Attrs(dict):
         super().__init__()
         self._n = n
 
-    def new(self, name, type, domain):  # noqa: A002 - mirrors the bpy signature
+    def new(self, name, type, domain):
         self[name] = _Attr(self._n)
         return self[name]
 

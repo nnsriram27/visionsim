@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import sys
 import warnings
 from importlib.metadata import Distribution
@@ -38,7 +39,16 @@ def executable(pytestconfig):
         )
 
     install_dependencies(executable=executable_path, editable=True)
-    return executable_path
+
+    # Resolve to a real path. `--executable` defaults to None, and CI invokes a bare
+    # `pytest`, so tests that interpolate this into an argv (subprocess.run([str(exe), ...]))
+    # would otherwise spawn the literal string "None" and fail with FileNotFoundError.
+    # Tests that pass it to BlenderClient.spawn() tolerate None because that resolves
+    # against $PATH itself; argv-interpolating tests do not.
+    resolved = executable_path or shutil.which("blender")
+    if resolved is None:
+        pytest.skip("No Blender executable: pass --executable=/path/to/blender or put `blender` on PATH.")
+    return resolved
 
 
 @pytest.fixture(scope="session")

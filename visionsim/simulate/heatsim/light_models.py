@@ -39,11 +39,9 @@ N = number of vertices in the receiver mesh.
 
 from __future__ import annotations
 
-from typing import Tuple
-
 import math
-import numpy as np
 
+import numpy as np
 
 _RAY_EPS = 1e-4  # mm-ish; pushes the ray origin off the surface so we don't self-hit.
 
@@ -80,7 +78,7 @@ def evaluate_sun(
     light_obj,
     vert_positions: np.ndarray,  # (N, 3) world meters
     vert_normals: np.ndarray,    # (N, 3) world unit
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     energy = float(getattr(light_obj.data, "energy", 0.0) or 0.0)
     sun_emit_dir = _world_axis_z_neg(light_obj.matrix_world)  # direction sun emits toward
     # Direction from a vertex TO the sun (opposite of emission direction).
@@ -110,7 +108,7 @@ def evaluate_point(
     light_obj,
     vert_positions: np.ndarray,
     vert_normals: np.ndarray,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     energy = float(getattr(light_obj.data, "energy", 0.0) or 0.0)
     light_pos = _light_world_pos(light_obj.matrix_world).astype(np.float64)
 
@@ -154,7 +152,7 @@ def evaluate_spot(
     light_obj,
     vert_positions: np.ndarray,
     vert_normals: np.ndarray,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     energy = float(getattr(light_obj.data, "energy", 0.0) or 0.0)
     light_pos = _light_world_pos(light_obj.matrix_world).astype(np.float64)
     spot_axis = _world_axis_z_neg(light_obj.matrix_world).astype(np.float64)
@@ -206,7 +204,7 @@ def evaluate_spot(
 # ---------------------------------------------------------------------------
 
 
-def _area_surface_samples(light_obj, n_samples: int, rng: np.random.Generator) -> Tuple[np.ndarray, np.ndarray, float]:
+def _area_surface_samples(light_obj, n_samples: int, rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray, float]:
     """Generate n_samples positions on the area light's surface (world
     coordinates) plus the world-space surface normal (one normal — area
     lights are flat). Returns (positions (S, 3), normal (3,), area_m²).
@@ -224,7 +222,7 @@ def _area_surface_samples(light_obj, n_samples: int, rng: np.random.Generator) -
 
     # Stratified sample in [-0.5, 0.5]² (local) then transform to world.
     K = max(1, int(n_samples))
-    side = int(math.ceil(math.sqrt(K)))
+    side = math.ceil(math.sqrt(K))
     K_actual = side * side
     grid_u, grid_v = np.meshgrid(np.arange(side), np.arange(side), indexing="ij")
     jitter_u = rng.random((side, side))
@@ -236,7 +234,6 @@ def _area_surface_samples(light_obj, n_samples: int, rng: np.random.Generator) -
 
     if shape in ("DISK", "ELLIPSE"):
         # Reject samples outside the unit ellipse. Up to 21% loss for disk.
-        radial = (u / 0.5) ** 2 + (v / 0.5) ** 2  # in [0, 2]
         # We're sampling [-0.5, 0.5]² → unit ellipse condition: (2u)² + (2v)² ≤ 1.
         ok = ((2 * u) ** 2 + (2 * v) ** 2) <= 1.0
         u = u[ok]
@@ -266,7 +263,7 @@ def evaluate_area(
     *,
     n_samples: int = 8,
     rng: np.random.Generator | None = None,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     energy = float(getattr(light_obj.data, "energy", 0.0) or 0.0)
     if rng is None:
         rng = np.random.default_rng(0)
@@ -335,7 +332,7 @@ def evaluate_light(
     *,
     n_samples_for_area: int = 8,
     rng: np.random.Generator | None = None,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Returns ``(irradiance (S, N), origins (S, N, 3), dirs (S, N, 3),
     max_dists (S, N))`` for any light type. S = 1 for sun/point/spot,
     K for area."""

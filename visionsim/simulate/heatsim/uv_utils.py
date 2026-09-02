@@ -1,16 +1,22 @@
-"""UV state snapshot/restore, vendored verbatim from heat-sim-blender's ``addon/lib/uv_utils.py``."""
+"""UV state snapshot/restore.
+
+Extracted from heat-sim-blender's ``addon/lib/irradiance.py`` @ e5b4afe and trimmed to the
+helpers visionsim uses. Not a verbatim copy, so it is linted and type-checked like the
+rest of the package rather than carrying the vendored exemption.
+"""
 
 from __future__ import annotations
 
-from typing import Iterable, List, Optional, Tuple
+from collections.abc import Iterable
+from typing import Optional
 
 import bpy
 
-UVState = Tuple[Optional[str], Optional[str]]  # (active_uv_name, active_render_uv_name)
-UVSnapshot = List[Tuple["bpy.types.Object", UVState]]
+UVState = tuple[Optional[str], Optional[str]]  # (active_uv_name, active_render_uv_name)
+UVSnapshot = list[tuple["bpy.types.Object", UVState]]
 
 
-def get_uv_state(obj: "bpy.types.Object") -> UVState:
+def get_uv_state(obj: bpy.types.Object) -> UVState:
     """Return (active_uv_name, active_render_uv_name) for a mesh object."""
     if obj is None or obj.type != "MESH":
         return (None, None)
@@ -29,7 +35,7 @@ def get_uv_state(obj: "bpy.types.Object") -> UVState:
     return (active, render)
 
 
-def _set_active_uv(mesh: "bpy.types.Mesh", uv_name: Optional[str]) -> None:
+def _set_active_uv(mesh: bpy.types.Mesh, uv_name: str | None) -> None:
     if not mesh or not getattr(mesh, "uv_layers", None) or not uv_name:
         return
     if uv_name not in mesh.uv_layers:
@@ -44,7 +50,7 @@ def _set_active_uv(mesh: "bpy.types.Mesh", uv_name: Optional[str]) -> None:
             pass
 
 
-def _set_render_uv(mesh: "bpy.types.Mesh", uv_name: Optional[str]) -> None:
+def _set_render_uv(mesh: bpy.types.Mesh, uv_name: str | None) -> None:
     if not mesh or not getattr(mesh, "uv_layers", None) or not uv_name:
         return
     if uv_name not in mesh.uv_layers:
@@ -59,7 +65,7 @@ def _set_render_uv(mesh: "bpy.types.Mesh", uv_name: Optional[str]) -> None:
         pass
 
 
-def set_uv_state(obj: "bpy.types.Object", state: UVState) -> None:
+def set_uv_state(obj: bpy.types.Object, state: UVState) -> None:
     """Set active/render UV for a mesh object, if the UV names exist."""
     if obj is None or obj.type != "MESH":
         return
@@ -73,7 +79,7 @@ def set_uv_state(obj: "bpy.types.Object", state: UVState) -> None:
         _set_render_uv(mesh, render_name)
 
 
-def snapshot_uv_states(objects: Iterable["bpy.types.Object"]) -> UVSnapshot:
+def snapshot_uv_states(objects: Iterable[bpy.types.Object]) -> UVSnapshot:
     """Capture UV state for objects (only MESH objects with UV layers)."""
     snap: UVSnapshot = []
     for obj in objects:

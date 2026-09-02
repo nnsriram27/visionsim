@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 
@@ -57,7 +58,10 @@ def test_alpha_spans_three_orders_of_magnitude():
 
 
 def test_presets_are_immutable():
-    with pytest.raises(Exception):
+    # ThermalPreset is frozen: resolve_material/resolve_vertex_materials hand the SAME
+    # instance to every caller, so a mutable preset would let one caller poison the
+    # global library. Assert the specific error rather than bare Exception.
+    with pytest.raises(dataclasses.FrozenInstanceError):
         materials.PRESETS["wood"].alpha_mm2_s = 999.0  # type: ignore[misc]
 
 
@@ -218,15 +222,15 @@ def test_digest_tracks_file_bytes(tmp_path):
 
 # Distinctive globals: no value here can be confused with a preset or a
 # PropertyGroup default (mirrors tests/test_heatsim_adapter.py).
-_FALLBACK = dict(
-    initial_temperature_K=300.0,
-    thermal_diffusivity_mm2_s=0.42,
-    density_kg_m3=1234.0,
-    specific_heat_J_kgK=777.0,
-    emissivity=0.5,
-    thermal_role="FEM_PARTICIPANT",
-    dirichlet_temperature_K=0.0,
-)
+_FALLBACK = {
+    "initial_temperature_K": 300.0,
+    "thermal_diffusivity_mm2_s": 0.42,
+    "density_kg_m3": 1234.0,
+    "specific_heat_J_kgK": 777.0,
+    "emissivity": 0.5,
+    "thermal_role": "FEM_PARTICIPANT",
+    "dirichlet_temperature_K": 0.0,
+}
 
 
 class _Poly:

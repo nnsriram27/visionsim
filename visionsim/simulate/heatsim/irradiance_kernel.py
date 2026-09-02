@@ -207,7 +207,11 @@ def _bake_vertex_albedo_via_cycles(
     if baked is None or baked.pixels is None:
         return None
 
-    mesh = obj.data
+    # Must match what the solver indexes against -- see irradiance._mesh_to_sample. This
+    # is the third place the same base-vs-evaluated mesh choice is made; getting it wrong
+    # here sizes the albedo to the pre-modifier vertex count, and the caller then discards
+    # it in favour of albedo=0 (full absorption), overestimating absorbed flux.
+    mesh = irradiance._mesh_to_sample(obj)
     mesh.calc_loop_triangles()
     if len(mesh.loop_triangles) == 0:
         return None

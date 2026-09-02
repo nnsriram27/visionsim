@@ -57,19 +57,20 @@ line-length = 121
 force-exclude = true
 # The heatsim modules below are vendored near-verbatim from heat-sim-blender @ e5b4afe;
 # linting them would force edits that diverge from upstream. The exemption is
-# provenance-based -- once a file is substantially rewritten here it gets linted like the
-# rest. Provenance and rationale: docs/devlog/vendoring/ on the heatsim-devdocs branch.
+# provenance-based, and it is applied by measurement, not by intent: each file below is
+# within a few percent of its upstream original (bvh_backend 2%, sky_visibility 4%,
+# sh9_sky 5%, temperature_io 6%). Files that started vendored but have since been
+# substantially rewritten here -- laplacian.py, light_models.py, constants.py,
+# uv_utils.py -- are deliberately NOT listed: they are ours to maintain and are linted
+# and type-checked like the rest. Provenance and per-file drift:
+# docs/devlog/vendoring/ on the heatsim-devdocs branch.
 exclude = [
     "visionsim/interpolate/rife/*",
     "visionsim/simulate/heatsim/solver.py",
-    "visionsim/simulate/heatsim/laplacian.py",
-    "visionsim/simulate/heatsim/constants.py",
-    "visionsim/simulate/heatsim/light_models.py",
     "visionsim/simulate/heatsim/sh9_sky.py",
     "visionsim/simulate/heatsim/sky_visibility.py",
     "visionsim/simulate/heatsim/bvh_backend.py",
     "visionsim/simulate/heatsim/temperature_io.py",
-    "visionsim/simulate/heatsim/uv_utils.py",
 ]
 
 [tool.ruff.lint.per-file-ignores]

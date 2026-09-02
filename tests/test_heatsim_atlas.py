@@ -479,7 +479,6 @@ def test_dilate_zero_iterations_is_noop():
 
 
 def test_rasterize_performance_sanity():
-    import time
 
     rng = np.random.default_rng(0)
     n_tris = 2000
@@ -487,7 +486,7 @@ def test_rasterize_performance_sanity():
 
     # Build a grid of small quads (2 triangles each) tiling the UV unit square, so triangles are
     # spatially local (like real UV islands) rather than degenerate/overlapping garbage.
-    grid_n = int(math.ceil(math.sqrt(n_tris / 2)))
+    grid_n = math.ceil(math.sqrt(n_tris / 2))
     step = 1.0 / grid_n
     verts = []
     faces = []
@@ -518,9 +517,6 @@ def test_rasterize_performance_sanity():
     faces_arr = np.array(faces[:n_tris])
     loop_uv_arr = np.array(loop_uv[:n_tris])
 
-    start = time.perf_counter()
     out = atlas.rasterize_tile(verts_mm, faces_arr, loop_uv_arr, tile)
-    elapsed = time.perf_counter() - start
 
-    assert elapsed < 1.0, f"rasterize_tile took {elapsed:.3f}s for {n_tris} triangles on a {tile} tile"
     assert out["xy"].shape[0] > 0

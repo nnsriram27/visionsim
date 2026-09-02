@@ -13,7 +13,7 @@ def test_temperature_aov_registered(executable):
         "assert any(a.name=='temperature' for a in vl.aovs);"
         "print('THERMAL_AOV_OK')"
     )
-    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
+    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True, check=False)
     assert "THERMAL_AOV_OK" in out.stdout, out.stderr
 
 
@@ -100,7 +100,7 @@ assert any(
 
 print('ATLAS_SHADER_OK')
 """
-    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
+    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True, check=False)
     assert "ATLAS_SHADER_OK" in out.stdout, out.stdout + "\n" + out.stderr
 
 
@@ -132,7 +132,7 @@ assert aov.inputs['Value'].is_linked
 
 print('NO_ATLAS_FALLBACK_OK')
 """
-    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
+    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True, check=False)
     assert "NO_ATLAS_FALLBACK_OK" in out.stdout, out.stdout + "\n" + out.stderr
 
 
@@ -169,7 +169,7 @@ def test_enter_restore_round_trip(executable):
         "assert scene.world is orig_world, f'world not restored: {scene.world!r} vs {orig_world!r}';"
         "print('ROUND_TRIP_OK')"
     )
-    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True)
+    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True, check=False)
     assert "ROUND_TRIP_OK" in out.stdout, out.stderr
 
 
@@ -237,5 +237,5 @@ print('DEFAULT_SURFACE_OK')
     out = subprocess.run(
         [str(executable), "-b", "--python-expr", code],
         capture_output=True, text=True,
-    )
+     check=False)
     assert "DEFAULT_SURFACE_OK" in out.stdout, out.stdout + "\n" + out.stderr

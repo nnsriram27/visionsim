@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "scene": "classroom.blend",
-  "generated_by": "hand-authored for classroom.blend; every material is a FEM_PARTICIPANT (no pinned Dirichlet sources)",
+  "generated_by": "drafted with model assistance from a dump of the scene's materials (node graphs, slot areas, emission), then reviewed and corrected against the blend; every material is a FEM_PARTICIPANT (no pinned Dirichlet sources)",
   "defaults": {
     "preset": "plaster"
   },
