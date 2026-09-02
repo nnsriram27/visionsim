@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "scene": "bathroom1.blend",
-  "generated_by": "Hand-authored by inspecting bathroom1.blend in Blender 5.2.1 (bpy dump of material_slots, node graphs [legacy Diffuse/Glossy/Glass BSDF - no Principled BSDF nodes in this file], image textures, and per-material world-space surface area); no LLM or scripts/thermal_assign.py was used.",
+  "generated_by": "drafted with model assistance from a dump of the scene's materials (node graphs, slot areas, emission), then reviewed and corrected against the blend",
   "defaults": {},
   "materials": {
     "Alu bross armoire sdb": {

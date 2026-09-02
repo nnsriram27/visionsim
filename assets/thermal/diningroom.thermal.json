@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "scene": "diningroom.blend",
-  "generated_by": "Manually authored (no scripts/thermal_assign.py, no LLM API call). Evidence gathered with a custom headless-Blender script that dumped every material's full shader node graph (BSDF colors/roughness/IOR/transmission, image-texture filenames, recursing into node groups) plus a second script that dumped per-object geometry (dimensions, world location, parent, collection) for the ambiguous cases; assignments were then written by hand from that evidence.",
+  "generated_by": "drafted with model assistance from a dump of the scene's materials (node graphs, slot areas, emission), then reviewed and corrected against the blend",
   "defaults": {},
   "materials": {
     "BOLA DECORACION": {

@@ -27,22 +27,27 @@ passes:
 ``temperature/``
     Per-pixel surface temperature in **Kelvin**, saved as a single-channel
     ``OPEN_EXR`` file.  This is a Cycles value AOV co-rendered with the RGB pass,
-    so it adds no extra render samples.  Meshes that did not participate in the
-    FEM solve report their fallback ``initial_temperature_K`` so the value is
-    defined everywhere the geometry is visible.
+    so it adds no extra render samples.  Meshes that did not participate in the FEM
+    solve report a fallback, so the value is defined everywhere geometry is visible: a
+    ``DIRICHLET_SOURCE`` reports its reservoir temperature; an object whose solved field
+    could not be written back per-vertex (a topology-changing modifier) reports the
+    **mean of its own solved field**; anything else reports ``initial-temperature-K``.
 
 ``thermal_radiance/``
     Gray-body thermal-camera image produced by a **second Blender render** that
     replaces all scene materials with emission shaders driven by the solved
     surface temperature.  The 3-channel ``OPEN_EXR`` is proportional to the
-    Stefan-Boltzmann radiated power (``emissivity × σ × T⁴``).  This is the most
-    expensive part of thermal; disable it with ``--config.thermal.radiance False``
-    when you only need the temperature map.
+    Stefan-Boltzmann radiated power (``ε × σ × T⁴``), where ``ε`` is a **fixed
+    scene-wide constant of 0.9**, not the per-material emissivity — see the note under
+    ``emissivity`` below.  This is the most expensive part of thermal; disable it with
+    ``--config.thermal.no-radiance`` when you only need the temperature map.
 
 ``previews/temperature/``
     An **inferno-colormap PNG** derived from the temperature map, for quick
     visual inspection.  The colormap spans the **global temperature range of the
-    solved scene** (its minimum to maximum), so a scene with only a small
+    solved scene** (its 1st to 99th percentile, so a few outlier-hot texels cannot
+    flatten everything else; the range is also floored at the initial temperature and
+    widened to span at least 1 K), so a scene with only a small
     temperature rise still uses the full colormap instead of being crushed to one
     end.  Controlled by ``--config.thermal.preview`` (default ``True``).
 
@@ -68,7 +73,7 @@ modality.  A few common invocations:
     # temperature map only — skip the (expensive) gray-body radiance render
     vsim blender.render-animation scene.blend out/ \
         --config.include-thermal \
-        --config.thermal.radiance False
+        --config.thermal.no-radiance
 
     # force a CPU solve (no CUDA required)
     vsim blender.render-animation scene.blend out/ \
@@ -196,9 +201,23 @@ These set the physical material used for every mesh that has no per-object overr
         temperature, so the rise is slower and smaller.
     * - ``emissivity``
       - ``0.9``
-      - Surface emissivity in ``[0, 1]``.  Governs radiative cooling in the solve
-        and the brightness of the ``thermal_radiance`` render — higher emissivity
-        means more radiative loss and a brighter thermal image.
+      - Surface emissivity in ``[0, 1]``.  Governs **radiative cooling in the solve**:
+        higher emissivity means more radiative loss, so a lower steady-state
+        temperature.  It does **not** currently change the ``thermal_radiance`` render,
+        which emits at a fixed ε = 0.9 for every surface (see the note below).
+
+.. note::
+
+   **Emissivity does not yet reach the radiance render.**  ``_build_gray_body_material``
+   bakes a single constant (``1 - 0.9``) into the shader's mix factor and assigns that one
+   material to every mesh, so ``thermal_radiance`` is always ``0.9·σ·T⁴·radiance_scale``.
+   The per-vertex ``emissivity`` attribute the solve writes is not sampled by it.
+
+   This matters for an LWIR modality: emissivity contrast is a large part of what a real
+   thermal camera distinguishes, and a polished metal surface (ε ≈ 0.05–0.2) should read
+   much darker than a matte one at the same physical temperature.  Today it does not.
+   Emissivity still correctly drives radiative cooling in the solve, so it does affect the
+   temperatures themselves — only the rendered radiance ignores it.
 
 Material presets
 ~~~~~~~~~~~~~~~~
@@ -410,8 +429,9 @@ thousands of independent temperature samples.  This is what makes large flat sur
       - ``1500.0``
       - Target texels per m² of surface area.  Tile side is
         ``ceil(sqrt(area_m2 * density))``, so this sets the effective spatial resolution
-        of the thermal field.  Raising it sharpens detail and grows the atlas
-        quadratically.
+        of the thermal field.  Total texels are ``Σ area × density``, so atlas size
+        grows **linearly** with this value (each object's tile *side* grows as its square
+        root).  Raising it sharpens detail at proportional memory cost.
     * - ``atlas-tile-min`` / ``atlas-tile-max``
       - ``16`` / ``512``
       - Clamp on a single object's tile side in texels.  The minimum keeps tiny objects
@@ -419,9 +439,10 @@ thousands of independent temperature samples.  This is what makes large flat sur
         dominating the atlas.
     * - ``atlas-texel-soft-max``
       - ``500000``
-      - Warn-only budget for total atlas texels.  If the requested density would exceed
-        it, density is rescaled uniformly downward once and a warning is emitted; it is
-        not an exact bound.
+      - Warn-only budget covering atlas texels **plus the vertices of every object that
+        stayed on the per-vertex path** (``Σ side² + retained_vertex_count``).  If the
+        request exceeds it, density is rescaled uniformly downward once and a warning is
+        emitted; a single corrective pass, so it is not an exact bound.
 
 **Which objects join the atlas.**  Membership is automatic, not a per-object switch.  An
 object joins when its own vertex density is below ``atlas-texel-density`` (its vertices are
@@ -437,9 +458,7 @@ resolution away.
    Objects that are demoted from the atlas *and* cannot take a per-vertex write-back fall
    back to a **constant fill** at the mean of their solved field — the whole object renders
    as one flat temperature.  If a surface looks uniformly warm where you expect a gradient,
-   check the solve log for ``demoted from the atlas`` and ``replaced by a constant fill``.
-   These logs are Rich-formatted and wrap across lines, so flatten before counting
-   (``tr '\n' ' ' < stdout.log | grep -o 'demoted from the atlas' | wc -l``).
+   that is the cause, and the solve emits a warning naming the object.
 
 Recommended starting point
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -516,8 +535,9 @@ The per-object fields are:
     Specific heat capacity (J/kg·K).
 
 ``emissivity``
-    Surface emissivity in ``[0, 1]``, used for both radiation boundary conditions
-    and the gray-body radiance render.
+    Surface emissivity in ``[0, 1]``, used for the radiation boundary condition in the
+    solve.  It is written to the mesh as a per-vertex attribute but is **not** read by
+    the gray-body radiance shader (see the note below).
 
 ``thermal_role``
     Either ``"FEM_PARTICIPANT"`` (default — full transient solve) or
@@ -626,9 +646,16 @@ histories to::
     <blend_file>.heatsim/<cache_key>/temperatures.npz
 
 where ``<cache_key>`` is a 16-character digest derived from the blend file path, its modification
-timestamp, and the solver configuration.  Subsequent renders that use the same blend file and the
-same parameters **skip the solve entirely** and load the cached result.  Changing any solver
-parameter (or editing the blend) produces a new cache key and triggers a fresh solve.
+timestamp, the solver configuration, the sorted list of participating object names, and the
+SHA-256 of the material sidecar (if one is given).  Subsequent renders that use the same blend
+file and the same parameters **skip the solve entirely** and load the cached result.  Changing any
+solver parameter, editing the sidecar, or touching the blend produces a new cache key and triggers
+a fresh solve.
+
+.. note::
+
+   The key includes the blend's modification timestamp, so *any* write to the ``.blend`` — even
+   one that changes nothing relevant to the solve — invalidates every cached solve for it.
 
 To prime the cache ahead of a render run — useful when the solve is expensive and you want
 rendering to start immediately — run the solve on its own:
@@ -636,12 +663,19 @@ rendering to start immediately — run the solve on its own:
 .. code-block:: bash
 
     vsim blender.heatsim-solve scene.blend \
-        --config.include-thermal \
         --config.thermal.device cpu
 
 Because the cache key is anchored to the source blend file, a primed solve is reused by all later
 ``vsim blender.render-animation`` calls against the same blend at the same solver settings — even
 in a different output directory.
+
+.. note::
+
+   ``heatsim-solve`` always runs the **static** solve; it accepts ``--config.thermal.animated``
+   but ignores it. The animated path writes a different cache under a different key, so an
+   animated render is not served by a primed static solve. The subcommand also accepts the rest
+   of the render config (``--config.include-*``, ``--config.frames.*`` …) and ignores all of it —
+   only ``--config.thermal.*`` has any effect.
 
 Using thermal from the API
 --------------------------

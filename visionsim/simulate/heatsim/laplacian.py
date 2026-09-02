@@ -8,8 +8,6 @@ Callers should check `HAS_ROBUST_LAPLACIAN` before using.
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
-
 import warnings
 
 import numpy as np
@@ -19,7 +17,7 @@ try:
     import robust_laplacian  # type: ignore
 
     HAS_ROBUST_LAPLACIAN = True
-    ROBUST_IMPORT_ERROR: Optional[str] = None
+    ROBUST_IMPORT_ERROR: str | None = None
 except Exception as e:  # pragma: no cover
     robust_laplacian = None
     HAS_ROBUST_LAPLACIAN = False

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "scene": "officebuilding.blend",
-  "generated_by": "Hand-authored by inspecting materials via a Blender --python evidence dump (bpy.data.materials node graphs, image textures, Principled BSDF values, and per-material object usage) on machine june1; no LLM or scripts/thermal_assign.py involved.",
+  "generated_by": "drafted with model assistance from a dump of the scene's materials (node graphs, slot areas, emission), then reviewed and corrected against the blend",
   "defaults": {},
   "materials": {
     "CAR PAINT": {
