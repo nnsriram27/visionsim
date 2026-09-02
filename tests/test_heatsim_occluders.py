@@ -14,6 +14,15 @@ import bpy
 from visionsim.simulate.heatsim import irradiance_kernel as ik
 from visionsim.simulate.heatsim import occluders
 
+def group_shader_output(group):
+    # `node_group.interface` is Blender 4.0+; 3.6 uses `node_group.outputs`. The behaviour
+    # under test (glass inside a node group still reads as clear) is version-independent,
+    # so support both rather than skipping the 3.6 CI leg.
+    if hasattr(group, "interface"):
+        group.interface.new_socket('Shader', in_out='OUTPUT', socket_type='NodeSocketShader')
+    else:
+        group.outputs.new('NodeSocketShader', 'Shader')
+
 def mesh(name):
     bpy.ops.mesh.primitive_plane_add()
     o = bpy.context.active_object
@@ -91,7 +100,7 @@ check('driven', driven_transmission, True)
 # Glass wrapped in a node group must still read as clear (review finding).
 group = bpy.data.node_groups.new('GlassGroup', 'ShaderNodeTree')
 g_out = group.nodes.new('NodeGroupOutput')
-group.interface.new_socket('Shader', in_out='OUTPUT', socket_type='NodeSocketShader')
+group_shader_output(group)
 group.links.new(group.nodes.new('ShaderNodeBsdfGlass').outputs[0], g_out.inputs[0])
 
 def grouped_glass(tree):
@@ -104,7 +113,7 @@ check('grouped_glass', grouped_glass, False)
 # An opaque BSDF hidden inside a group must still occlude.
 ogroup = bpy.data.node_groups.new('OpaqueGroup', 'ShaderNodeTree')
 og_out = ogroup.nodes.new('NodeGroupOutput')
-ogroup.interface.new_socket('Shader', in_out='OUTPUT', socket_type='NodeSocketShader')
+group_shader_output(ogroup)
 ogroup.links.new(ogroup.nodes.new('ShaderNodeBsdfDiffuse').outputs[0], og_out.inputs[0])
 
 def grouped_opaque(tree):
@@ -117,7 +126,7 @@ check('grouped_opaque', grouped_opaque, True)
 # Only the ACTIVE Group Output feeds the instance. A leftover inactive one wired
 # to an opaque shader must not turn a clear pane into a shadow caster.
 stale = bpy.data.node_groups.new('StaleGroup', 'ShaderNodeTree')
-stale.interface.new_socket('Shader', in_out='OUTPUT', socket_type='NodeSocketShader')
+group_shader_output(stale)
 live_out = stale.nodes.new('NodeGroupOutput')
 live_out.is_active_output = True
 stale.links.new(stale.nodes.new('ShaderNodeBsdfGlass').outputs[0], live_out.inputs[0])

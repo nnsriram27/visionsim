@@ -520,6 +520,40 @@ def _image_to_vertex_irradiance(
     return accum / counts
 
 
+def _mesh_to_sample(obj):
+    """The mesh a bake's per-vertex reduction must be indexed against.
+
+    Both bakes MUST use this. The solver builds its nodes from
+    ``adapter._extract_geometry``, which reads ``obj.evaluated_get(depsgraph).data`` --
+    modifiers applied. A bake that reduces against ``obj.data`` instead produces an array
+    sized to the pre-modifier vertex count, and ``_combine`` drops a flux array whose
+    length does not match the node count: the object then receives NO absorbed flux and
+    sits at its initial temperature, warmed only by conduction from its neighbours.
+
+    Measured on one 289-object interior before this was fixed: 229 objects (79%)
+    mismatched, and every one landed at +0.332-0.334 K regardless of the flux computed
+    for it, while the 60 aligned objects rose a median 13.3 K per unit flux. Two
+    instances of the same asset made it unmistakable -- 584 verts/584 nodes rose 33.8 K;
+    584 verts/9305 nodes rose 0.333 K on identical material and flux.
+
+    This lives in one function because the fix was originally applied to only one of the
+    two near-identical bake bodies, which silently reintroduced the same class of bug on
+    the albedo side: a mismatched albedo is discarded in favour of albedo=0, i.e. full
+    absorption, overestimating absorbed flux by up to ~4x on a light surface.
+
+    Falls back to ``obj.data`` when the evaluated mesh is unusable (no vertices, or no UV
+    layers to sample through).
+    """
+    try:
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        candidate = obj.evaluated_get(depsgraph).data
+        if candidate is not None and len(candidate.vertices) > 0 and len(candidate.uv_layers) > 0:
+            return candidate
+    except Exception:  # pragma: no cover - defensive, mirrors this module's style
+        pass
+    return obj.data
+
+
 def bake_albedo_map(scene, obj, texture_size: int) -> BakedFluxMap | None:
     """
     Bake visible diffuse albedo (COLOR pass) for a single object.
@@ -628,7 +662,7 @@ def bake_albedo_map(scene, obj, texture_size: int) -> BakedFluxMap | None:
     if rgb_pixels is None:
         return None
 
-    mesh = obj.data
+    mesh = _mesh_to_sample(obj)
     mesh.calc_loop_triangles()
     if len(mesh.loop_triangles) == 0:
         return None
@@ -826,31 +860,7 @@ def bake_irradiance_map(scene, obj, texture_size: int, samples: int | None = Non
     if rgb_pixels is None:
         return None
 
-    # Sample the EVALUATED mesh, not obj.data. The solver builds its nodes from
-    # ``adapter._extract_geometry``, which uses ``obj.evaluated_get(depsgraph).data`` --
-    # modifiers applied. Sampling the original mesh here yields a ``vertex_flux`` sized
-    # to the pre-modifier vertex count, and ``_combine`` drops a flux array whose length
-    # does not match the node count. The object then receives NO absorbed flux at all and
-    # sits at its initial temperature, heated only by conduction from its neighbours.
-    #
-    # Measured on visionsim50/diningroom before this fix: 229 of 289 objects (79%)
-    # mismatched, and every one of them landed at +0.332-0.334 K regardless of how much
-    # flux had been computed for it -- while the 60 matching objects rose a median
-    # 13.3 K per unit flux. Two instances of the same asset made it unmistakable:
-    # decoration_twig_branch.009 (584 verts, 584 nodes) rose 33.8 K, while .007
-    # (584 verts, 9305 nodes) rose 0.333 K on the same material and the same flux.
-    #
-    # This only ever affected the CYCLES_BAKE path. The Direct Kernel evaluates
-    # irradiance at the evaluated mesh's own vertex positions, so it was always aligned.
-    _eval_mesh = None
-    try:
-        _dg = bpy.context.evaluated_depsgraph_get()
-        _cand = obj.evaluated_get(_dg).data
-        if _cand is not None and len(_cand.vertices) > 0 and len(_cand.uv_layers) > 0:
-            _eval_mesh = _cand
-    except Exception:  # pragma: no cover - defensive, mirrors this module's style
-        _eval_mesh = None
-    mesh = _eval_mesh if _eval_mesh is not None else obj.data
+    mesh = _mesh_to_sample(obj)
     mesh.calc_loop_triangles()
     if len(mesh.loop_triangles) == 0:
         return None

@@ -930,12 +930,33 @@ def _compute_irradiance_cycles(scene: Any, sim_objects: list, solver_cfg: dict, 
         if baked is None or getattr(baked, "vertex_flux", None) is None:
             continue
         incident = np.asarray(baked.vertex_flux, dtype=np.float64).reshape(-1)
+        # `get_or_bake_vertex_albedo` takes a LIST and returns {name: (N,) array}; its
+        # `texture_size` is keyword-only. Getting either wrong raises TypeError, and a
+        # bare `except` here would turn that into albedo=0 -- i.e. full absorption, up to
+        # ~4x the correct flux on a light surface -- with no way to notice. Both
+        # degradation paths below therefore log.
+        albedo = None
         try:
-            albedo = irradiance_kernel.get_or_bake_vertex_albedo(scene, obj, texture_size)
-            albedo = np.clip(np.asarray(albedo, dtype=np.float64).reshape(-1), 0.0, 1.0)
-            if albedo.shape != incident.shape:
-                albedo = np.zeros_like(incident)
-        except Exception:
+            albedo_by_name = irradiance_kernel.get_or_bake_vertex_albedo(
+                scene, [obj], texture_size=texture_size
+            )
+            raw = albedo_by_name.get(obj.name)
+            if raw is not None:
+                albedo = np.clip(np.asarray(raw, dtype=np.float64).reshape(-1), 0.0, 1.0)
+        except Exception as exc:  # pragma: no cover - defensive
+            _log.warning(
+                "[heatsim.adapter] '%s': vertex albedo bake failed (%s); assuming full "
+                "absorption, which OVERESTIMATES absorbed flux.", obj.name, exc,
+            )
+        if albedo is None:
+            albedo = np.zeros_like(incident)
+        elif albedo.shape != incident.shape:
+            _log.warning(
+                "[heatsim.adapter] '%s': albedo has %d entries but irradiance has %d "
+                "(the two bakes disagree about which mesh they sampled); assuming full "
+                "absorption, which OVERESTIMATES absorbed flux.",
+                obj.name, albedo.shape[0], incident.shape[0],
+            )
             albedo = np.zeros_like(incident)
         out[obj] = np.maximum(incident * (1.0 - albedo), 0.0)
     return out
