@@ -9,6 +9,7 @@ heatsim_data_key).
 The full per-vertex history goes to
 `<blend_dir>/<basename>.heatsim/latest/temperatures.npz`, keyed by object name,
 with a sidecar `manifest.json`. The reader resolution order is:
+
     1. cached open NpzFile for the resolved archive path
     2. `obj["heatsim_data_uri"]` (Blender //-relative path) -> archive
     3. `obj["heatsim_data_abspath"]` -> archive

@@ -222,82 +222,114 @@ These set the physical material used for every mesh that has no per-object overr
 Material presets
 ~~~~~~~~~~~~~~~~
 
-The material knobs above are raw physical properties, so any material is a matter
-of supplying the right four numbers.  The table below lists starting-point values
-for common materials; the ``pvc / plastic`` row matches the built-in defaults.
-Thermal **diffusivity** is the dominant knob for how the heat *spreads* — metals
-(high diffusivity) conduct heat across the whole object quickly, while glass and
-plastics keep it localized near the heat source.
+The material knobs above are raw physical properties, so any material is a matter of
+supplying the right four numbers.  The **preset library** packages those numbers under a
+short key; a sidecar refers to a material by that key rather than repeating the values
+(see `Automatic material assignment (sidecars)`_).
+
+The table below shows 16 of the 29 presets, with the exact values the
+library uses.  **The full list of keys is the closed vocabulary a sidecar's** ``preset``
+**field accepts** — read it from
+:mod:`visionsim.simulate.heatsim.materials`'s ``_PRESET_TABLE``, or at runtime::
+
+    from visionsim.simulate.heatsim import materials
+    print(materials.preset_keys())
+
+Thermal **diffusivity** is the dominant knob for how heat *spreads* — metals conduct it
+across the whole object quickly, while glass, plastics and textiles keep it localized.
+**Emissivity** is what an LWIR camera sees: note ``aluminium_polished`` at 0.05 against
+``skin`` at 0.98, a 20x range.
 
 .. list-table::
     :header-rows: 1
     :widths: 26 20 18 20 16
 
-    * - Material
+    * - ``preset`` key
       - ``thermal-diffusivity-mm2-s``
       - ``density-kg-m3``
       - ``specific-heat-J-kgK``
       - ``emissivity``
-    * - Aluminium
+    * - ``aluminium``
       - ``97``
       - ``2700``
       - ``978``
-      - ``1.0`` [*]_
-    * - Copper
+      - ``0.2``
+    * - ``aluminium_polished``
+      - ``97``
+      - ``2700``
+      - ``978``
+      - ``0.05``
+    * - ``stainless_steel``
+      - ``4``
+      - ``7900``
+      - ``500``
+      - ``0.16``
+    * - ``copper``
       - ``111``
       - ``8960``
       - ``385``
-      - ``0.9``
-    * - Steel
-      - ``4.2``
-      - ``7930``
-      - ``280``
-      - ``0.9``
-    * - Cast iron
-      - ``18``
-      - ``7200``
-      - ``450``
-      - ``0.3``
-    * - Glass
+      - ``0.15``
+    * - ``glass``
       - ``0.34``
       - ``2500``
       - ``840``
-      - ``0.9``
-    * - PVC / plastic (default)
-      - ``0.17``
-      - ``1330``
+      - ``0.92``
+    * - ``marble``
+      - ``1.2``
+      - ``2700``
       - ``880``
+      - ``0.94``
+    * - ``concrete``
+      - ``0.5``
+      - ``2300``
+      - ``880``
+      - ``0.92``
+    * - ``plaster``
+      - ``0.4``
+      - ``1200``
+      - ``1090``
+      - ``0.91``
+    * - ``drywall``
+      - ``0.31``
+      - ``800``
+      - ``1090``
       - ``0.9``
-    * - Wood
+    * - ``wood``
       - ``0.082``
       - ``897``
       - ``2380``
       - ``0.9``
-    * - Brick
-      - ``0.52``
-      - ``2200``
-      - ``800``
+    * - ``pvc``
+      - ``0.17``
+      - ``1330``
+      - ``880``
+      - ``0.93``
+    * - ``fabric``
+      - ``0.09``
+      - ``300``
+      - ``1300``
+      - ``0.95``
+    * - ``carpet``
+      - ``0.06``
+      - ``200``
+      - ``1300``
       - ``0.9``
+    * - ``water``
+      - ``0.143``
+      - ``997``
+      - ``4182``
+      - ``0.96``
+    * - ``foliage``
+      - ``0.15``
+      - ``700``
+      - ``3000``
+      - ``0.96``
+    * - ``skin``
+      - ``0.11``
+      - ``1050``
+      - ``3470``
+      - ``0.98``
 
-.. [*] Emissivity is surface-finish dependent.  Polished metals are physically
-   much lower (aluminium ≈ 0.05–0.1); the value here follows the gray-body
-   convention used by the solver's radiation term and makes the
-   ``thermal_radiance`` image brighter.  Lower it for a polished-metal look.
-
-For example, to solve the whole scene as an aluminium object:
-
-.. code-block:: bash
-
-    vsim blender.render-animation scene.blend out/ \
-        --config.include-thermal \
-        --config.thermal.thermal-diffusivity-mm2-s 97 \
-        --config.thermal.density-kg-m3 2700 \
-        --config.thermal.specific-heat-J-kgK 978 \
-        --config.thermal.emissivity 1.0
-
-To give *different* objects different materials, set the per-object
-``heat_sim_material`` fields instead (see `Per-object material overrides`_); the
-global flags above are the fallback for any object without an override.
 
 Solver
 ~~~~~~
@@ -606,35 +638,99 @@ area.  A vertex cannot be "partly pinned", so the pin is a majority vote, not a 
 Authoring a sidecar
 ~~~~~~~~~~~~~~~~~~~~
 
-The offline tool ``scripts/thermal_assign.py`` (outside the installed package) drafts and reviews
-sidecars in three steps:
+A sidecar is a small JSON document.  Write it however you like — by hand, from a script, or
+with any tool that can follow the schema.  Nothing about rendering requires a network call
+or an API key.
+
+.. code-block:: json
+
+    {
+      "schema_version": 1,
+      "scene": "kitchen1.blend",
+      "defaults": { "preset": "plaster" },
+      "materials": {
+        "PARED blanca":  { "preset": "plaster" },
+        "encimera":      { "preset": "marble" },
+        "grifo":         { "preset": "stainless_steel" },
+        "cortina":       { "preset": "fabric" },
+        "madera puerta": { "preset": "wood", "confidence": 0.6,
+                           "reason": "door slab; grain texture, no metal shader" }
+      }
+    }
+
+**Top level**
+
+``schema_version`` (required)
+    Must be ``1``.  A missing or different value is an error, not a warning — the loader
+    refuses a sidecar it cannot interpret rather than guessing.
+
+``scene``
+    The blend file this was authored against.  Informational.
+
+``defaults``
+    Optional scene-wide fallback, e.g. ``{"preset": "plaster"}``.  Used for any material the
+    ``materials`` block does not name.  Omit it (or use ``{}``) to fall back to the
+    scene-wide `Material defaults`_ instead.
+
+``materials``
+    Maps a Blender **material name** (exactly as it appears in the blend) to one entry.
+
+**Per-material entry**
+
+``preset`` (the only field that usually matters)
+    One of the keys in the preset library — see `Material presets`_, or call
+    ``materials.preset_keys()`` for the authoritative list.  Use ``null`` to say
+    "deliberately unassigned", which falls back to ``defaults`` and then to the global
+    knobs.  An unknown key is rejected rather than silently guessed.
+
+``role``
+    ``"FEM_PARTICIPANT"`` (default) — the material solves normally.
+    ``"DIRICHLET_SOURCE"`` — the material is *pinned* at a fixed temperature and acts as a
+    heat source rather than solving.  Use it for a lamp element,
+    a hotplate, a radiator: something whose temperature you are asserting rather than
+    simulating.
+
+``dirichlet_K``
+    The fixed temperature for a ``DIRICHLET_SOURCE``, in Kelvin.  Ignored for a
+    ``FEM_PARTICIPANT``.  Accepted range is 280–500 K; a value outside it is dropped **with
+    a warning**, and the role degrades to ``FEM_PARTICIPANT``.  That degrade is deliberate:
+    keeping the role while dropping the temperature would pin the object at *ambient*,
+    silently turning an intended heat source into a heat **sink**, which is a worse and much
+    harder-to-spot failure than simply letting it solve normally.
+
+``confidence`` / ``reason``
+    Free-form provenance, ignored by the loader.  Useful when a sidecar is reviewed later:
+    they record how sure the author was and why.
+
+.. note::
+
+    The sidecars shipped in ``assets/thermal/`` use no ``DIRICHLET_SOURCE`` entries — every
+    material is a ``FEM_PARTICIPANT``, so no object is held at a fixed temperature and every
+    surface solves from the same ambient start.  Pin a source only when you actually want to
+    assert a temperature.
+
+Optional helper
+^^^^^^^^^^^^^^^
+
+``scripts/thermal_assign.py`` (outside the installed package) can inventory a scene's
+materials and render an HTML review sheet, which is useful for a scene with a hundred
+artist-named materials:
 
 .. code-block:: bash
 
-    # 1. Inventory a scene's materials (runs inside Blender; free, deterministic)
-    blender -b scene.blend --python scripts/thermal_assign.py -- dump \
-        --output scene.materials.json
+    # inventory the scene's materials (runs inside Blender; deterministic, no network)
+    blender -b scene.blend --python scripts/thermal_assign.py -- dump --output scene.materials.json
 
-    # 2. Draft a sidecar with an LLM (the only step that makes a network call)
-    export LLM_API_KEY=...            # any OpenAI-compatible endpoint
-    # export LLM_BASE_URL=...         # e.g. a local LiteLLM proxy / vLLM; default is OpenAI
-    # export LLM_MODEL=...            # default gpt-4o-mini
-    python scripts/thermal_assign.py assign scene.materials.json \
-        --output assets/thermal/scene.thermal.json
-
-    # 3. Render an HTML review sheet, then hand-correct the sidecar
+    # render a review sheet for an existing sidecar, sorted by surface area
     python scripts/thermal_assign.py report scene.materials.json \
         assets/thermal/scene.thermal.json --output scene.review.html
 
-The tool is provider-neutral (a plain ``/chat/completions`` call over the standard library — no
-SDK dependency) so any OpenAI-compatible backend works, including a local model.  The LLM only
-produces a **first draft**: the tool then applies deterministic guards — an out-of-library preset
-becomes *unassigned* rather than a silent guess, and a material with an emission node is forced to a
-heat source regardless of what the model said — and every correction warns.  The review step is not
-optional: the draft is marked ``REVIEW AND CORRECT BY HAND BEFORE PUBLISHING``.  Sort the review
-sheet by surface area and check the high-coverage materials first; watch in particular for render
-helpers (e.g. a *daylight portal*) that carry an emission node and get force-pinned as spuriously
-hot sources.
+It can also draft a sidecar via an OpenAI-compatible endpoint (``assign``), which needs
+``LLM_API_KEY``.  That step is entirely optional and is only a *first draft* — whatever it
+returns passes through deterministic guards (an out-of-library preset becomes unassigned
+rather than a silent guess; a material with an emission node is forced to a heat source) and
+still has to be reviewed.  Watch in particular for render helpers such as a *daylight portal*,
+which carry an emission node and would otherwise be pinned as spuriously hot sources.
 
 Solve caching
 -------------
