@@ -216,6 +216,16 @@ class ThermalConfig:
     ``1/sqrt(N)``, so quadrupling this buys a little under half the noise. Denoising does
     not apply to a bake; sample count is the only lever.
     """
+    irradiance_texture_size: int = 512
+    """Resolution of the Cycles bakes, in pixels per side (square).
+
+    Governs both the albedo bake and, under ``CYCLES_BAKE``, the irradiance bake. This is
+    the *spatial detail* of the baked flux, as distinct from ``bake_samples``, which is its
+    *noise*: more samples make a smoother bake at the same resolution, and cannot recover
+    detail the resolution never captured. A large surface unwrapped into one 512px tile
+    gets few texels per square metre however many samples you throw at it, so raise this
+    for scenes with big floors, walls or ceilings. Cost is quadratic in this value.
+    """
     device: Literal["cuda", "cpu"] = "cuda"
     """Torch device for the solve; falls back to cpu if cuda is unavailable"""
     # --- thermal atlas (texel-domain render) ---

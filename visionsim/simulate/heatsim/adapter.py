@@ -1326,8 +1326,6 @@ def _run_solver(combined: SimpleNamespace, solver_cfg: dict, defaults: dict) -> 
         sim_params,
         laplacian_domain=domain,
         laplacian_backend=backend,
-        robust_mollify_factor=float(solver_cfg.get("robust_mollify_factor", 1e-5)),
-        pointcloud_neighbors=int(solver_cfg.get("pointcloud_neighbors", 30)),
     )
 
     is_points = domain == "POINTS"
@@ -1666,8 +1664,6 @@ def solve_scene_animated(
         sim_params,
         laplacian_domain=domain,
         laplacian_backend=backend,
-        robust_mollify_factor=float(solver_cfg.get("robust_mollify_factor", 1e-5)),
-        pointcloud_neighbors=int(solver_cfg.get("pointcloud_neighbors", 30)),
     )
 
     orig_frame = int(scene.frame_current)
