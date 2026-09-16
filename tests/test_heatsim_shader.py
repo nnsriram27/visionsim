@@ -134,6 +134,71 @@ print('ATLAS_SHADER_OK')
     assert "ATLAS_SHADER_OK" in out.stdout, out.stdout + "\n" + out.stderr
 
 
+def test_filtered_atlas_edge_preserves_temperature(executable, tmp_path):
+    """A partially covered atlas sample must stay at the solved temperature."""
+    code = f"""
+from pathlib import Path
+import bpy
+import numpy as np
+from visionsim.simulate.compat import file_output_node
+from visionsim.simulate.heatsim import thermal_shader
+from visionsim.simulate.heatsim.names import ATLAS_COVERAGE_PROP, ATLAS_IMAGE_NAME, ATLAS_UV_LAYER_NAME
+
+root = Path({str(tmp_path)!r})
+bpy.ops.mesh.primitive_plane_add(size=2)
+plane = bpy.context.active_object
+material = bpy.data.materials.new('wall')
+material.use_nodes = True
+plane.data.materials.append(material)
+uv = plane.data.uv_layers.new(name=ATLAS_UV_LAYER_NAME)
+for loop in uv.data:
+    loop.uv = (0.4, 0.25)
+plane[ATLAS_COVERAGE_PROP] = 1.0
+
+image = bpy.data.images.new(ATLAS_IMAGE_NAME, width=2, height=2, alpha=True, float_buffer=True)
+image.colorspace_settings.name = 'Non-Color'
+image.pixels.foreach_set([295.0, 295.0, 295.0, 1.0, 0.0, 0.0, 0.0, 0.0] * 2)
+image.update()
+image.pack()
+
+bpy.ops.object.camera_add(location=(0, 0, 2))
+camera = bpy.context.active_object
+camera.data.type = 'ORTHO'
+camera.data.ortho_scale = 2
+scene = bpy.context.scene
+scene.camera = camera
+scene.render.engine = 'CYCLES'
+scene.cycles.samples = 1
+scene.render.resolution_x = 16
+scene.render.resolution_y = 16
+scene.render.resolution_percentage = 100
+thermal_shader.stamp_default_temperatures(scene, default_K=295.0)
+thermal_shader.setup_temperature_aov(scene, bpy.context.view_layer)
+
+bpy.ops.node.new_compositing_node_group(name='Compositor Nodes')
+scene.compositing_node_group = bpy.data.node_groups['Compositor Nodes']
+scene.render.use_compositing = True
+tree = scene.compositing_node_group
+tree.nodes.clear()
+layers = tree.nodes.new('CompositorNodeRLayers')
+output, sockets, _ = file_output_node(tree, root, slot_names=(('temp', 'RGBA'),))
+output.format.file_format = 'OPEN_EXR'
+output.format.color_mode = 'RGB'
+output.format.color_depth = '32'
+tree.links.new(layers.outputs['temperature'], sockets[0])
+bpy.ops.render.render()
+
+loaded = bpy.data.images.load(str(root / 'temp.exr'))
+pixels = np.empty(16 * 16 * 4, dtype=np.float32)
+loaded.pixels.foreach_get(pixels)
+temperature = pixels.reshape(-1, 4)[:, 0]
+assert np.allclose(temperature, 295.0, atol=0.01), (temperature.min(), temperature.max())
+print('ATLAS_EDGE_OK')
+"""
+    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True, check=False)
+    assert "ATLAS_EDGE_OK" in out.stdout, out.stdout + "\n" + out.stderr
+
+
 def test_atlas_shader_group_falls_back_when_no_atlas_image(executable):
     """No ``HeatSim_Temperature_Atlas`` image registered (render_domain=VERTEX, the atlas is
     never built) -> the Image Texture node has no image, but the graph must still build (no
