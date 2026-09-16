@@ -20,26 +20,10 @@ visionsim.simulate.heatsim.atlas module
    :show-inheritance:
    :undoc-members:
 
-visionsim.simulate.heatsim.bvh\_backend module
-----------------------------------------------
-
-.. automodule:: visionsim.simulate.heatsim.bvh_backend
-   :members:
-   :show-inheritance:
-   :undoc-members:
-
 visionsim.simulate.heatsim.cache module
 ---------------------------------------
 
 .. automodule:: visionsim.simulate.heatsim.cache
-   :members:
-   :show-inheritance:
-   :undoc-members:
-
-visionsim.simulate.heatsim.constants module
--------------------------------------------
-
-.. automodule:: visionsim.simulate.heatsim.constants
    :members:
    :show-inheritance:
    :undoc-members:
@@ -52,26 +36,10 @@ visionsim.simulate.heatsim.irradiance module
    :show-inheritance:
    :undoc-members:
 
-visionsim.simulate.heatsim.irradiance\_kernel module
-----------------------------------------------------
-
-.. automodule:: visionsim.simulate.heatsim.irradiance_kernel
-   :members:
-   :show-inheritance:
-   :undoc-members:
-
 visionsim.simulate.heatsim.laplacian module
 -------------------------------------------
 
 .. automodule:: visionsim.simulate.heatsim.laplacian
-   :members:
-   :show-inheritance:
-   :undoc-members:
-
-visionsim.simulate.heatsim.light\_models module
------------------------------------------------
-
-.. automodule:: visionsim.simulate.heatsim.light_models
    :members:
    :show-inheritance:
    :undoc-members:
@@ -84,13 +52,21 @@ visionsim.simulate.heatsim.materials module
    :show-inheritance:
    :undoc-members:
 
-visionsim.simulate.heatsim.occluders module
--------------------------------------------
+visionsim.simulate.heatsim.physics module
+-----------------------------------------
 
-.. automodule:: visionsim.simulate.heatsim.occluders
+.. automodule:: visionsim.simulate.heatsim.physics
    :members:
-   :show-inheritance:
    :undoc-members:
+   :show-inheritance:
+
+visionsim.simulate.heatsim.names module
+---------------------------------------
+
+.. automodule:: visionsim.simulate.heatsim.names
+   :members:
+   :undoc-members:
+   :show-inheritance:
 
 visionsim.simulate.heatsim.properties module
 --------------------------------------------
@@ -100,34 +76,10 @@ visionsim.simulate.heatsim.properties module
    :show-inheritance:
    :undoc-members:
 
-visionsim.simulate.heatsim.sh9\_sky module
-------------------------------------------
-
-.. automodule:: visionsim.simulate.heatsim.sh9_sky
-   :members:
-   :show-inheritance:
-   :undoc-members:
-
-visionsim.simulate.heatsim.sky\_visibility module
--------------------------------------------------
-
-.. automodule:: visionsim.simulate.heatsim.sky_visibility
-   :members:
-   :show-inheritance:
-   :undoc-members:
-
 visionsim.simulate.heatsim.solver module
 ----------------------------------------
 
 .. automodule:: visionsim.simulate.heatsim.solver
-   :members:
-   :show-inheritance:
-   :undoc-members:
-
-visionsim.simulate.heatsim.temperature\_io module
--------------------------------------------------
-
-.. automodule:: visionsim.simulate.heatsim.temperature_io
    :members:
    :show-inheritance:
    :undoc-members:

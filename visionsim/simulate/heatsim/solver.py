@@ -21,7 +21,7 @@ def scipy_to_torch_sparse(mat, device, dtype=torch.float32):
     indices = np.vstack([mat.row, mat.col]).astype(np.int64)
     i = torch.from_numpy(indices).to(device)
     v = torch.from_numpy(mat.data.astype(np.float32)).to(device)
-    return torch.sparse_coo_tensor(i, v, mat.shape, device=device, dtype=dtype).coalesce()
+    return torch.sparse_coo_tensor(i, v, mat.shape, device=device, dtype=dtype, check_invariants=True).coalesce()
 
 
 def sparse_diag(A):
