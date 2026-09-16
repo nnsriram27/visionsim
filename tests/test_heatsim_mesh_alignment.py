@@ -55,15 +55,15 @@ print("EVALUATED_MESH_ALIGNMENT_OK")
 def test_albedo_and_irradiance_bakes_agree_on_the_mesh(executable):
     """The two bakes feed one multiply, so they must return the same length.
 
-    They are produced by separate code paths (``bake_albedo_map`` /
-    ``irradiance_kernel.get_or_bake_vertex_albedo`` vs ``bake_irradiance_map``), and the
+    They are produced by separate code paths (``bake_vertex_albedo`` vs
+    ``bake_irradiance_map``), and the
     evaluated-mesh fix was originally applied to only one of them. A mismatch is not
     loud: the caller discards the albedo and assumes full absorption, overestimating
     absorbed flux by up to ~4x on a light surface.
     """
     code = r"""
 import bpy
-from visionsim.simulate.heatsim import irradiance, irradiance_kernel
+from visionsim.simulate.heatsim import irradiance
 
 for o in list(bpy.data.objects):
     bpy.data.objects.remove(o, do_unlink=True)
@@ -77,8 +77,7 @@ bpy.context.scene.cycles.device = 'CPU'
 bpy.context.scene.cycles.samples = 4
 
 flux = irradiance.bake_irradiance_map(bpy.context.scene, obj, 64, samples=4)
-albedo = irradiance_kernel.get_or_bake_vertex_albedo(bpy.context.scene, [obj], texture_size=64)
-a = albedo.get(obj.name)
+a = irradiance.bake_vertex_albedo(bpy.context.scene, obj, texture_size=64)
 assert flux is not None and a is not None, "one of the bakes returned nothing"
 dg = bpy.context.evaluated_depsgraph_get()
 eval_n = len(obj.evaluated_get(dg).data.vertices)

@@ -1,15 +1,4 @@
-"""Cycles COLOR albedo bake, ported from the heat-sim-blender addon.
-
-Vendored so VisionSim's Direct-Kernel albedo path (``irradiance_kernel.
-_bake_vertex_albedo_via_cycles`` → this module's ``bake_albedo_map``) can
-resolve per-vertex reflectivity without depending on the installed addon.
-
-Only the albedo (DIFFUSE/COLOR) bake is ported; the Cycles *irradiance* bake
-is intentionally not vendored (VisionSim uses the analytic Direct-Kernel for
-irradiance). ``bake_albedo_map`` returns a ``BakedFluxMap`` whose ``.pixels``
-is an ``(H, W, 3)`` float64 array — the contract consumed by
-``irradiance_kernel._bake_vertex_albedo_via_cycles``.
-"""
+"""Cycles baking and sampling for absorbed thermal flux."""
 
 from __future__ import annotations
 
@@ -116,7 +105,7 @@ def prepare_object_bake_uv(obj: bpy.types.Object) -> None:
     # Skip degenerate (zero-geometry) meshes: an empty object has no albedo to
     # bake, and bpy.ops.uv.smart_project.poll() fails on it in --background mode
     # (nothing to unwrap), which would otherwise abort the whole scene's bake.
-    # Mirrors the empty-mesh guard in irradiance_kernel.py.
+    # Empty meshes cannot be baked.
     if len(mesh.polygons) == 0 or len(mesh.vertices) == 0:
         return
 

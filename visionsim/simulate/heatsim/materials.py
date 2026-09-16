@@ -14,8 +14,8 @@ Units are SI-with-mm-diffusivity, matching :mod:`visionsim.simulate.heatsim.adap
 ``emissivity_ir`` dimensionless in [0, 1], temperatures in K.
 
 There is deliberately **no** solar-absorptivity column: absorbed flux is already
-computed post-``(1 - albedo)`` from a Cycles bake of the scene's real textures
-(``irradiance_kernel``), so a per-preset absorptivity would double-count.
+computed post-``(1 - albedo)`` from Cycles bakes of the scene's real textures,
+so a per-preset absorptivity would double-count.
 
 Nothing here calls out to a network or an LLM. Sidecars are authored offline by
 ``scripts/thermal_assign.py`` and committed; this module only reads them.

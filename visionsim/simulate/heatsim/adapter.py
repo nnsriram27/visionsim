@@ -1,26 +1,7 @@
-"""Scene adapter: Blender scene -> solver inputs -> per-vertex temperatures.
+"""Map Blender scene geometry and Cycles bakes to thermal solve points.
 
-Hand-written glue that distils the data-shaping core of heat-sim-blender's
-``addon/lib/fem_adapter.py`` (@ 543ee81) into four functions:
-
-* :func:`gather_meshes`         - select the meshes that participate in the solve.
-* :func:`resolve_material`      - per-object thermal params (``heat_sim_material`` -> ``defaults``).
-* :func:`solve_scene`           - cache-aware geometry -> irradiance -> FEM solve -> per-object history.
-* :func:`write_frame_attributes`- stamp ``sim_temperature`` / ``emissivity`` (and a fallback temp).
-
-Unit / sign / dt conventions are preserved verbatim from upstream because the
-wrong units silently corrupt the physics:
-
-* geometry in **millimetres** (world coords x 1000),
-* irradiance W/m^2 -> W/mm^2 (/1e6) then x ``irradiance_scale``,
-* density kg/m^3 -> kg/mm^3 (/1e9) wherever the solver consumes it,
-* the FEM solver is driven exactly as ``tests/test_heatsim_solver.py`` drives it
-  (``NUM_FRAME_DELTA = timestep_s * 60`` so ``dt = NUM_FRAME_DELTA / 60``;
-  ``record_time == sim_time`` records every step).
-
-The module imports ``bpy`` defensively so it stays importable (for
-linting / type-checking) outside Blender; the bpy-coupled solver and Direct-Kernel
-irradiance modules are imported lazily inside :func:`solve_scene`.
+The solver uses millimetres, so geometry, irradiance and density are converted
+at the boundary from metres, W/m² and kg/m³ respectively.
 """
 
 from __future__ import annotations
@@ -399,11 +380,7 @@ def _atlas_digest(
 
 
 def _prepare_bake_uv(obj: Any) -> None:
-    """Lazy-import wrapper around ``irradiance.prepare_object_bake_uv``.
-
-    Keeps this module importable without ``bpy`` (mirrors :func:`_compute_irradiance`'s
-    lazy import of ``irradiance_kernel``); tests monkeypatch this function directly.
-    """
+    """Prepare a thermal UV layer for Cycles baking."""
     from visionsim.simulate.heatsim import irradiance
 
     irradiance.prepare_object_bake_uv(obj)
@@ -838,27 +815,15 @@ def _sample_bilinear(pixels: np.ndarray, width: int, height: int, uv: np.ndarray
 
 
 def _texel_albedo(scene: Any, obj: Any, uv_at_texel: np.ndarray, texture_size: int) -> np.ndarray:
-    """Bilinear-sample ``obj``'s Cycles albedo bake at texel UV centers.
-
-    Reuses ``irradiance.bake_albedo_map`` - the same bake primitive
-    ``irradiance_kernel.get_or_bake_vertex_albedo`` reduces to per-vertex values - but
-    samples its ``(H, W, 3)`` pixel grid directly instead of averaging it down, so the
-    texel gets its own native-resolution albedo. On any bake failure every texel gets
-    albedo=0 (full absorption), the same fallback the per-vertex kernel path uses for a
-    missing bake.
-    """
+    """Sample a Cycles albedo bake at the thermal texel centers."""
     k = int(uv_at_texel.shape[0])
     if k == 0:
         return np.zeros(0, dtype=np.float64)
-    try:
-        from visionsim.simulate.heatsim import irradiance
+    from visionsim.simulate.heatsim import irradiance
 
-        baked = irradiance.bake_albedo_map(scene, obj, texture_size)
-    except Exception as exc:  # pragma: no cover - defensive, mirrors irradiance.py's style
-        _log.warning("[heatsim.adapter] '%s': albedo bake failed for texel sampling: %s", obj.name, exc)
-        baked = None
+    baked = irradiance.bake_albedo_map(scene, obj, texture_size)
     if baked is None or getattr(baked, "pixels", None) is None:
-        return np.zeros(k, dtype=np.float64)
+        raise RuntimeError(f"Albedo bake failed for {obj.name!r}")
     luma = _sample_bilinear(baked.pixels, int(baked.width), int(baked.height), uv_at_texel)
     return np.clip(luma, 0.0, 1.0)
 
@@ -872,22 +837,15 @@ def _texel_irradiance_cycles(
     DIFFUSE DIRECT+INDIRECT bake instead of the COLOR bake. Returns *incident* W/m^2;
     the caller applies (1 - albedo) to get absorbed flux.
 
-    On bake failure every texel gets 0 W/m^2 - the surface then simply holds its
-    initial temperature, which is the same failure mode as a missing Direct-Kernel
-    contribution and is preferable to inventing flux.
     """
     k = int(uv_at_texel.shape[0])
     if k == 0:
         return np.zeros(0, dtype=np.float64)
-    try:
-        from visionsim.simulate.heatsim import irradiance
+    from visionsim.simulate.heatsim import irradiance
 
-        baked = irradiance.bake_irradiance_map(scene, obj, texture_size, samples=samples)
-    except Exception as exc:  # pragma: no cover - defensive, mirrors irradiance.py's style
-        _log.warning("[heatsim.adapter] '%s': irradiance bake failed for texel sampling: %s", obj.name, exc)
-        baked = None
+    baked = irradiance.bake_irradiance_map(scene, obj, texture_size, samples=samples)
     if baked is None or getattr(baked, "pixels", None) is None:
-        return np.zeros(k, dtype=np.float64)
+        raise RuntimeError(f"Irradiance bake failed for {obj.name!r}")
     lum = _sample_bilinear(baked.pixels, int(baked.width), int(baked.height), uv_at_texel)
     return np.maximum(np.asarray(lum, dtype=np.float64) * CYCLES_LOUT_TO_IRRADIANCE, 0.0)
 
@@ -916,35 +874,11 @@ def _compute_irradiance_cycles(scene: Any, sim_objects: list, solver_cfg: dict, 
 def _compute_texel_irradiance(
     scene: Any, sim_objects: list, atlas_plan: AtlasPlan, solver_cfg: dict, defaults: dict
 ) -> dict:
-    """Per-texel Direct-Kernel irradiance for every atlas-participating object.
-
-    Returns ``{obj: (K,) float64 W/m^2 absorbed}``, keyed the same way as
-    :func:`_compute_irradiance`'s return value so both can feed the same
-    ``flux_by_obj`` dict into :func:`_combine`.
-
-    Builds the scene BVH backend exactly **once** per call (not once per atlas
-    object) and reuses it across every ``compute_irradiance_at_points`` call below
-    via that function's optional ``backend`` parameter -- with N atlas objects this
-    was previously N full scene BVH rebuilds. Also threads the same
-    ``direct_kernel_soft_shadow_rays`` knob :func:`_compute_irradiance` reads from
-    ``solver_cfg`` through to the texel kernel, so both irradiance paths use the
-    same shadow-ray sample count instead of the kernel's hardcoded default.
-    """
-    from visionsim.simulate.heatsim import bvh_backend, irradiance_kernel
+    """Return absorbed Cycles flux at each participating atlas texel."""
 
     texture_size = int(solver_cfg.get("irradiance_texture_size", 512))
-    n_samples_for_area = int(solver_cfg.get("direct_kernel_soft_shadow_rays", 8))
-    use_cycles = str(solver_cfg.get("irradiance_source", "DIRECT_KERNEL")).upper() == "CYCLES_BAKE"
     bake_samples = int(solver_cfg.get("bake_samples", 1024))
     by_name = {o.name: o for o in sim_objects}
-
-    # Only the Direct Kernel traces shadow rays; building a whole-scene BVH for the
-    # Cycles path costs a full build that is then never queried. Still built exactly
-    # once (pre-loop), not per object.
-    backend = None
-    if not use_cycles:
-        backend = bvh_backend.best_available()
-        backend.build_for_meshes(irradiance_kernel._collect_scene_meshes_world(scene))
 
     out: dict = {}
     for name, tex in atlas_plan.texels.items():
@@ -953,50 +887,24 @@ def _compute_texel_irradiance(
             continue
         if resolve_material(obj, defaults)["thermal_role"] == "DIRICHLET_SOURCE":
             continue  # mirrors compute_per_vertex_irradiance's own Dirichlet skip
-        positions = np.asarray(tex["position_mm"], dtype=np.float64)
-        normals = np.asarray(tex["normal"], dtype=np.float64)
         uv = np.asarray(tex["uv"], dtype=np.float64)
         albedo = _texel_albedo(scene, obj, uv, texture_size)
-        if use_cycles:
-            # Cycles bake gives INCIDENT irradiance; apply (1 - albedo) to match the
-            # Direct Kernel's absorbed-flux contract.
-            flux = _texel_irradiance_cycles(scene, obj, uv, texture_size, samples=bake_samples) * (1.0 - albedo)
-        else:
-            flux = irradiance_kernel.compute_irradiance_at_points(
-                scene, positions, normals, albedo, backend=backend, n_samples_for_area=n_samples_for_area
-            )
+        incident = _texel_irradiance_cycles(scene, obj, uv, texture_size, samples=bake_samples)
+        flux = incident * (1.0 - albedo)
+        if not np.all(np.isfinite(flux)):
+            raise RuntimeError(f"Non-finite absorbed flux for {obj.name!r}")
         out[obj] = np.asarray(flux, dtype=np.float64).reshape(-1)
     return out
 
 
 # ---------------------------------------------------------------------------
-# Direct-Kernel irradiance
+# Cycles irradiance
 # ---------------------------------------------------------------------------
 
 
 def _compute_irradiance(scene: Any, sim_objects: list, solver_cfg: dict, defaults: dict) -> dict:
-    """Run the Direct-Kernel and return ``{obj: (N,) float64 W/m^2 absorbed}``."""
-    if str(solver_cfg.get("irradiance_source", "DIRECT_KERNEL")).upper() == "CYCLES_BAKE":
-        return _compute_irradiance_cycles(scene, sim_objects, solver_cfg, defaults)
-
-    from visionsim.simulate.heatsim import irradiance_kernel
-
-    # SimpleNamespace surrogate for the addon's scene PropertyGroup (the kernel
-    # only reads these via getattr(..., default)). Sky occlusion defaults off so
-    # the kernel takes the unoccluded SH9 sky path (no per-vertex AO bake).
-    settings = SimpleNamespace(
-        irradiance_texture_size=int(solver_cfg.get("irradiance_texture_size", 512)),
-        enable_sky_occlusion=bool(solver_cfg.get("enable_sky_occlusion", False)),
-        sky_ao_min_for_bent=float(solver_cfg.get("sky_ao_min_for_bent", 0.02)),
-        direct_kernel_soft_shadow_rays=int(solver_cfg.get("direct_kernel_soft_shadow_rays", 8)),
-    )
-    raw = irradiance_kernel.compute_per_vertex_irradiance(scene, list(sim_objects), settings)
-    out: dict = {}
-    for obj, payload in raw.items():
-        flux = payload.get("vertex_flux") if isinstance(payload, dict) else payload
-        if flux is not None:
-            out[obj] = np.asarray(flux, dtype=np.float64).reshape(-1)
-    return out
+    """Return Cycles-baked absorbed flux at each vertex."""
+    return _compute_irradiance_cycles(scene, sim_objects, solver_cfg, defaults)
 
 
 # ---------------------------------------------------------------------------

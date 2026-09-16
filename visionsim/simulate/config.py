@@ -188,20 +188,6 @@ class ThermalConfig:
     """FEM domain: surface point cloud (recommended) or mesh"""
     laplacian_backend: Literal["ROBUST", "IGL"] = "ROBUST"
     """Laplacian backend"""
-    irradiance_source: Literal["DIRECT_KERNEL", "CYCLES_BAKE"] = "DIRECT_KERNEL"
-    """Where absorbed flux comes from.
-
-    ``DIRECT_KERNEL`` (default) is analytic: per-light form factors, Embree shadow rays
-    and a 9-coefficient SH sky. Fast, but it counts only objects of type ``LIGHT`` plus
-    the world sky, and models no indirect bounce -- so a scene lit by emissive geometry
-    (window planes, light portals, emissive fixture panels) receives no flux from its
-    actual light source.
-
-    ``CYCLES_BAKE`` bakes DIFFUSE DIRECT+INDIRECT per object instead, resolving emissive
-    meshes, indirect bounce, portals and HDRI transport. Prefer it whenever the scene's
-    real light source is not a lamp object. The symptom of the wrong choice is a room
-    that renders flat at its initial temperature while its RGB render is well lit.
-    """
     bake_samples: int = 1024
     """Cycles bake samples for the irradiance map (``CYCLES_BAKE`` only).
 
