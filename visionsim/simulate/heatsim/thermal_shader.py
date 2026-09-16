@@ -55,51 +55,12 @@ _KEY_CLAMP: str = "orig_sample_clamp"
 
 
 def _build_temperature_source_chain(nodes: Any, links: Any, new_node: Any = None, x0: float = -800.0, y0: float = 300.0) -> Any:
-    """Build the shared temperature-source node chain: today's per-vertex
-    ``sim_temperature`` -> ``heatsim_default_temperature`` fallback chain, extended with an
-    optional texture-atlas sample mixed in by validity.
+    """Return a temperature socket shared by the AOV and radiance shaders.
 
-    This is the single place both the gray-body radiance shader (:func:`_build_gray_body_material`)
-    and the ``temperature`` AOV (:func:`_append_temperature_aov_nodes`) read ``T_effective``
-    from, per the design spec's "extend at the source" requirement -- both consumers benefit
-    from the atlas without duplicating the mix logic.
-
-    Vertex-path chain (unchanged from before the atlas existed)::
-
-        T_vertex = default_T + (sim_temperature > 1) * (sim_temperature - default_T)
-
-    Atlas extension::
-
-        UVMap("HeatSim_Atlas_UV") -> ImageTexture(HeatSim_Temperature_Atlas, Non-Color,
-            Linear, CLIP) -> SeparateColor.Red = atlas temperature (Kelvin)
-        gate = ImageTexture.Alpha * Attribute(OBJECT, ATLAS_COVERAGE_PROP).Fac
-        T_effective = Mix(Factor=gate, A=T_vertex, B=atlas temperature)
-
-    ``gate`` is an explicit product of two independent zero-by-default signals: the atlas's
-    own per-texel validity (its alpha channel) AND an OBJECT-domain custom property this
-    module's callers stamp 1.0/0.0 on atlas-participant/non-participant meshes
-    (``adapter.write_frame_attributes``). Multiplying both in is deliberate belt-and-suspenders:
-    an object with no ``HeatSim_Atlas_UV`` UV layer at all makes the Attribute node fall back to
-    its type default ``(0, 0, 0)``, which samples the atlas image's origin texel -- if that
-    happened to be valid (alpha=1, real coverage for some OTHER object's tile), gating on alpha
-    alone would leak that neighbour's temperature onto this unrelated object. Gating on the
-    object-level property too keeps the mix factor exactly 0 for any non-participant regardless
-    of what pixel (0, 0) contains, and it is exactly 0 for every mesh whenever ``render_domain``
-    is ``"VERTEX"`` (the atlas is never built, so the property is never stamped and defaults to
-    0), which is what keeps that mode byte-identical to before the atlas existed.
-
-    Args:
-        nodes: The material node tree's ``.nodes`` collection.
-        links: The material node tree's ``.links`` collection.
-        new_node: Node-creation callable (``nodes.new`` by default); callers that need to
-            track newly-added nodes for rollback (see :func:`_append_temperature_aov_nodes`)
-            pass their own wrapper.
-        x0: X location of the leftmost (vertex-path) nodes.
-        y0: Y location of the vertex-path attribute nodes; the atlas extension is laid out
-            below it (more negative Y) so the two chains don't visually overlap.
-
-    Returns:
-        The output socket (float ``Value``) carrying the final, per-pixel ``T_effective``.
+    A valid vertex attribute overrides the object default. For atlas objects,
+    covered texels supply the value. Coverage is gated by both image alpha and
+    an object property: a mesh without atlas UVs must not sample another tile at
+    the default UV origin.
     """
     _new = new_node or nodes.new
 

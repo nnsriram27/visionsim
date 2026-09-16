@@ -43,19 +43,10 @@ _WM2_TO_WMM2 = 1.0e6    # divide: W/m^2 -> W/mm^2     (1000**2)
 
 
 def gather_meshes(scene: Any) -> list:
-    """Return the MESH objects that take part in the heat solve.
+    """Select visible, nonempty meshes enabled for thermal simulation.
 
-    A mesh participates when it is visible, renderable and (per-object) heat
-    simulation is enabled. Mirrors the filter at ``fem_adapter.py:2867,2875``;
-    a missing ``heat_simulation_enabled`` attribute defaults to ``True``.
-
-    Also un-shares each returned object's mesh datablock (see
-    :func:`_ensure_single_user_meshes`). This is the single choke point every
-    solve/atlas entry point pulls its object list from (:func:`solve_scene`,
-    and the adapter's TEXEL atlas-plan caller), so doing
-    it here guarantees it happens once, early, before any per-vertex attribute or atlas
-    UV layer is ever written for these objects - regardless of which of those three
-    paths runs first in a given ``prepare_thermal`` call.
+    Give linked duplicates independent mesh datablocks before writing UVs or
+    attributes so one object's thermal field cannot overwrite another's.
     """
     out: list = []
     for obj in scene.objects:
@@ -74,19 +65,7 @@ def gather_meshes(scene: Any) -> list:
 
 
 def _ensure_single_user_meshes(sim_objects: list) -> None:
-    """Give every object in ``sim_objects`` its own single-user mesh datablock.
-
-    Linked duplicates (multiple objects pointing at the same ``Mesh`` datablock, e.g.
-    Blender's Alt-D) share per-vertex attributes AND UV layers on that one datablock, so
-    writing ``sim_temperature``/the atlas UV layer for one object silently overwrites --
-    or is overwritten by -- every other object sharing it (last write wins). Copying the
-    mesh (``obj.data = obj.data.copy()``) whenever ``obj.data.users > 1`` makes each
-    object's write target independent.
-
-    Idempotent: once an object's mesh is single-user, ``users`` stays 1 on every later
-    call (e.g. repeated ``prepare_thermal`` calls on a long-lived RPyC service), so a
-    second pass over the same objects is a no-op.
-    """
+    """Copy shared mesh datablocks before object-specific thermal writes."""
     unshared = 0
     for obj in sim_objects:
         mesh = getattr(obj, "data", None)
@@ -215,11 +194,7 @@ def global_temperature_range(history: dict[str, Any], default_K: float) -> tuple
 def _extract_geometry(obj: Any) -> tuple | None:
     """``(verts_mm (N,3) float64, faces (M,3) int32, n_verts)`` for the evaluated
     mesh, or ``None`` if it has no geometry. Verts are world-space x 1000 (mm)
-    and quads are triangulated, matching ``fem_adapter._extract_mesh_data``.
-
-    The evaluated mesh's vertex order/count matches the Direct-Kernel irradiance
-    extraction (it uses the same ``foreach_get('co')`` path), so the returned
-    flux aligns index-for-index with these vertices.
+    and quads are triangulated. Cycles vertex bakes use these evaluated indices.
     """
     depsgraph = bpy.context.evaluated_depsgraph_get()
     mesh = obj.evaluated_get(depsgraph).data
@@ -1205,17 +1180,15 @@ def solve_scene(
 ) -> dict:
     """Cache-aware FEM heat solve for ``scene``.
 
-    On a cache hit the stored per-object ``(timesteps, vertices)`` history is
-    returned untouched. On a miss: gather meshes -> Direct-Kernel irradiance
-    (W/m^2 -> W/mm^2) -> combine -> ``HeatSimFEM.perform_gt_heat_simulation`` ->
-    split the combined history back per object -> write the cache.
+    A validated cache hit returns the stored per-object history. Otherwise the
+    scene is sampled, Cycles irradiance is baked, and the shared point-cloud
+    system is integrated before its history is split by object.
 
     When *atlas_plan* (from :func:`build_atlas_plan`) is supplied, its
     atlas-participating objects additionally get per-texel irradiance
     (:func:`_compute_texel_irradiance`) merged into the same ``flux_by_obj`` the
     per-vertex path already builds, and it is threaded through to :func:`_combine`'s
-    TEXEL branch. ``atlas_plan=None`` (the default) reproduces today's behaviour
-    exactly, including the cache key.
+    TEXEL branch. ``atlas_plan=None`` uses evaluated mesh vertices throughout.
 
     Returns ``{obj_name: (timesteps, vertices) ndarray}``.
     """
@@ -1229,11 +1202,7 @@ def solve_scene(
         "objects": sorted(o.name for o in sim_objects),
         "assignments": None if assignment is None else assignment.digest,
     }
-    # The "atlas" key is entirely ABSENT (not present-with-value-None) when no atlas is
-    # in play, so key_cfg's JSON -- and therefore the SHA1 cache key -- is byte-identical
-    # to before the atlas feature existed. Adding an "atlas": None entry here would still
-    # change the JSON (and thus every existing .heatsim cache's key) even though nothing
-    # about the solve changed; see solve_scene's docstring guarantee below.
+    # Atlas layout only affects the key when texel sampling is requested.
     if atlas_plan is not None:
         key_cfg["atlas"] = {
             "density": atlas_plan.density,

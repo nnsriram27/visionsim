@@ -1566,6 +1566,8 @@ class BlenderService(rpyc.Service):
         from visionsim.simulate.heatsim import adapter, cache
 
         source_digest = cache.source_identity(bpy.data)
+        if source_digest is None:
+            server_log.info("thermal: source scene cannot be identified safely; baking and solving afresh")
 
         defaults, solver_cfg, cache_root, assignment = self._thermal_config(
             initial_temperature_K=initial_temperature_K,

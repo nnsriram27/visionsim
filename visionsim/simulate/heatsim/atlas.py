@@ -1,25 +1,7 @@
-"""Thermal atlas: selection, tile allocation, shelf packing, and UV-space texel rasterization.
+"""Pure geometry for thermal atlas selection, packing, rasterization and padding.
 
-Pure geometry/allocation math on numpy arrays - **no bpy import, guarded or otherwise**. This
-module has to import and be testable without Blender; :mod:`visionsim.simulate.heatsim.adapter`
-is the only place that touches ``bpy`` objects and translates them into the arrays this
-module consumes.
-
-Why texels at all (see the design spec for the full argument): the thermal solver and shader both
-operate on mesh vertices today, and artist meshes are pathologically uneven - a 16-vertex floor
-spanning 80 m2 next to a 21k-vertex orchid. This module decouples both by giving area-dense
-objects a scene-wide **temperature atlas** tile sized by surface area (not vertex count), whose
-texel centers become simulation sample points and render lookup addresses simultaneously. Objects
-that are already sampled densely by their own vertices are excluded and keep the vertex path.
-
-Pipeline, in call order:
-
-1. :func:`surface_area_m2` + :func:`select_for_atlas` - per object, decide vertex-path vs. atlas.
-2. :func:`allocate` - size + shelf-pack tiles for every atlas-selected object into one atlas image.
-3. :func:`rasterize_tile` - per object, turn its tile-local UV triangles into texel samples
-   (position, normal, source face) for every covered texel.
-4. :func:`dilate` - after the solve, push valid texel values outward across the tile's invalid
-   margin so bilinear sampling at render time never reads an uninitialized texel.
+Sparse surfaces use covered texel centers as simulation points and render lookup
+addresses; dense surfaces can retain evaluated mesh vertices.
 """
 
 from __future__ import annotations

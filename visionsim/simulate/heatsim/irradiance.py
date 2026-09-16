@@ -500,28 +500,11 @@ def _image_to_vertex_irradiance(
 
 
 def _mesh_to_sample(obj):
-    """The mesh a bake's per-vertex reduction must be indexed against.
+    """Return the evaluated mesh used to index both Cycles vertex bakes.
 
-    Both bakes MUST use this. The solver builds its nodes from
-    ``adapter._extract_geometry``, which reads ``obj.evaluated_get(depsgraph).data`` --
-    modifiers applied. A bake that reduces against ``obj.data`` instead produces an array
-    sized to the pre-modifier vertex count, and ``_combine`` drops a flux array whose
-    length does not match the node count: the object then receives NO absorbed flux and
-    sits at its initial temperature, warmed only by conduction from its neighbours.
-
-    Measured on one 289-object interior before this was fixed: 229 objects (79%)
-    mismatched, and every one landed at +0.332-0.334 K regardless of the flux computed
-    for it, while the 60 aligned objects rose a median 13.3 K per unit flux. Two
-    instances of the same asset made it unmistakable -- 584 verts/584 nodes rose 33.8 K;
-    584 verts/9305 nodes rose 0.333 K on identical material and flux.
-
-    This lives in one function because the fix was originally applied to only one of the
-    two near-identical bake bodies, which silently reintroduced the same class of bug on
-    the albedo side: a mismatched albedo is discarded in favour of albedo=0, i.e. full
-    absorption, overestimating absorbed flux by up to ~4x on a light surface.
-
-    Falls back to ``obj.data`` when the evaluated mesh is unusable (no vertices, or no UV
-    layers to sample through).
+    Sampling a pre-modifier mesh would misalign baked flux and albedo with the
+    evaluated points passed to the solver. Fall back only when evaluated UVs or
+    geometry are unavailable.
     """
     try:
         depsgraph = bpy.context.evaluated_depsgraph_get()
