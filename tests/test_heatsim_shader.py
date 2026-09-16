@@ -18,11 +18,7 @@ def test_temperature_aov_registered(executable):
 
 
 def test_atlas_shader_group_samples_atlas_and_mixes_by_alpha(executable):
-    """Both temperature-source consumers (gray-body radiance and the AOV chain) must gain
-    the atlas UV -> Image Texture(Non-Color, Linear, CLIP) -> Mix-by-alpha extension, wired
-    from the SAME shared chain (one node group's worth of logic, not duplicated per-material
-    node trees) - see docs/superpowers/specs/2026-08-04-thermal-atlas-design.md §4.6.
-    """
+    """Temperature and radiance shaders read covered atlas values consistently."""
     code = r"""
 import bpy
 from visionsim.simulate.heatsim import thermal_shader as ts
@@ -59,8 +55,8 @@ def _check(nodes, links, label):
     mix_nodes = [n for n in nodes if n.bl_idname == 'ShaderNodeMix']
     assert mix_nodes, f'{label}: missing atlas Mix node'
     mix = next((n for n in mix_nodes if any(
-        link.to_socket == n.inputs['B'] and link.from_socket.name == 'Red'
-        for link in links
+        link.to_socket == n.inputs['B'] and link.from_node.type == 'MATH'
+        and link.from_node.operation == 'DIVIDE' for link in links
     )), None)
     assert mix is not None, f'{label}: missing temperature atlas Mix node'
     assert mix.data_type == 'FLOAT'
@@ -90,11 +86,15 @@ def _check(nodes, links, label):
         for node in gate_sources
     ), f'{label}: Mix Factor missing the object-level gate'
 
-    # Mix B traces back to a channel split of the Image Texture's Color output (the R channel).
+    # Divide filtered temperature by filtered coverage at atlas edges.
     b_link = next(link for link in links if link.to_socket == mix.inputs['B'])
-    sep = b_link.from_node
+    normalized = b_link.from_node
+    assert normalized.operation == 'DIVIDE'
+    sep = next(link.from_node for link in links if link.to_socket == normalized.inputs[0])
     assert sep.bl_idname == 'ShaderNodeSeparateColor'
     assert any(link.from_node in tex_nodes and link.to_node == sep for link in links)
+    assert any(link.from_node in tex_nodes and link.from_socket.name == 'Alpha'
+               and link.to_socket == normalized.inputs[1] for link in links)
 
 # -- Gray-body radiance material --------------------------------------------
 mat = ts._build_gray_body_material(1.0)
@@ -103,7 +103,8 @@ _check(mat.node_tree.nodes, mat.node_tree.links, 'gray-body')
 # pre-atlas temp_effective node.
 pow4 = next(n for n in mat.node_tree.nodes if n.bl_idname == 'ShaderNodeMath' and n.operation == 'POWER')
 mix = next(n for n in mat.node_tree.nodes if n.bl_idname == 'ShaderNodeMix' and any(
-    link.to_socket == n.inputs['B'] and link.from_socket.name == 'Red'
+    link.to_socket == n.inputs['B'] and link.from_node.type == 'MATH'
+    and link.from_node.operation == 'DIVIDE'
     for link in mat.node_tree.links
 ))
 assert any(
