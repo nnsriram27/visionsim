@@ -211,7 +211,7 @@ class ThermalConfig:
     device: Literal["cuda", "cpu"] = "cuda"
     """Torch device for the solve; falls back to cpu if cuda is unavailable"""
     # --- thermal atlas (texel-domain render) ---
-    render_domain: Literal["VERTEX", "TEXEL"] = "VERTEX"
+    render_domain: Literal["AUTO", "VERTEX", "TEXEL"] = "AUTO"
     """Where solved temperatures live for rendering: per-vertex (today's behavior, byte-identical)
     or in a shared texture atlas sampled per-pixel by the shader (denser surfaces, no reliance on
     mesh vertex density)."""

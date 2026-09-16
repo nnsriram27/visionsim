@@ -373,36 +373,11 @@ class _FakeMat:
         return self._always_set
 
 
-def test_write_frame_attributes_shape_mismatch_writes_constant_fill(caplog):
-    """Fix 2 / 0-K regression guard: a modifier changed the vertex count between the
-    evaluated mesh the FEM solve ran on (history's vertex axis) and the base mesh
-    (n_verts). The old behaviour dropped sim_temperature entirely -- absent, so the
-    shader's `sim_temperature > 1.0` validity gate falls through to
-    heatsim_default_temperature for the RADIANCE pass but the temperature AOV (which has
-    no such gate) emits 0 K. The fix must still fill a constant sim_temperature equal to
-    the mean of the solved field's final timestep, must not leave emissivity absent
-    either, and must warn (naming the object)."""
-    obj = _FakeObj("mismatched_mesh", n_verts=4)  # base mesh: 4 verts
-    final_row = [300.0, 302.0, 304.0, 306.0, 308.0, 310.0]  # solve-time (evaluated): 6
-    history = {"mismatched_mesh": np.array([[295.0] * 6, final_row])}
-
-    scene = _FakeScene([obj])
-    with caplog.at_level("WARNING"):
-        adapter.write_frame_attributes(scene, history, -1, _DEFAULTS)
-
-    # NOT absent -- this is the actual 0-K regression guard.
-    assert "sim_temperature" in obj.data.attributes
-    vals = [d.value for d in obj.data.attributes["sim_temperature"].data]
-    expected_mean = float(np.mean(final_row))
-    assert vals == pytest.approx([expected_mean] * 4)
-    assert expected_mean > _DEFAULTS["initial_temperature_K"]  # real heating preserved
-
-    # emissivity must not be left absent either (same reasoning).
-    assert "emissivity" in obj.data.attributes
-    eps = [d.value for d in obj.data.attributes["emissivity"].data]
-    assert eps == pytest.approx([_DEFAULTS["emissivity"]] * 4)
-
-    assert any("mismatched_mesh" in rec.message for rec in caplog.records)
+def test_write_frame_attributes_rejects_unsafe_vertex_mapping():
+    obj = _FakeObj("mismatched_mesh", n_verts=4)
+    history = {"mismatched_mesh": np.array([[295.0] * 6, [300.0, 302.0, 304.0, 306.0, 308.0, 310.0]])}
+    with pytest.raises(RuntimeError, match="mismatched_mesh.*cannot be written"):
+        adapter.write_frame_attributes(_FakeScene([obj]), history, -1, _DEFAULTS)
 
 
 def test_write_frame_attributes_missing_history_writes_fallback_fill():
@@ -516,8 +491,6 @@ service.exposed_prepare_thermal(
     atlas_tile_min=16,
     atlas_tile_max=64,
     atlas_texel_soft_max=500_000,
-    domain='POINTS',
-    laplacian_backend='ROBUST',
     device='cpu',
     sim_time_s=0.1,
     timestep_s=0.05,
@@ -610,8 +583,6 @@ service.exposed_prepare_thermal(
     atlas_tile_min=16,
     atlas_tile_max=64,
     atlas_texel_soft_max=500_000,
-    domain='POINTS',
-    laplacian_backend='ROBUST',
     device='cpu',
     sim_time_s=0.1,
     timestep_s=0.05,

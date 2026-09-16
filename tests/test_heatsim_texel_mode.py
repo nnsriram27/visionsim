@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import logging
 from types import SimpleNamespace
 
 import numpy as np
@@ -260,7 +259,7 @@ def _big_plane_geom(side_mm=10_000.0):
 _ATLAS_CFG = {"atlas_texel_density": 50.0, "atlas_tile_min": 16, "atlas_tile_max": 512, "atlas_texel_soft_max": 500_000}
 
 
-def test_uv_failure_demotes_to_vertex_path_with_warning(monkeypatch, caplog):
+def test_uv_failure_stops_atlas_solve(monkeypatch):
     good = _AtlasObj("good", 4)
     bad = _AtlasObj("bad", 4)
     geoms = {"good": _big_plane_geom(), "bad": _big_plane_geom()}
@@ -300,15 +299,8 @@ def test_uv_failure_demotes_to_vertex_path_with_warning(monkeypatch, caplog):
 
     monkeypatch.setattr(adapter, "_extract_evaluated_face_uv_and_slots", fake_uv)
 
-    with caplog.at_level(logging.WARNING):
-        plan = adapter.build_atlas_plan(scene=None, sim_objects=[good, bad], cfg=_ATLAS_CFG)
-
-    assert "good" in plan.texels
-    assert "bad" not in plan.texels
-    assert plan.texels["good"]["position_mm"].shape[0] > 0
-
-    messages = [rec.getMessage() for rec in caplog.records]
-    assert any("bad" in m and "demoted" in m for m in messages)
+    with pytest.raises(RuntimeError, match="bad.*HeatSim_Atlas_UV"):
+        adapter.build_atlas_plan(scene=None, sim_objects=[good, bad], cfg=_ATLAS_CFG)
 
 
 def test_build_atlas_plan_vertex_count_mismatch_no_longer_demotes(monkeypatch):
@@ -417,24 +409,6 @@ def _build_two_object_plan(monkeypatch, *, drop_second: bool):
     monkeypatch.setattr(adapter, "_extract_evaluated_face_uv_and_slots", fake_uv)
 
     return adapter.build_atlas_plan(scene=None, sim_objects=[obj_a, obj_b], cfg=_ATLAS_CFG)
-
-
-def test_atlas_digest_reflects_realized_texel_participation(monkeypatch):
-    """Finding 1 regression: `atlas.allocate` assigns tiles for both "obj_a" and "obj_b"
-    before rasterization runs, so the tile layout alone (name/size/offset) is identical
-    whether "obj_b" ends up contributing texels or gets dropped by a UV failure. The
-    digest must still differ, because a materially different simulation (one fewer
-    object's temperature actually solved into the atlas) must not silently reuse a
-    cached solve keyed on the allocation alone."""
-    plan_both = _build_two_object_plan(monkeypatch, drop_second=False)
-    plan_dropped = _build_two_object_plan(monkeypatch, drop_second=True)
-
-    assert "obj_a" in plan_both.texels and "obj_b" in plan_both.texels
-    assert "obj_a" in plan_dropped.texels and "obj_b" not in plan_dropped.texels
-    # Same objects, same density/config => same tile allocation either way.
-    assert plan_both.layout.tiles.keys() == plan_dropped.layout.tiles.keys()
-
-    assert plan_both.digest != plan_dropped.digest
 
 
 def test_atlas_digest_stable_across_identical_builds(monkeypatch):

@@ -23,7 +23,7 @@ def test_thermal_config_atlas_fields_dispatch_parity():
     omits the field.
     """
     cfg = ThermalConfig()
-    assert cfg.render_domain == "VERTEX"
+    assert cfg.render_domain == "AUTO"
     assert cfg.atlas_texel_density == 1500.0
     assert cfg.atlas_tile_min == 16
     assert cfg.atlas_tile_max == 512

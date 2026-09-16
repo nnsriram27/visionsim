@@ -1565,7 +1565,7 @@ class BlenderService(rpyc.Service):
         irradiance_texture_size: int = 512,
         device: Literal["cuda", "cpu"],
         assignments: str | None = None,
-        render_domain: Literal["VERTEX", "TEXEL"] = "VERTEX",
+        render_domain: Literal["AUTO", "VERTEX", "TEXEL"] = "AUTO",
         atlas_texel_density: float = 1500.0,
         atlas_tile_min: int = 16,
         atlas_tile_max: int = 512,
@@ -1591,9 +1591,10 @@ class BlenderService(rpyc.Service):
         self._thermal_assignment = assignment
 
         atlas_plan = None
-        if render_domain == "TEXEL":
+        if render_domain in {"AUTO", "TEXEL"}:
             sim_objects = adapter.gather_meshes(self.scene)
             atlas_cfg = {
+                "render_domain": render_domain,
                 "atlas_texel_density": atlas_texel_density,
                 "atlas_tile_min": atlas_tile_min,
                 "atlas_tile_max": atlas_tile_max,
@@ -1649,7 +1650,7 @@ class BlenderService(rpyc.Service):
         bake_samples: int = 1024,
         irradiance_texture_size: int = 512,
         device: Literal["cuda", "cpu"] = "cuda",
-        render_domain: Literal["VERTEX", "TEXEL"] = "VERTEX",
+        render_domain: Literal["AUTO", "VERTEX", "TEXEL"] = "AUTO",
         atlas_texel_density: float = 1500.0,
         atlas_tile_min: int = 16,
         atlas_tile_max: int = 512,
@@ -1731,7 +1732,18 @@ class BlenderService(rpyc.Service):
         self._thermal_temp_range = adapter.global_temperature_range(history, initial_temperature_K)
 
         if atlas_plan is not None and atlas_plan.texels:
-            atlas_path = adapter.write_atlas(history, atlas_plan, cache_root)
+            atlas_path = adapter.write_atlas(
+                history, atlas_plan, cache_root,
+                defaults={
+                    "initial_temperature_K": initial_temperature_K,
+                    "thermal_diffusivity_mm2_s": thermal_diffusivity_mm2_s,
+                    "density_kg_m3": density_kg_m3,
+                    "specific_heat_J_kgK": specific_heat_J_kgK,
+                    "emissivity": emissivity,
+                    "irradiance_scale": irradiance_scale,
+                },
+                assignment=self._thermal_assignment,
+            )
             self._thermal_load_pack_atlas_image(atlas_path)
 
         thermal_shader.setup_temperature_aov(self.scene, self.view_layer)
@@ -1752,7 +1764,7 @@ class BlenderService(rpyc.Service):
         bake_samples: int = 1024,
         irradiance_texture_size: int = 512,
         device: Literal["cuda", "cpu"] = "cuda",
-        render_domain: Literal["VERTEX", "TEXEL"] = "VERTEX",
+        render_domain: Literal["AUTO", "VERTEX", "TEXEL"] = "AUTO",
         atlas_texel_density: float = 1500.0,
         atlas_tile_min: int = 16,
         atlas_tile_max: int = 512,
@@ -1799,7 +1811,7 @@ class BlenderService(rpyc.Service):
         bake_samples: int = 1024,
         irradiance_texture_size: int = 512,
         device: Literal["cuda", "cpu"] = "cuda",
-        render_domain: Literal["VERTEX", "TEXEL"] = "VERTEX",
+        render_domain: Literal["AUTO", "VERTEX", "TEXEL"] = "AUTO",
         atlas_texel_density: float = 1500.0,
         atlas_tile_min: int = 16,
         atlas_tile_max: int = 512,

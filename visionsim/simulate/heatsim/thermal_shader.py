@@ -262,7 +262,35 @@ def _build_emissivity_source_chain(nodes: Any, links: Any, x0: float, y0: float)
     eps_clamped.inputs["Min"].default_value = 0.0
     eps_clamped.inputs["Max"].default_value = 1.0
     links.new(eps_eff.outputs["Value"], eps_clamped.inputs["Value"])
-    return eps_clamped.outputs["Result"]
+
+    atlas_uv = nodes.new("ShaderNodeAttribute")
+    atlas_uv.attribute_name = ATLAS_UV_LAYER_NAME
+    atlas_uv.attribute_type = "GEOMETRY"
+    atlas_tex = nodes.new("ShaderNodeTexImage")
+    atlas_tex.image = bpy.data.images.get(ATLAS_IMAGE_NAME) if bpy is not None else None
+    atlas_tex.interpolation = "Closest"
+    atlas_tex.extension = "CLIP"
+    links.new(atlas_uv.outputs["Vector"], atlas_tex.inputs["Vector"])
+    atlas_channels = nodes.new("ShaderNodeSeparateColor")
+    links.new(atlas_tex.outputs["Color"], atlas_channels.inputs["Color"])
+
+    coverage = nodes.new("ShaderNodeAttribute")
+    coverage.attribute_name = ATLAS_COVERAGE_PROP
+    coverage.attribute_type = "OBJECT"
+    alpha_valid = nodes.new("ShaderNodeMath")
+    alpha_valid.operation = "GREATER_THAN"
+    alpha_valid.inputs[1].default_value = 0.5
+    links.new(atlas_tex.outputs["Alpha"], alpha_valid.inputs[0])
+    gate = nodes.new("ShaderNodeMath")
+    gate.operation = "MULTIPLY"
+    links.new(alpha_valid.outputs["Value"], gate.inputs[0])
+    links.new(coverage.outputs["Fac"], gate.inputs[1])
+    mix = nodes.new("ShaderNodeMix")
+    mix.data_type = "FLOAT"
+    links.new(gate.outputs["Value"], mix.inputs["Factor"])
+    links.new(eps_clamped.outputs["Result"], mix.inputs["A"])
+    links.new(atlas_channels.outputs["Green"], mix.inputs["B"])
+    return mix.outputs["Result"]
 
 
 def _build_gray_body_material(radiance_scale: float) -> Any:

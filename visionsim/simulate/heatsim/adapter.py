@@ -279,6 +279,20 @@ def _extract_geometry(obj: Any) -> tuple | None:
     return verts, faces, n_verts
 
 
+def _vertex_writeback_matches(obj: Any, evaluated_mm: np.ndarray) -> bool:
+    """Require base vertex indices to match the evaluated solve points."""
+    vertices = obj.data.vertices
+    if len(vertices) != len(evaluated_mm):
+        return False
+    if not hasattr(vertices, "foreach_get"):
+        return True  # Simple test meshes do not expose Blender's bulk API.
+    local = np.empty((len(vertices), 3), dtype=np.float64)
+    vertices.foreach_get("co", local.reshape(-1))
+    world = np.asarray(obj.matrix_world, dtype=np.float64)
+    base_mm = ((local @ world[:3, :3].T) + world[:3, 3]) * _M_TO_MM
+    return bool(np.allclose(base_mm, evaluated_mm, rtol=0.0, atol=1e-5))
+
+
 # ---------------------------------------------------------------------------
 # Thermal atlas (texel-sim) build
 # ---------------------------------------------------------------------------
@@ -485,32 +499,10 @@ def _write_atlas_uv_layer(obj: Any, tile: atlas.TileSpec, atlas_size: tuple, src
 
 
 def build_atlas_plan(scene: Any, sim_objects: list, cfg: dict) -> AtlasPlan:
-    """Select, size and rasterize the thermal atlas for ``sim_objects``.
-
-    Per §4.1-4.2 of the design spec: an object joins the atlas iff its native vertex
-    density is below ``cfg['atlas_texel_density']`` (:func:`atlas.select_for_atlas`);
-    joining objects get a tile sized by surface area (:func:`atlas.allocate`) and
-    rasterized into texel sample points (:func:`atlas.rasterize_tile`) using the
-    object's bake UV (created/unwrapped by the existing hardened
-    ``irradiance.prepare_object_bake_uv`` machinery).
-
-    Rasterization is fully EVALUATED-mesh based: the atlas UV layer is written to the
-    BASE mesh (so Bevel/EdgeSplit/Geometry-Nodes modifier stacks propagate it), the
-    depsgraph is forced to re-evaluate, and both the triangle geometry (from
-    :func:`_extract_geometry`) and the UVs/material indices used to rasterize (from
-    :func:`_extract_evaluated_face_uv_and_slots`) are read from that SAME evaluated
-    mesh - so a mismatch between the base mesh's vertex count and the evaluated
-    geometry's (Bevel, Geometry Nodes, EdgeSplit, ...) is no longer meaningful and no
-    longer demotes the object. A temperature atlas is UV-addressed, not
-    vertex-addressed, so it does not care how many vertices the base mesh has.
-
-    An object is demoted to the vertex path (excluded from the returned plan's
-    ``texels``, with a warning - never raised) when: its bake-UV prep fails to produce
-    a usable UV layer, the modifier stack drops the atlas UV layer entirely (some
-    Geometry Nodes setups do), or its UV triangulation doesn't match the evaluated
-    geometry's triangle count. Every check degrades gracefully; this function never
-    raises for a per-object failure.
-    """
+    """Select and rasterize thermal solve points on evaluated mesh surfaces."""
+    mode = str(cfg.get("render_domain", "AUTO")).upper()
+    if mode not in {"AUTO", "TEXEL"}:
+        raise ValueError(f"Unsupported atlas representation {mode!r}")
     density = float(cfg.get("atlas_texel_density", 1500.0))  # keep in sync with ThermalConfig.atlas_texel_density
     tile_min = int(cfg.get("atlas_tile_min", 16))
     tile_max = int(cfg.get("atlas_tile_max", 512))
@@ -526,15 +518,27 @@ def build_atlas_plan(scene: Any, sim_objects: list, cfg: dict) -> AtlasPlan:
         verts, faces, n = geom
         geoms[obj.name] = (obj, verts, faces, n)
         area_m2 = atlas.surface_area_m2(verts, faces)
-        # `n` is the EVALUATED vertex count `_extract_geometry` just read; the per-vertex
-        # write-back path (`write_frame_attributes`) can only write onto the BASE mesh
-        # (`obj.data.vertices`). When a topology-changing modifier (Bevel, Subdivision,
-        # Geometry Nodes, ...) makes those counts differ, write-back is structurally
-        # impossible regardless of how dense the object already looks, so the density
-        # rule doesn't apply - force atlas participation instead of silently discarding
-        # the solved field later.
-        writeback_possible = len(obj.data.vertices) == n
-        if atlas.select_for_atlas(n, area_m2, density, writeback_possible=writeback_possible):
+        writeback_possible = _vertex_writeback_matches(obj, verts)
+        if area_m2 <= 0:
+            if mode == "TEXEL" or not writeback_possible:
+                raise ValueError(f"{obj.name!r} has no nondegenerate surface for thermal atlas sampling")
+            retained_vertex_count += n
+            continue
+        triangles = verts[faces]
+        triangle_areas = 0.5 * np.linalg.norm(
+            np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0]), axis=1
+        ) / 1e6
+        coarse_face = bool(np.max(triangle_areas) * density > 4.0)
+        use_atlas = mode == "TEXEL" or coarse_face or atlas.select_for_atlas(
+            n, area_m2, density, writeback_possible=writeback_possible
+        )
+        _log.info(
+            "thermal: %s uses %s samples (area %.3g m², %d evaluated vertices, "
+            "vertex write-back %s, largest triangle %.3g m²)",
+            obj.name, "TEXEL" if use_atlas else "VERTEX", area_m2, n,
+            "safe" if writeback_possible else "unsafe", float(np.max(triangle_areas)),
+        )
+        if use_atlas:
             areas[obj.name] = area_m2
         else:
             retained_vertex_count += n
@@ -549,7 +553,7 @@ def build_atlas_plan(scene: Any, sim_objects: list, cfg: dict) -> AtlasPlan:
         obj, verts, faces, _n = geoms[name]
         tile = layout.tiles.get(name)
         if tile is None:
-            continue
+            raise RuntimeError(f"No thermal atlas tile was allocated for {name!r}")
 
         # Write the atlas UV layer onto the BASE mesh first (so Bevel/EdgeSplit/GN
         # modifiers propagate it) and force a depsgraph update, then read triangles'
@@ -560,20 +564,10 @@ def build_atlas_plan(scene: Any, sim_objects: list, cfg: dict) -> AtlasPlan:
         _write_atlas_uv_layer(obj, tile, layout.atlas_size, BAKE_UV_LAYER_NAME)
         uv_result = _extract_evaluated_face_uv_and_slots(obj, ATLAS_UV_LAYER_NAME)
         if uv_result is None:
-            _log.warning(
-                "[heatsim.adapter] '%s': %s unavailable on the evaluated mesh (bake-UV unwrap "
-                "failed, or the modifier stack dropped the named layer); demoted from the atlas "
-                "to the per-vertex path.", name, ATLAS_UV_LAYER_NAME,
-            )
-            continue
+            raise RuntimeError(f"{name!r}: evaluated mesh has no usable {ATLAS_UV_LAYER_NAME} layer")
         atlas_loop_uv, face_material_index = uv_result
         if atlas_loop_uv.shape[0] != faces.shape[0]:
-            _log.warning(
-                "[heatsim.adapter] '%s': UV triangulation (%d tris) does not match evaluated "
-                "geometry (%d tris); demoted from the atlas to the per-vertex path.",
-                name, atlas_loop_uv.shape[0], faces.shape[0],
-            )
-            continue
+            raise RuntimeError(f"{name!r}: thermal UV and evaluated mesh triangulations differ")
 
         # `atlas_loop_uv` is already atlas-global [0,1] (written by _write_atlas_uv_layer
         # as `(tile.offset + bake_uv * tile.size) / atlas_size`); invert that remap back to
@@ -588,11 +582,7 @@ def build_atlas_plan(scene: Any, sim_objects: list, cfg: dict) -> AtlasPlan:
 
         raster = atlas.rasterize_tile(verts, faces, loop_uv, tile.size)
         if raster["xy"].shape[0] == 0:
-            _log.warning(
-                "[heatsim.adapter] '%s': atlas tile rasterized zero texels; "
-                "demoted from the atlas to the per-vertex path.", name,
-            )
-            continue
+            raise RuntimeError(f"{name!r}: thermal atlas rasterized no solve points")
 
         uv_at_texel = np.empty((raster["xy"].shape[0], 2), dtype=np.float64)
         uv_at_texel[:, 0] = (raster["xy"][:, 0].astype(np.float64) + 0.5) / tw
@@ -688,7 +678,10 @@ def _scatter_atlas_arrays(history: dict, atlas_plan: AtlasPlan) -> tuple[np.ndar
     return temp_dilated, alpha
 
 
-def write_atlas(history: dict, atlas_plan: AtlasPlan, cache_root: Path) -> Path:
+def write_atlas(
+    history: dict, atlas_plan: AtlasPlan, cache_root: Path,
+    defaults: dict | None = None, assignment: Any | None = None,
+) -> Path:
     """Write the final-timestep texel temperatures to a 32-bit float EXR atlas image.
 
     Scatters every atlas-participating object's LAST solved timestep into the shared atlas
@@ -724,9 +717,31 @@ def write_atlas(history: dict, atlas_plan: AtlasPlan, cache_root: Path) -> Path:
     else:
         temp_dilated, alpha = _scatter_atlas_arrays(history, atlas_plan)
 
+    emissivity_history: dict[str, np.ndarray] = {}
+    for name, tex in atlas_plan.texels.items():
+        count = len(tex["xy"])
+        eps = np.full(count, 0.9, dtype=np.float64)
+        if defaults is not None:
+            obj = next((o for o in bpy.context.scene.objects if o.name == name), None)
+            if obj is None:
+                raise RuntimeError(f"Thermal atlas object {name!r} is missing from the scene")
+            material = resolve_material(obj, defaults)
+            eps.fill(float(material["emissivity"]))
+            if assignment is not None:
+                per_face = materials.resolve_face_materials(
+                    obj, assignment, material, np.asarray(tex["face_material_index"], dtype=np.int64)
+                )
+                if per_face is not None:
+                    eps = np.asarray(per_face["eps"], dtype=np.float64)[np.asarray(tex["face"], dtype=np.int64)]
+        emissivity_history[name] = eps[None, :]
+    emissivity = (
+        _scatter_atlas_arrays(emissivity_history, atlas_plan)[0]
+        if emissivity_history else np.zeros((height, width), dtype=np.float64)
+    )
+
     rgba: np.ndarray = np.zeros((height, width, 4), dtype=np.float32)
     rgba[..., 0] = temp_dilated
-    rgba[..., 1] = temp_dilated
+    rgba[..., 1] = emissivity
     rgba[..., 2] = temp_dilated
     rgba[..., 3] = alpha
 
@@ -1433,28 +1448,12 @@ def write_frame_attributes(
 
         arr = np.asarray(hist)
         n = len(mesh.vertices)
-        if arr.ndim != 2 or arr.shape[0] == 0 or arr.shape[1] != n:
-            # Topology mismatch: a modifier changed the vertex count between the
-            # evaluated mesh the FEM solve ran on (``hist``'s vertex axis) and this base
-            # mesh (``n`` verts) sim_temperature must live on -- or the history is
-            # otherwise empty/malformed. Per-vertex write-back is structurally impossible
-            # either way, but the field itself is real, so constant-fill sim_temperature
-            # at the mean of its final timestep (preserves the actual heating) instead of
-            # collapsing to ambient, and instead of leaving the attribute absent (which
-            # would render as 0 K -- worse than either).
-            obj["heatsim_default_temperature"] = _fallback_temperature_K(obj, defaults, default_T)
-            if arr.ndim == 2 and arr.shape[0] > 0 and arr.shape[1] > 0:
-                fill_T = float(np.mean(np.asarray(arr[timestep], dtype=np.float64)))
-            else:
-                fill_T = _fallback_temperature_K(obj, defaults, default_T)
-            _log.warning(
-                "[heatsim.adapter] '%s': solved history has %d vertex-axis entries but the "
-                "base mesh has %d vert(s) (a modifier changed the vertex count); per-vertex "
-                "sim_temperature detail was replaced by a constant fill (%.2f K).",
-                obj.name, arr.shape[1] if arr.ndim == 2 else -1, n, fill_T,
-            )
-            _write_constant_fill_attributes(obj, mesh, defaults, assignment, fill_T)
-            continue
+        if arr.ndim != 2 or arr.shape[0] == 0 or arr.shape[1] != n or not np.isfinite(arr).all():
+            raise RuntimeError(f"{obj.name!r}: solved vertex field cannot be written to the base mesh")
+        if bpy is not None:
+            geometry = _extract_geometry(obj)
+            if geometry is None or not _vertex_writeback_matches(obj, geometry[0]):
+                raise RuntimeError(f"{obj.name!r}: evaluated vertices cannot be safely written to the base mesh")
 
         row = np.asarray(arr[timestep], dtype=np.float32).reshape(-1)
         _write_point_float_attr(mesh, "sim_temperature", row)

@@ -405,8 +405,8 @@ class HeatSimFEM:
         L = -L_psd
         if alpha_vec is not None:
             alpha = np.asarray(alpha_vec, dtype=np.float64).reshape(-1)
-            if alpha.shape != (len(points),) or not np.isfinite(alpha).all() or np.any(alpha <= 0):
-                raise ValueError("Thermal diffusivity must be positive and match the point count")
+            if alpha.shape != (len(points),) or not np.isfinite(alpha).all() or np.any(alpha < 0):
+                raise ValueError("Thermal diffusivity must be nonnegative and match the point count")
             L = self._apply_vertex_weighted_laplacian(L, alpha)
         return tuple(scipy_to_torch_sparse(matrix, self.device) for matrix in (L, M, M))
 
