@@ -7,13 +7,11 @@ The thermal solve is performed once for the scene; camera animation does not mov
 or reheat the simulated geometry. Moving/deforming thermal geometry and per-frame
 thermal solves are outside the supported workflow.
 
-The retained pipeline samples scene surfaces at either evaluated mesh vertices or
+The thermal pipeline samples scene surfaces at either evaluated mesh vertices or
 thermal atlas texels, bakes incoming light and albedo with Cycles, and integrates
 heat on a robust point-cloud Laplacian [1]_. The two representations use the same
-physics. The old analytic direct-light path, SH9 sky approximation, mesh-domain
-solver, and animated thermal solver are no longer available. Cycles uses the
-scene's world and lights, including environment textures supported by Blender;
-no HDRI is required.
+physics. Cycles uses the scene's world and lights, including environment
+textures supported by Blender; no HDRI is required.
 
 Quick start
 -----------

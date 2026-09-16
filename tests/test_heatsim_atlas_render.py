@@ -1,10 +1,4 @@
-"""Tests for Task 3: the atlas EXR writer (``adapter.write_atlas``) and the render-time
-plumbing that loads/packs it. Both node-graph shader tests and the
-``render_domain="TEXEL"`` config-dispatch parity tests live in sibling files
-(``tests/test_heatsim_shader.py``, ``tests/test_heatsim_config.py``); this file covers
-the writer itself and the ``write_frame_attributes``/``global_temperature_range`` TEXEL
-behavior specified in the Task 3 brief.
-"""
+"""Atlas storage and render integration tests."""
 
 from __future__ import annotations
 
@@ -157,11 +151,6 @@ print('ATLAS_RESULT_IDENTITY_OK')
 """
     out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True, check=False)
     assert "ATLAS_RESULT_IDENTITY_OK" in out.stdout, out.stdout + "\n" + out.stderr
-
-
-# ---------------------------------------------------------------------------
-# F3: dilation must not bridge the inter-tile packing padding (pure numpy, no bpy).
-# ---------------------------------------------------------------------------
 
 
 def test_scatter_atlas_arrays_dilation_does_not_bridge_inter_tile_padding():
@@ -335,10 +324,7 @@ def test_write_frame_attributes_vertex_mode_unaffected_by_atlas_plan_none():
 
 
 def test_write_frame_attributes_atlas_participant_clears_stale_vertex_attrs():
-    """F1: a VERTEX->TEXEL mode switch on a long-lived service must not let a
-    pre-existing (stale) per-vertex sim_temperature/emissivity attribute bleed through
-    atlas holes -- the shader's vertex-path fallback treats sim_temperature > 1.0 as
-    valid, so a leftover attribute would win over the fresh OBJECT-level fallback."""
+    """Switching to TEXEL clears vertex attributes left by a prior solve."""
     atlas_obj = _FakeObj("atlas_mesh", n_verts=3)
     # Simulate a prior VERTEX-mode run: stale per-vertex attributes already present.
     atlas_obj.data.attributes.new(name="sim_temperature", type="FLOAT", domain="POINT")
@@ -360,10 +346,7 @@ def test_write_frame_attributes_atlas_participant_clears_stale_vertex_attrs():
 
 
 def test_write_frame_attributes_vertex_mode_clears_stale_atlas_coverage_gate():
-    """F4: a TEXEL->VERTEX mode switch must clear a stale heatsim_atlas_coverage=1.0
-    object property left by a prior TEXEL run -- otherwise the shader's atlas mix gate
-    (stale alpha * stale coverage) can stay open and select stale atlas texels over the
-    fresh per-vertex temperatures written this call."""
+    """Switching to VERTEX clears coverage left by a prior atlas solve."""
     obj = _FakeObj("mesh", n_verts=2)
     obj["heatsim_atlas_coverage"] = 1.0  # left over from a prior TEXEL run
     history = {"mesh": np.array([[295.0, 295.0], [305.0, 306.0]])}
@@ -446,24 +429,6 @@ def test_atlas_participants_still_have_no_vertex_attribute():
     assert "sim_temperature" not in atlas_obj.data.attributes
     assert "emissivity" not in atlas_obj.data.attributes
     assert atlas_obj["heatsim_default_temperature"] == pytest.approx(295.0)
-
-
-# ---------------------------------------------------------------------------
-# global_temperature_range already pools whatever is in `history`, TEXEL entries included
-# (they arrive there via the same _split_history/solve_scene path as VERTEX entries) --
-# this locks that behavior explicitly rather than relying on it being incidental.
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# End-to-end integration: drive the real BlenderService.exposed_prepare_thermal /
-# exposed_include_thermal with render_domain="TEXEL". Not one of the brief's named
-# fake-bpy tests, but the unit tests above (write_atlas, write_frame_attributes, the
-# shader node graph) each exercise one piece in isolation -- this closes the gap the
-# same way test_heatsim_animated.py's BlenderService-driven test does for the animated
-# path, catching a real orchestration mismatch between _thermal_solve/write_atlas/the
-# atlas-image load+pack/setup_temperature_aov that no single-function test would see.
-# ---------------------------------------------------------------------------
 
 
 def test_prepare_and_include_thermal_texel_mode_end_to_end(executable, tmp_path):
@@ -570,10 +535,7 @@ print('TEXEL_E2E_OK')
 
 
 def test_prepare_thermal_texel_static_branch_keeps_dirichlet_reservoir_fallback(executable, tmp_path):
-    """F2: exposed_prepare_thermal's static (non-animated) branch must stamp
-    heatsim_default_temperature (ambient) BEFORE write_frame_attributes runs, not after --
-    otherwise the stamp clobbers the Dirichlet-reservoir fallback write_frame_attributes
-    just set for a DIRICHLET_SOURCE atlas object back down to ambient."""
+    """Atlas Dirichlet fallback survives default-temperature stamping."""
     code = f"""
 import bpy
 from visionsim.simulate.heatsim import register

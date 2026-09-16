@@ -84,24 +84,7 @@ def prepare_object_bake_uv(obj: bpy.types.Object) -> None:
     if obj is None or obj.type != "MESH":
         return
     mesh = obj.data
-    # NOTE: test `is None`, not truthiness. `mesh.uv_layers` on a mesh carrying zero UV
-    # layers is an EMPTY collection, which is falsy -- so a truthiness check bailed out on
-    # exactly the meshes that need a bake UV created, while the very next block
-    # (`uv_layers.new(...)` + Smart Project) exists to create one from scratch.
-    #
-    # The cost was severe and entirely silent. An object with no authored UVs never got
-    # HeatSim_Bake_UV, so `_write_atlas_uv_layer` had no source layer, HeatSim_Atlas_UV was
-    # never written, and `adapter.build_atlas_plan` demoted the object from the atlas to the
-    # per-vertex path. There, if a modifier changed the vertex count (Subsurf, Solidify,
-    # ...), per-vertex write-back is structurally impossible, so `write_frame_attributes`
-    # constant-filled the whole object at the MEAN of its solved field.
-    #
-    # Measured on visionsim50/diningroom (289 objects, 85% with no authored UVs):
-    # 259 selected for the atlas, 231 demoted for a missing UV layer, 229 then
-    # constant-filled -- each rendering as ONE flat value. That is why every chair showed a
-    # different uniform temperature, and why officebuilding's floor (Cube.006, base 68 verts
-    # vs 408 evaluated) rendered as a flat 330.74 K plateau while its solved field actually
-    # spanned 295.8-445.8 K with a 33 K standard deviation.
+    # An empty UV collection is falsy but still supports creating a bake layer.
     if mesh is None or getattr(mesh, "uv_layers", None) is None:
         return
     # Skip degenerate (zero-geometry) meshes: an empty object has no albedo to
@@ -692,23 +675,9 @@ def bake_irradiance_map(scene, obj, texture_size: int, samples: int | None = Non
     with COLOR off, so the result is incoming light *independent of surface colour* -
     irradiance, not radiosity.
 
-    Why this exists: the analytic Direct Kernel counts only objects of type ``LIGHT``
-    plus a world sky term. A scene lit by *emissive geometry* - the standard way an
-    interior is daylit, e.g. visionsim50/classroom's ``dayLight_portal`` material at
-    emission strength 20 across 6.17 m2 of windows - therefore receives no thermal flux
-    from its actual light source, and the kernel models no indirect bounce either.
-    Cycles resolves emissive meshes, bounce, portals and HDRI transport for free.
-
-    Cost is close to the albedo bake already run per object: both are dominated by UV
-    setup, texture allocation and BVH build rather than ray tracing. Measured on
-    classroom at 512px/128spp: 0.95 s/object COLOR vs 0.97 s/object DIRECT+INDIRECT.
-
-    ``vertex_flux`` is per-vertex irradiance in W/m2; Cycles bakes outgoing radiance so
-    it is scaled by ``CYCLES_LOUT_TO_IRRADIANCE`` (= pi).
-
-    NOTE: this is *incident* flux. The solver wants *absorbed* flux, so the caller
-    applies (1 - albedo) - see ``adapter._compute_irradiance_cycles``. The Direct
-    Kernel returns absorbed flux directly; that is the one contract difference.
+    Cycles includes emissive geometry, indirect lighting and world illumination.
+    ``vertex_flux`` is incident W/m²; the caller multiplies by ``1 - albedo``
+    to obtain absorbed flux.
     """
     if obj.type != "MESH":
         return None
@@ -746,16 +715,7 @@ def bake_irradiance_map(scene, obj, texture_size: int, samples: int | None = Non
     prev_selection = [o for o in scene.objects if o.select_get()]
     uv_override_state: _BakeMaterialUVOverride | None = None
 
-    # Bake sampling is deliberately overridden rather than inherited. The dataset's
-    # blends ship `samples=256` with adaptive sampling at threshold 0.05 - five times
-    # looser than Blender's 0.01 default - so adaptive terminates texels far below the
-    # nominal cap. Measured on visionsim50/diningroom that leaves 9.6-19.2% relative
-    # noise per texel; a steady-state surface sits at T ~ (E/(eps*sigma))^(1/4), so that
-    # is ~2.4-4.8% in T, i.e. several-Kelvin blotches across the temperature field.
-    # Adaptive is switched OFF, not merely tightened: at a matched cap it measured
-    # WORSE than fixed sampling (4.17% vs 3.06%) because it still cuts texels short.
-    # Denoising is deliberately NOT touched - it provably does nothing for a bake
-    # (output identical to four decimals with it on and off), unlike a rendered pass.
+    # Use the configured sample count for every bake texel, regardless of scene settings.
     cycles = getattr(scene, "cycles", None)
     prev_sampling = None
     if cycles is not None and samples is not None:

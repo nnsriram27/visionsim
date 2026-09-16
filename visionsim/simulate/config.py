@@ -186,40 +186,19 @@ class ThermalConfig:
     timestep_s: float = 0.05
     """Solver timestep in seconds"""
     bake_samples: int = 1024
-    """Cycles bake samples for the irradiance map (``CYCLES_BAKE`` only).
-
-    Adaptive sampling is disabled for the bake, so this is a true per-texel sample count
-    rather than a cap. It is set here rather than inherited from the blend because
-    production blends are tuned for a look, often with a loose adaptive threshold that
-    terminates texels well below the nominal cap -- fine for an image, not for a physical
-    input, since baked irradiance noise propagates into the temperature field.
-
-    A steady-state surface sits at ``T ~ (E/(eps*sigma))**0.25``, so a relative error in
-    irradiance appears as roughly a quarter of that in temperature. Noise falls as
-    ``1/sqrt(N)``, so quadrupling this buys a little under half the noise. Denoising does
-    not apply to a bake; sample count is the only lever.
-    """
+    """Cycles irradiance bake samples; adaptive sampling is disabled."""
     irradiance_texture_size: int = 512
-    """Resolution of the Cycles bakes, in pixels per side (square).
-
-    Governs both the albedo bake and, under ``CYCLES_BAKE``, the irradiance bake. This is
-    the *spatial detail* of the baked flux, as distinct from ``bake_samples``, which is its
-    *noise*: more samples make a smoother bake at the same resolution, and cannot recover
-    detail the resolution never captured. A large surface unwrapped into one 512px tile
-    gets few texels per square metre however many samples you throw at it, so raise this
-    for scenes with big floors, walls or ceilings. Cost is quadratic in this value.
-    """
+    """Width and height of the square Cycles albedo and irradiance bakes."""
     device: Literal["cuda", "cpu"] = "cuda"
     """Torch device for the solve; falls back to cpu if cuda is unavailable"""
     # --- thermal atlas (texel-domain render) ---
     render_domain: Literal["AUTO", "VERTEX", "TEXEL"] = "AUTO"
-    """Where solved temperatures live for rendering: per-vertex (today's behavior, byte-identical)
-    or in a shared texture atlas sampled per-pixel by the shader (denser surfaces, no reliance on
-    mesh vertex density)."""
+    """AUTO selects texels for coarse surfaces and vertices for suitable dense meshes.
+
+    TEXEL forces atlas sampling; VERTEX forces mesh-vertex sampling.
+    """
     atlas_texel_density: float = 1500.0
-    """Target texels/m^2 for atlas-eligible objects (those whose native vertex density is below
-    this). Provisional default pending an in-render timing benchmark (see the design spec's
-    validation plan); tune down for large/slow scenes."""
+    """Target solve texels per square metre on atlas-selected surfaces."""
     atlas_tile_min: int = 16
     """Minimum atlas tile side, in texels (per object)."""
     atlas_tile_max: int = 512

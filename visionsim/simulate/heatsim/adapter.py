@@ -155,8 +155,7 @@ _PREVIEW_PCT_HIGH = 99.0
 def global_temperature_range(history: dict[str, Any], default_K: float) -> tuple[float, float]:
     """Robust global colormap range ``(tmin, tmax)`` in Kelvin over the solved scene.
 
-    Spans the **final-timestep** temperatures of every solved object (M1 renders
-    the final state on every frame), so the thermal preview colormap covers the
+    Spans the final temperatures of every solved object, so the preview covers the
     actual data instead of a fixed 295-400 K band. To keep a few artifact-hot
     vertices from destroying the exposure, the bounds are the **1st and 99th
     percentiles** of the pooled final-timestep temperatures rather than the raw
@@ -409,15 +408,9 @@ def _extract_evaluated_face_uv_and_slots(obj: Any, uv_layer_name: str) -> tuple 
 def _write_atlas_uv_layer(obj: Any, tile: atlas.TileSpec, atlas_size: tuple, src_layer_name: str) -> None:
     """Remap ``src_layer_name``'s per-loop UVs into ``tile``'s placement inside the
     shared atlas image and store the result as a fresh ``ATLAS_UV_LAYER_NAME`` UV layer
-    on ``obj``'s BASE mesh (per spec ``4.1`` - the thermal AOV shader samples the atlas
-    image through this layer at render time). It must land on the base mesh, not a
-    to_mesh() copy, so the modifier stack propagates it (Bevel interpolates named UV
-    layers onto new geometry, EdgeSplit duplicates them, most Geometry Nodes setups
-    preserve them) - :func:`build_atlas_plan` then forces a depsgraph update and reads
-    it back via :func:`_extract_evaluated_face_uv_and_slots` to rasterize from geometry
-    that matches what the solver actually used. Best-effort: never raises, since a
-    failure here must not abort the solve - it degrades to the per-vertex path via the
-    caller's own "evaluated mesh lacks the atlas UV layer" check.
+    on ``obj``'s base mesh. The modifier stack propagates this layer to the
+    evaluated mesh used for rasterization and rendering. The caller verifies that
+    propagation succeeded.
     """
     mesh = getattr(obj, "data", None)
     if mesh is None:
@@ -563,26 +556,8 @@ def build_atlas_plan(scene: Any, sim_objects: list, cfg: dict) -> AtlasPlan:
     )
 
 
-# Push-out margin dilation, in texels. Invariant: 2 * iterations <= the packing
-# `padding` (see build_atlas_plan's atlas.allocate(..., padding=_ATLAS_PACKING_PADDING)
-# call). Each dilate pass grows a tile's valid region by at most 1px, and TWO adjacent
-# tiles dilate toward each other from both sides of the gap -- so the gap must be wide
-# enough for both expansions with no meeting point, or the middle gap texels would be
-# filled with the MEAN of two unrelated objects' temperatures. The assert below enforces
-# it; see the design spec's "seam bleeding" risk note.
-#
-# One iteration is not enough. A single pass protects only a 1-texel ring, but the atlas
-# also contains INTERIOR holes -- texels inside a tile that no solved element scattered
-# into. Measured on visionsim50/kitchen1: 25 invalid components inside/near tile interiors
-# sized 1-462 texels, far beyond a one-texel margin. Render-time bilinear filtering then
-# straddles those valid/invalid edges and drags T_effective under the solve floor (2665
-# sub-295 K pixels in a single frame; they disappear under render_domain=VERTEX).
-#
-# 8 passes fill a hole of radius <= 8 texels outright, and the shader thresholds the atlas
-# alpha so anything still unfilled falls back to the object-level default rather than
-# blending a half-zeroed colour (see thermal_shader._build_temperature_source_chain).
-# Padding grows in lockstep to keep neighbouring tiles from meeting; the cost is a modest
-# increase in packed atlas area.
+# Fill small UV holes and the filtering margin without joining neighboring tiles.
+# Larger uncovered areas remain invalid and use the shader's fallback temperature.
 _ATLAS_DILATE_ITERATIONS = 8
 _ATLAS_PACKING_PADDING = 17
 assert 2 * _ATLAS_DILATE_ITERATIONS <= _ATLAS_PACKING_PADDING, "dilation would bridge tile padding"
@@ -978,7 +953,7 @@ def _combine(
     ``atlas_plan=None`` entirely) contributes exactly as today. ``layout`` entries gain
     a trailing ``kind`` tag (``"VERTEX"`` or ``"TEXEL"``) so callers can tell the two
     apart; with ``atlas_plan=None`` every entry is ``"VERTEX"`` and every other array is
-    byte-identical to before this parameter existed.
+    unchanged.
     """
     irradiance_scale = float(defaults.get("irradiance_scale", 1.0))
 
@@ -1037,16 +1012,8 @@ def _combine(
             irr = np.zeros(n, dtype=np.float64)
 
         if per_vertex is not None:
-            # Per-slot resolution: every field is already (N,). Dirichlet vertices
-            # are pinned individually - alpha=0, no incident flux, excluded from the
-            # radiation/convection boundary - exactly what the object-level branch
-            # below does, just per vertex. T0 is the simulation's *initial condition*,
-            # not a constitutive property: a FEM-participant vertex starts at ambient
-            # even where it seams against a Dirichlet slot (materials.resolve_vertex_materials
-            # area-weights T0 like any other continuous field, which would otherwise
-            # pre-seed seam vertices with a slice of the reservoir's temperature before
-            # the solver ever runs a step -- mirrors the object-level branch below,
-            # which always starts a non-Dirichlet object at initial_temperature_K).
+            # Only Dirichlet vertices start at the fixed source temperature;
+            # neighboring participants retain the ambient initial condition.
             rho = per_vertex["rho"]
             c_vec = per_vertex["c"]
             eps = per_vertex["eps"]

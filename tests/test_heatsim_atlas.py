@@ -472,12 +472,6 @@ def test_dilate_zero_iterations_is_noop():
     assert out[1, 1] == pytest.approx(0.0)
 
 
-# ---------------------------------------------------------------------------
-# performance sanity (not a hard requirement of the brief's named tests, but the brief calls out
-# a concrete target: a 352^2 tile with ~2k triangles well under a second)
-# ---------------------------------------------------------------------------
-
-
 def test_rasterize_performance_sanity():
 
     rng = np.random.default_rng(0)

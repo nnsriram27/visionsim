@@ -1705,20 +1705,11 @@ class BlenderService(rpyc.Service):
             recompute=recompute,
         )
         self._thermal_atlas_plan = atlas_plan
-        # Stamp BEFORE writing frame attributes: stamp_default_temperatures blindly sets
-        # heatsim_default_temperature = ambient on every mesh, which would clobber the
-        # correct per-object Dirichlet-reservoir fallback that write_frame_attributes is about
-        # to set below for any unsolved DIRICHLET_SOURCE object -- including atlas participants,
-        # whose fallback is the ONLY temperature ever written to their mesh. Running it first
-        # means write_frame_attributes's write wins (same fix/rationale as the animated branch
-        # above). setup_temperature_aov, unlike stamp, is NOT moved up here: its atlas-sampling
-        # node graph looks up the packed atlas image by name at call time, so it must stay
-        # after write_atlas/_thermal_load_pack_atlas_image below (where that image first exists).
+        # Write the ambient fallback before per-object Dirichlet values. AOV setup
+        # follows atlas loading because its shader nodes reference the packed image.
         thermal_shader.stamp_default_temperatures(self.scene, default_K=initial_temperature_K)
 
-        # Pass the FULL global material defaults: post-I1 ``resolve_material`` reads
-        # these as the fallback for any per-object property that was not explicitly
-        # set (e.g. emissivity), so a partial dict would KeyError on unset meshes.
+        # Unset per-object properties resolve from these global defaults.
         adapter.write_frame_attributes(
             self.scene,
             history,
