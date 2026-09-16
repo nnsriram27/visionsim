@@ -11,8 +11,6 @@ Provides four entry points consumed by the thermal render pipeline:
 * :func:`stamp_default_temperatures` — stamp per-object ``heatsim_default_temperature``
                                        OBJECT-domain custom properties as a shader fallback.
 
-Port of heat-sim-blender ``addon/lib/visualization.py`` (@ 543ee81) into visionsim
-conventions: guarded ``bpy`` import, rich logger, Google-style docstrings, ruff 121 chars.
 """
 
 from __future__ import annotations
@@ -20,7 +18,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from visionsim.simulate.heatsim.constants import ATLAS_COVERAGE_PROP, ATLAS_IMAGE_NAME, ATLAS_UV_LAYER_NAME
+from visionsim.simulate.heatsim.names import ATLAS_COVERAGE_PROP, ATLAS_IMAGE_NAME, ATLAS_UV_LAYER_NAME
 
 try:
     import bpy  # type: ignore
@@ -30,8 +28,8 @@ except ImportError:
 _log = logging.getLogger("rich")
 
 # Stefan-Boltzmann constant (SI, W/m²·K⁴).  Used as a magnitude knob × radiance_scale
-# in the shader.  Do NOT unify with the solver σ (constants.py uses mm-scaled W/mm²·K⁴).
-_SIGMA_SI: float = 5.670374419e-8
+# in the shader; the solver uses the same value converted to W/mm².
+from visionsim.simulate.heatsim.physics import STEFAN_BOLTZMANN_SI as _SIGMA_SI
 
 # Defaults used when the scene provides no overrides.
 _DEFAULT_EMISSIVITY: float = 0.9
@@ -158,8 +156,8 @@ def _build_temperature_source_chain(nodes: Any, links: Any, new_node: Any = None
     if atlas_tex.image is not None:
         try:
             atlas_tex.image.colorspace_settings.name = "Non-Color"
-        except Exception:  # pragma: no cover - defensive, mirrors irradiance.py's style
-            pass
+        except Exception:
+            logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
     atlas_tex.location = (x0 + 200.0, y0 - 260.0)
     links.new(atlas_uv_attr.outputs["Vector"], atlas_tex.inputs["Vector"])
 
@@ -450,13 +448,13 @@ def _append_temperature_aov_nodes(mat: Any, aov_name: str) -> None:
         temp_effective_socket = gated.outputs["Value"]
 
         aov_node = _new("ShaderNodeOutputAOV")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         _log.debug("Could not build temperature AOV chain on %r: %s", mat.name, exc)
         for node in added:
             try:
                 nodes.remove(node)
             except Exception:
-                pass
+                logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
         return
 
     aov_node.name = aov_name
@@ -464,14 +462,14 @@ def _append_temperature_aov_nodes(mat: Any, aov_name: str) -> None:
         try:
             aov_node.aov_name = aov_name
         except Exception:
-            pass
+            logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
     aov_node.location = (940.0, -400.0)
 
     sock = aov_node.inputs.get("Value") or (aov_node.inputs[0] if aov_node.inputs else None)
     if sock is not None:
         try:
             links.new(temp_effective_socket, sock)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             _log.debug("Could not link AOV socket on %r: %s", mat.name, exc)
 
 
@@ -523,7 +521,7 @@ def _ensure_temperature_material_slots(obj: Any) -> int:
                 slot.material = _get_default_surface_material()
                 filled += 1
         return filled
-    except Exception as exc:  # pragma: no cover - library-linked / non-editable meshes
+    except Exception as exc:   # noqa: BLE001
         _log.warning("thermal: could not assign a default surface to %r: %s", obj.name, exc)
         return 0
 
@@ -550,8 +548,7 @@ def setup_temperature_aov(scene: Any, view_layer: Any) -> str:
     try:
         existing_names = {a.name for a in view_layer.aovs}
     except Exception:
-        pass
-
+        logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
     if aov_name not in existing_names:
         try:
             aov = view_layer.aovs.add()
@@ -559,12 +556,12 @@ def setup_temperature_aov(scene: Any, view_layer: Any) -> str:
             if hasattr(aov, "type"):
                 try:
                     aov.type = "VALUE"
-                except Exception:
+                except Exception:  # noqa: BLE001
                     try:
                         aov.type = "FLOAT"
                     except Exception:
-                        pass
-        except Exception as exc:
+                        logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
+        except Exception as exc:  # noqa: BLE001
             _log.warning("Could not register temperature AOV on view layer: %s", exc)
 
     # 2. Append Attribute → OutputAOV chain to every material-using mesh in the scene.
@@ -671,7 +668,7 @@ def enter_thermal_scene(scene: Any, *, radiance_scale: float) -> dict:
                     saved_clamp[attr] = getattr(cy, attr)
                     try:
                         setattr(cy, attr, 0.0)  # 0 == disabled in Cycles
-                    except Exception as exc:  # pragma: no cover - read-only build
+                    except Exception as exc:   # noqa: BLE001
                         _log.debug("Could not clear cycles.%s: %s", attr, exc)
                         saved_clamp.pop(attr, None)
             if saved_clamp:
@@ -743,7 +740,7 @@ def restore_scene(scene: Any, state: dict) -> None:
         for attr, value in (state.get(_KEY_CLAMP, {}) or {}).items():
             try:
                 setattr(cy, attr, value)
-            except Exception as exc:  # pragma: no cover
+            except Exception as exc:   # noqa: BLE001
                 _log.debug("Could not restore cycles.%s: %s", attr, exc)
 
     # -- Restore light visibility -----------------------------------------------

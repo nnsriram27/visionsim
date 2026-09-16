@@ -1,11 +1,12 @@
 """Per-object thermal material PropertyGroup for visionsim heat simulation.
 
-Schema-compatible with heat-sim-blender so addon-authored blends load their
-values directly. Only the core per-object fields are included here; the full
-scene-level HeatSimSettings lives only in the Blender addon.
+Existing Blender object property names are retained so authored scenes load their
+material overrides.
 """
 
 from __future__ import annotations
+
+import logging
 
 try:
     import bpy  # type: ignore
@@ -29,38 +30,38 @@ if _BPY_AVAILABLE:
             initial_temperature_K:     K
         """
 
-        initial_temperature_K: FloatProperty(  # type: ignore[assignment]
+        initial_temperature_K: FloatProperty(  # type: ignore[valid-type, assignment]
             name="Initial Temp (K)",
             description="Initial temperature for this object (used if no per-vertex attribute override is provided)",
             default=295.0,  # match ThermalConfig.initial_temperature_K (config.py)
             min=0.0,
         )
 
-        thermal_diffusivity_mm2_s: FloatProperty(  # type: ignore[assignment]
+        thermal_diffusivity_mm2_s: FloatProperty(  # type: ignore[valid-type, assignment]
             name="Thermal Diffusivity α (mm²/s)",
             description=(
                 "Thermal diffusivity for this object in mm²/s (used if no per-vertex attribute override is provided). "
                 "Note: your solver uses mm-units internally, so mm²/s is the natural unit here."
             ),
-            default=0.17,  # PVC-ish (matches constants.TDiff['pvc'])
+            default=0.17,  # PVC default
             min=0.0,
         )
 
-        density_kg_m3: FloatProperty(  # type: ignore[assignment]
+        density_kg_m3: FloatProperty(  # type: ignore[valid-type, assignment]
             name="Density ρ (kg/m³)",
             description="Material density in kg/m^3 (used if no per-vertex attribute override is provided)",
             default=1330.0,  # PVC
             min=0.0,
         )
 
-        specific_heat_J_kgK: FloatProperty(  # type: ignore[assignment]
+        specific_heat_J_kgK: FloatProperty(  # type: ignore[valid-type, assignment]
             name="Specific Heat c (J/kgK)",
             description="Specific heat capacity in J/(kg*K) (used if no per-vertex attribute override is provided)",
             default=880.0,  # PVC
             min=0.0,
         )
 
-        emissivity: FloatProperty(  # type: ignore[assignment]
+        emissivity: FloatProperty(  # type: ignore[valid-type, assignment]
             name="Emissivity ε",
             description="Surface emissivity for thermal rendering and radiation calculations (0-1)",
             default=0.9,
@@ -68,7 +69,7 @@ if _BPY_AVAILABLE:
             max=1.0,
         )
 
-        thermal_role: EnumProperty(  # type: ignore[assignment]
+        thermal_role: EnumProperty(  # type: ignore[valid-type, assignment]
             name="Thermal Role",
             description=(
                 "How this object participates in the FEM heat sim. "
@@ -82,7 +83,7 @@ if _BPY_AVAILABLE:
             default="FEM_PARTICIPANT",
         )
 
-        dirichlet_temperature_K: FloatProperty(  # type: ignore[assignment]
+        dirichlet_temperature_K: FloatProperty(  # type: ignore[valid-type, assignment]
             name="Dirichlet Temperature (K)",
             description=(
                 "Constant temperature for this object's vertices when Thermal Role = "
@@ -119,12 +120,12 @@ def unregister() -> None:
     try:
         del bpy.types.Object.heat_simulation_enabled  # type: ignore[name-defined]
     except Exception:
-        pass
+        logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
     try:
         del bpy.types.Object.heat_sim_material  # type: ignore[name-defined]
     except Exception:
-        pass
+        logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
     try:
         bpy.utils.unregister_class(HeatSimObjectMaterialProperties)  # type: ignore[name-defined]
     except Exception:
-        pass
+        logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)

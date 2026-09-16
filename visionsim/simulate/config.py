@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -163,7 +164,7 @@ class ThermalConfig:
     assignments: Path | None = None
     """Path to a thermal material assignment sidecar (``<scene>.thermal.json``). When set, thermal properties
     are resolved per material slot from the sidecar; when unset the global defaults below are used for every
-    surface. Sidecars are authored offline by ``scripts/thermal_assign.py`` and committed."""
+    surface. Sidecars are described in the thermal rendering tutorial."""
     # --- per-object override hook (else globals below) ---
     # overrides: dict[str, ...]  # (future: per-object params by object name; today, globals + obj.heat_sim_material)
     # --- global material defaults (used where no per-object value is set) ---
@@ -227,13 +228,37 @@ class ThermalConfig:
     """Soft ceiling on total atlas texels + retained vertices; exceeding it rescales the
     effective density down uniformly and warns, rather than allocating an unbounded solve."""
     # --- radiance render ---
+    recompute: bool = False
+    """Bypass reusable thermal solve results and regenerate bakes."""
     radiance_scale: float = 1.0
     """Gray-body emission magnitude knob for the thermal_radiance render"""
     # --- file formats (mirror DepthsConfig) ---
-    exr_codec: EXR_CODECS = "DWAA"
+    exr_codec: EXR_CODECS = "ZIP"
     """Encoding used to compress EXRs"""
     bit_depth: Literal[16, 32] = 32
     """Bit depth for temperature/radiance EXRs"""
+
+    def __post_init__(self) -> None:
+        positive = ("thermal_diffusivity_mm2_s", "density_kg_m3", "specific_heat_J_kgK",
+                    "sim_time_s", "timestep_s", "atlas_texel_density")
+        for name in positive:
+            value = getattr(self, name)
+            if not math.isfinite(value) or value <= 0:
+                raise ValueError(f"thermal.{name} must be finite and positive")
+        for name in ("initial_temperature_K", "irradiance_scale", "radiance_scale"):
+            value = getattr(self, name)
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"thermal.{name} must be finite and nonnegative")
+        if not 0 <= self.emissivity <= 1 or not math.isfinite(self.emissivity):
+            raise ValueError("thermal.emissivity must be in [0, 1]")
+        if self.render_domain not in {"AUTO", "VERTEX", "TEXEL"}:
+            raise ValueError("thermal.render_domain must be AUTO, VERTEX or TEXEL")
+        if self.bake_samples < 1 or self.irradiance_texture_size < 1:
+            raise ValueError("thermal bake resolution and samples must be positive")
+        if not 1 <= self.atlas_tile_min <= self.atlas_tile_max:
+            raise ValueError("thermal atlas tile bounds are invalid")
+        if self.atlas_texel_soft_max < 1:
+            raise ValueError("thermal atlas budget must be positive")
 
 
 @dataclass

@@ -1,8 +1,6 @@
 # NOTE: This needs to be imported by blender to work properly.
 
-# Inferno colormap stop data sourced verbatim from heat-sim-blender's
-# scripts/post/_exr_io.py ``_INFERNO_STOPS`` (matplotlib inferno sampled at 11
-# even t values), so the preview matches heat-sim's rendered To/thermal PNGs.
+# Preview colors sample the Matplotlib inferno palette at 11 points.
 
 from __future__ import annotations
 
@@ -17,7 +15,7 @@ def thermal_preview_node_group(tmin: float = 295.0, tmax: float = 400.0) -> bpy.
     Structure: ``Temperature`` float INPUT → MapRange([tmin, tmax] → [0, 1]) →
     ``ShaderNodeValToRGB`` with inferno colour stops → ``Image`` colour OUTPUT.
 
-    The inferno stops match heat-sim-blender's colormap. heat-sim treats the LUT
+    The inferno stops use the Matplotlib palette. The compositor treats the LUT
     output as scene-linear and sRGB-encodes it before writing the PNG; the caller
     (``include_thermal``) reproduces that by rendering this group's output through
     the ``Standard`` (sRGB) view transform rather than the preview default ``Raw``.
@@ -62,7 +60,7 @@ def thermal_preview_node_group(tmin: float = 295.0, tmax: float = 400.0) -> bpy.
     ramp = color_ramp.color_ramp
     ramp.interpolation = "LINEAR"
 
-    # Inferno colormap stops — verbatim from heat-sim-blender _exr_io._INFERNO_STOPS
+    # Inferno colormap stops sampled from Matplotlib inferno
     # (matplotlib inferno at 11 even positions 0.0, 0.1, …, 1.0).
     _inferno_stops = [
         (0.00, (0.00146, 0.00047, 0.01387, 1.0)),  # near-black

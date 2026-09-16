@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from visionsim.simulate.heatsim import constants, laplacian, properties, solver
+from visionsim.simulate.heatsim import laplacian, properties, solver
 
-__all__ = ["constants", "laplacian", "properties", "solver"]
+__all__ = ["laplacian", "properties", "solver"]
 
 
 def register() -> None:

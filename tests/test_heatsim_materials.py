@@ -7,16 +7,11 @@ import json
 import numpy as np
 import pytest
 
-from visionsim.simulate.heatsim import constants, materials
+from visionsim.simulate.heatsim import materials
 
 # ---------------------------------------------------------------------------
 # 1. Preset library
 # ---------------------------------------------------------------------------
-
-# Seeded from the vendored constants.py dicts; alpha/rho/c must agree exactly so
-# the new library and the addon-parity constants cannot silently drift apart.
-_SEEDED = ["aluminium", "pvc", "glass", "copper", "polystyrene", "wood", "steel",
-           "brick", "concrete", "plaster", "asphalt", "iron", "li_ion"]
 
 
 def test_library_is_well_formed():
@@ -34,15 +29,6 @@ def test_preset_keys_are_sorted_and_complete():
     keys = materials.preset_keys()
     assert keys == sorted(keys)
     assert set(keys) == set(materials.PRESETS)
-
-
-def test_seeded_presets_agree_with_vendored_constants():
-    for key in _SEEDED:
-        preset = materials.PRESETS[key]
-        assert preset.alpha_mm2_s == pytest.approx(constants.TDiff[key]), key
-        # constants.Density is kg/mm^3 (kg/m^3 divided by 1000**3).
-        assert preset.density_kg_m3 == pytest.approx(constants.Density[key] * 1.0e9), key
-        assert preset.specific_heat_J_kgK == pytest.approx(constants.SpecificHeat[key]), key
 
 
 def test_polished_and_painted_metal_are_distinct():

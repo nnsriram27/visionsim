@@ -1,16 +1,12 @@
-"""UV state snapshot/restore.
-
-Extracted from heat-sim-blender's ``addon/lib/irradiance.py`` @ e5b4afe and trimmed to the
-helpers visionsim uses. Not a verbatim copy, so it is linted and type-checked like the
-rest of the package rather than carrying the vendored exemption.
-"""
+"""Snapshot and restore Blender UV state around thermal bakes."""
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from typing import Optional
 
-import bpy
+import bpy  # type: ignore[import-not-found]
 
 UVState = tuple[Optional[str], Optional[str]]  # (active_uv_name, active_render_uv_name)
 UVSnapshot = list[tuple["bpy.types.Object", UVState]]
@@ -42,14 +38,12 @@ def _set_active_uv(mesh: bpy.types.Mesh, uv_name: str | None) -> None:
         return
     try:
         mesh.uv_layers[uv_name].active = True
-    except Exception:
+    except Exception:  # noqa: BLE001
         # Some Blender versions are finicky; fall back to active_index.
         try:
             mesh.uv_layers.active_index = list(mesh.uv_layers).index(mesh.uv_layers[uv_name])
         except Exception:
-            pass
-
-
+            logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
 def _set_render_uv(mesh: bpy.types.Mesh, uv_name: str | None) -> None:
     if not mesh or not getattr(mesh, "uv_layers", None) or not uv_name:
         return
@@ -61,8 +55,7 @@ def _set_render_uv(mesh: bpy.types.Mesh, uv_name: str | None) -> None:
                 uv.active_render = False
         mesh.uv_layers[uv_name].active_render = True
     except Exception:
-        # If active_render isn't supported, ignore.
-        pass
+        logging.getLogger(__name__).debug("Cannot set render UV state", exc_info=True)
 
 
 def set_uv_state(obj: bpy.types.Object, state: UVState) -> None:
@@ -98,5 +91,4 @@ def restore_uv_states(snapshot: UVSnapshot) -> None:
         try:
             set_uv_state(obj, state)
         except Exception:
-            # Never crash callers for a best-effort restore.
-            pass
+            logging.getLogger(__name__).debug("Cannot restore UV state", exc_info=True)

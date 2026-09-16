@@ -95,7 +95,7 @@ def test_bake_uv_is_created_on_a_mesh_with_no_authored_uvs(executable):
     code = r"""
 import bpy
 from visionsim.simulate.heatsim import adapter, atlas, irradiance
-from visionsim.simulate.heatsim.constants import BAKE_UV_LAYER_NAME
+from visionsim.simulate.heatsim.names import BAKE_UV_LAYER_NAME
 
 for o in list(bpy.data.objects):
     bpy.data.objects.remove(o, do_unlink=True)

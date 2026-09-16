@@ -2,7 +2,7 @@
 
 Pure geometry/allocation math on numpy arrays - **no bpy import, guarded or otherwise**. This
 module has to import and be testable without Blender; :mod:`visionsim.simulate.heatsim.adapter`
-(Task 2) is the only place that touches ``bpy`` objects and translates them into the arrays this
+is the only place that touches ``bpy`` objects and translates them into the arrays this
 module consumes.
 
 Why texels at all (see the design spec for the full argument): the thermal solver and shader both

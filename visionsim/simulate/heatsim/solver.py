@@ -8,8 +8,8 @@ import numpy as np
 import scipy.sparse as sp
 import torch
 
-from visionsim.simulate.heatsim import constants
 from visionsim.simulate.heatsim.laplacian import point_cloud_laplacian_and_mass
+from visionsim.simulate.heatsim.physics import STEFAN_BOLTZMANN_MM
 
 _log = logging.getLogger("rich")
 
@@ -60,14 +60,14 @@ def pcg_solve(mv, b, Minv, x0=None, tol=1e-6, max_iter=200):
         Ap = mv(p)
         denom = torch.dot(p.flatten(), Ap.flatten())
         if denom.abs() < 1e-20:
-            break
+            raise RuntimeError("Thermal conjugate-gradient solve broke down before convergence")
         alpha = rz_old / denom
 
         x = x + alpha * p
         r = r - alpha * Ap
 
         if torch.dot(r.flatten(), r.flatten()).sqrt() < tol:
-            break
+            return x
 
         z = Minv * r
         rz_new = torch.dot(r.flatten(), z.flatten())
@@ -75,7 +75,8 @@ def pcg_solve(mv, b, Minv, x0=None, tol=1e-6, max_iter=200):
         p = z + beta * p
         rz_old = rz_new
 
-    return x
+    residual = float(torch.linalg.vector_norm(r))
+    raise RuntimeError(f"Thermal conjugate-gradient solve did not converge: residual={residual:.3g}")
 
 
 class HeatSimFEM:
@@ -170,9 +171,9 @@ class HeatSimFEM:
 
         boundary_mask = torch.from_numpy(boundary_mask_np.astype(np.float32)).to(self.device)
 
-        sigma = constants.SIGMA
-        Tamb = constants.AMBIENT_TEMP
-        h = constants.CONVECTION_COEFF
+        sigma = STEFAN_BOLTZMANN_MM
+        Tamb = 295.0
+        h = 0.0
 
         vec_rad_A = None
         vec_conv_A = None
@@ -212,8 +213,7 @@ class HeatSimFEM:
                 f"{B_light_base.max().item():.10f}",
             )
         except Exception:
-            pass
-
+            logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
         # Pre-define matrix-free operator A(u)
         def mv(x):
             # x: (N,1)
@@ -374,7 +374,7 @@ class HeatSimFEM:
         - diagonal = -row_sum(offdiag)
         """
         alpha_vec = np.asarray(alpha_vec, dtype=np.float64).reshape(-1)
-        L_coo = L.tocoo()
+        L_coo = L.tocoo()  # type: ignore[attr-defined]
         rows = L_coo.row
         cols = L_coo.col
         data = L_coo.data.astype(np.float64)
@@ -427,10 +427,10 @@ class HeatSimFEM:
         store_only_final: bool = False,
     ):
         verts_np = np.asarray(verts_np, dtype=np.float64)
-        valid_verts = np.ones(len(verts_np), dtype=bool)
+        valid_verts: np.ndarray = np.ones(len(verts_np), dtype=bool)
 
         if u0 is None:
-            u0 = np.full((verts_np.shape[0],), constants.AMBIENT_TEMP, dtype=np.float64)
+            u0 = np.full((verts_np.shape[0],), 295.0, dtype=np.float64)
         else:
             u0 = u0[valid_verts].reshape(-1)
 
@@ -547,7 +547,7 @@ class HeatSimFEM:
         # Scatter back to full vertex set
         u_real_np = np.full(
             (tmp_u_real_np.shape[0], valid_verts.shape[0]),
-            constants.AMBIENT_TEMP,
+            295.0,
             dtype=np.float64,
         )
         u_real_np[:, valid_verts] = tmp_u_real_np

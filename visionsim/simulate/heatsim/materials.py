@@ -18,7 +18,7 @@ computed post-``(1 - albedo)`` from Cycles bakes of the scene's real textures,
 so a per-preset absorptivity would double-count.
 
 Nothing here calls out to a network or an LLM. Sidecars are authored offline by
-``scripts/thermal_assign.py`` and committed; this module only reads them.
+authored as JSON and committed; this module reads them.
 """
 
 from __future__ import annotations
@@ -66,10 +66,6 @@ class ThermalPreset:
 
 # key, alpha (mm^2/s), density (kg/m^3), specific heat (J/kg.K), IR emissivity, notes.
 #
-# The first 13 are seeded from the vendored ``constants.py`` dicts; their
-# alpha/rho/c must stay in lockstep with them (guarded by a test) so the two
-# cannot silently drift. Emissivities are literature LWIR values - constants.py
-# has no emissivity column (its ``Absorptivity`` dict is solar, and dead code).
 _PRESET_TABLE = (
     ("aluminium", 97.0, 2700.0, 978.0, 0.20, "Mill-finish / lightly oxidised aluminium."),
     ("pvc", 0.17, 1330.0, 880.0, 0.93, "Generic rigid plastic; also the global default."),

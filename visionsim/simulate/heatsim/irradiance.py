@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import warnings
 from dataclasses import dataclass
 
-import bpy
+import bpy  # type: ignore[import-not-found]
 import numpy as np
 
-from .constants import ALBEDO_LAYER_NAME, BAKE_UV_LAYER_NAME, CYCLES_LOUT_TO_IRRADIANCE, IRRADIANCE_LAYER_NAME
+from .names import ALBEDO_LAYER_NAME, BAKE_UV_LAYER_NAME, IRRADIANCE_LAYER_NAME
+from .physics import CYCLES_LOUT_TO_IRRADIANCE
 from .uv_utils import restore_uv_states, snapshot_uv_states
 
 
@@ -41,7 +43,7 @@ def _ensure_uv_layer(obj):
             # Using 1.6% island margin to prevent texture bleeding artifacts
             bpy.ops.uv.smart_project(island_margin=0.016)
             bpy.ops.object.mode_set(mode="OBJECT")
-        except Exception as exc:  # keep running but warn
+        except Exception as exc:   # noqa: BLE001
             warnings.warn(f"HeatSim: Failed to auto-unwrap UVs for {obj.name}: {exc}")
         finally:
             # Restore selection and active object/mode. Force OBJECT mode FIRST and
@@ -52,16 +54,16 @@ def _ensure_uv_layer(obj):
                 try:
                     bpy.ops.object.mode_set(mode="OBJECT")
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
             try:
                 bpy.ops.object.select_all(action="DESELECT")
             except Exception:
-                pass
+                logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
             for o in prev_selection:
                 try:
                     o.select_set(True)
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
             if prev_active:
                 view_layer.objects.active = prev_active
 
@@ -113,7 +115,7 @@ def prepare_object_bake_uv(obj: bpy.types.Object) -> None:
     if BAKE_UV_LAYER_NAME not in mesh.uv_layers:
         try:
             mesh.uv_layers.new(name=BAKE_UV_LAYER_NAME)
-        except Exception:
+        except Exception:  # noqa: BLE001
             return
 
     # Set bake UV active for unwrap + baking
@@ -121,8 +123,7 @@ def prepare_object_bake_uv(obj: bpy.types.Object) -> None:
         mesh.uv_layers[BAKE_UV_LAYER_NAME].active = True
         mesh.uv_layers[BAKE_UV_LAYER_NAME].active_render = True
     except Exception:
-        pass
-
+        logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
     ctx = bpy.context
     view_layer = ctx.view_layer
     prev_selection = list(getattr(ctx, "selected_objects", []) or [])
@@ -140,8 +141,7 @@ def prepare_object_bake_uv(obj: bpy.types.Object) -> None:
             try:
                 bpy.ops.object.mode_set(mode="OBJECT")
             except Exception:
-                pass
-
+                logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
         bpy.ops.object.select_all(action="DESELECT")
         obj.select_set(True)
         view_layer.objects.active = obj
@@ -151,7 +151,7 @@ def prepare_object_bake_uv(obj: bpy.types.Object) -> None:
         # Using 1.6% island margin to prevent texture bleeding artifacts.
         bpy.ops.uv.smart_project(island_margin=0.016)
         bpy.ops.object.mode_set(mode="OBJECT")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         # A per-object unwrap failure (smart_project.poll() and friends can fail in
         # --background on some meshes) must never abort the whole scene's bake. Warn
         # and keep whatever UVs the object already has; the albedo kernel treats a
@@ -169,23 +169,21 @@ def prepare_object_bake_uv(obj: bpy.types.Object) -> None:
             try:
                 bpy.ops.object.mode_set(mode="OBJECT")
             except Exception:
-                pass
+                logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
         try:
             bpy.ops.object.select_all(action="DESELECT")
         except Exception:
-            pass
+            logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
         for o in prev_selection:
             try:
                 o.select_set(True)
             except Exception:
-                pass
+                logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
         if prev_active and prev_active in getattr(ctx, "visible_objects", []):
             try:
                 view_layer.objects.active = prev_active
             except Exception:
-                pass
-
-
+                logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
 def _ensure_bake_image(base_name: str, name_suffix: str, size: int):
     """Create or reuse a float image that receives baked data."""
     size = max(16, int(size))
@@ -279,7 +277,7 @@ def _pick_source_uv_for_object(obj: bpy.types.Object, uv_snapshot_map: dict[int,
             if len(mesh.uv_layers) > 0:
                 return mesh.uv_layers[0].name
     except Exception:
-        pass
+        logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
     return None
 
 
@@ -306,8 +304,7 @@ def _apply_uv_override_to_material(mat: bpy.types.Material, uv_name: str) -> tup
     try:
         uv_node.uv_map = uv_name
     except Exception:
-        # Older Blender versions may differ; keep best-effort.
-        pass
+        logging.getLogger(__name__).debug("Cannot set bake UV map", exc_info=True)
 
     patched = []
     for node in nodes:
@@ -321,8 +318,7 @@ def _apply_uv_override_to_material(mat: bpy.types.Material, uv_name: str) -> tup
             links.new(uv_node.outputs.get("UV"), vec_in)
             patched.append(node.name)
         except Exception:
-            # Don't hard-fail on odd node trees
-            pass
+            logging.getLogger(__name__).debug("Cannot wire bake UV node", exc_info=True)
 
     if created:
         return uv_node_name, patched
@@ -363,7 +359,7 @@ def _install_bake_uv_material_overrides(objects: list[bpy.types.Object], uv_snap
 
     # Apply overrides
     for obj, slot_idx, mat, uv_name in occurrences:
-        if not uv_name:
+        if mat is None or not uv_name:
             continue
         uv_set = mat_uvs.get(mat.as_pointer(), {str(uv_name)})
         target_mat = mat
@@ -376,7 +372,7 @@ def _install_bake_uv_material_overrides(objects: list[bpy.types.Object], uv_snap
                 obj.material_slots[slot_idx].material = mat_copy
                 replaced_slots.append((obj, slot_idx, mat))
                 target_mat = mat_copy
-            except Exception:
+            except Exception:  # noqa: BLE001
                 # If copying fails, fall back to editing the shared material (may be imperfect).
                 target_mat = mat
 
@@ -421,16 +417,14 @@ def _restore_bake_uv_material_overrides(state: _BakeMaterialUVOverride | None) -
                     try:
                         links.remove(link)
                     except Exception:
-                        pass
-
+                        logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
             # Remove the uv node itself (if still present)
             try:
                 nodes.remove(uv_node)
             except Exception:
-                pass
+                logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
         except Exception:
-            pass
-
+            logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
     # Restore original materials in slots, and remove temporary copies if possible.
     for obj, slot_idx, original_mat in state.replaced_slots:
         try:
@@ -442,11 +436,9 @@ def _restore_bake_uv_material_overrides(state: _BakeMaterialUVOverride | None) -
                 if tmp is not None and tmp.users == 0:
                     bpy.data.materials.remove(tmp)
             except Exception:
-                pass
+                logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
         except Exception:
-            pass
-
-
+            logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
 def _image_pixels_to_rgb(image) -> np.ndarray | None:
     """Convert a Blender image to (H, W, 3) numpy array."""
     w, h = image.size
@@ -495,8 +487,8 @@ def _image_to_vertex_irradiance(
     vert_count: int,
 ) -> np.ndarray:
     """Accumulate image luminance to vertices via UVs."""
-    accum = np.zeros(vert_count, dtype=np.float64)
-    counts = np.zeros(vert_count, dtype=np.int32)
+    accum: np.ndarray = np.zeros(vert_count, dtype=np.float64)
+    counts: np.ndarray = np.zeros(vert_count, dtype=np.int32)
     for loop_idx, vert_idx in enumerate(loop_vertex_indices):
         uv = uv_data[loop_idx]
         flux = _bilinear_sample(rgb_pixels, width, height, uv) * float(scale)
@@ -536,14 +528,14 @@ def _mesh_to_sample(obj):
         candidate = obj.evaluated_get(depsgraph).data
         if candidate is not None and len(candidate.vertices) > 0 and len(candidate.uv_layers) > 0:
             return candidate
-    except Exception:  # pragma: no cover - defensive, mirrors this module's style
-        pass
+    except Exception:
+        logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
     return obj.data
 
 
 def bake_vertex_albedo(scene, obj, texture_size: int) -> np.ndarray:
     """Bake albedo and sample it on the evaluated mesh used by the heat solve."""
-    from visionsim.simulate.heatsim.constants import BAKE_UV_LAYER_NAME
+    from visionsim.simulate.heatsim.names import BAKE_UV_LAYER_NAME
 
     baked = bake_albedo_map(scene, obj, texture_size)
     if baked is None or baked.pixels is None:
@@ -553,9 +545,9 @@ def bake_vertex_albedo(scene, obj, texture_size: int) -> np.ndarray:
     if uv_layer is None:
         raise RuntimeError(f"No bake UV layer is available for {obj.name!r}")
     loop_count = len(mesh.loops)
-    uv = np.empty((loop_count, 2), dtype=np.float64)
+    uv: np.ndarray = np.empty((loop_count, 2), dtype=np.float64)
     uv_layer.data.foreach_get("uv", uv.reshape(-1))
-    vertex_indices = np.empty(loop_count, dtype=np.int32)
+    vertex_indices: np.ndarray = np.empty(loop_count, dtype=np.int32)
     mesh.loops.foreach_get("vertex_index", vertex_indices)
     values = _image_to_vertex_irradiance(
         vertex_indices, uv, baked.pixels, baked.width, baked.height, 1.0, len(mesh.vertices)
@@ -586,8 +578,7 @@ def bake_albedo_map(scene, obj, texture_size: int) -> BakedFluxMap | None:
     try:
         obj["heat_sim_albedo_uv"] = BAKE_UV_LAYER_NAME
     except Exception:
-        pass
-
+        logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
     image = _ensure_albedo_image(obj.name, texture_size)
     _prepare_image_nodes_for_bake(obj, image, "HeatSim_Albedo", "HeatSim Albedo")
 
@@ -629,7 +620,7 @@ def bake_albedo_map(scene, obj, texture_size: int) -> BakedFluxMap | None:
             try:
                 bpy.ops.object.mode_set(mode="OBJECT")
             except Exception:
-                pass
+                logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
         bpy.ops.object.select_all(action="DESELECT")
         obj.select_set(True)
         view_layer.objects.active = obj
@@ -637,7 +628,7 @@ def bake_albedo_map(scene, obj, texture_size: int) -> BakedFluxMap | None:
         with bpy.context.temp_override(scene=scene, view_layer=view_layer, active_object=obj, selected_objects=[obj]):
             bpy.ops.object.bake(type="DIFFUSE", pass_filter={"COLOR"}, target="IMAGE_TEXTURES", margin=8, margin_type='EXTEND')
 
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         warnings.warn(f"HeatSim albedo bake failed for {obj.name}: {exc}")
         return None
     finally:
@@ -659,12 +650,12 @@ def bake_albedo_map(scene, obj, texture_size: int) -> BakedFluxMap | None:
         try:
             bpy.ops.object.select_all(action="DESELECT")
         except Exception:
-            pass
+            logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
         for item in prev_selection:
             try:
                 item.select_set(True)
             except Exception:
-                pass
+                logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
         view_layer.objects.active = prev_active
         # Restore original UV selections
         restore_uv_states(uv_snapshot)
@@ -681,13 +672,13 @@ def bake_albedo_map(scene, obj, texture_size: int) -> BakedFluxMap | None:
     # Use the bake UV layer for mapping baked pixels to vertices.
     uv_layer = mesh.uv_layers.get(BAKE_UV_LAYER_NAME) or (mesh.uv_layers.active or mesh.uv_layers[0])
 
-    loop_indices = np.zeros((len(mesh.loop_triangles), 3), dtype=np.int32)
+    loop_indices: np.ndarray = np.zeros((len(mesh.loop_triangles), 3), dtype=np.int32)
     mesh.loop_triangles.foreach_get("loops", loop_indices.ravel())
 
-    uv_data = np.zeros((len(mesh.loops), 2), dtype=np.float64)
+    uv_data: np.ndarray = np.zeros((len(mesh.loops), 2), dtype=np.float64)
     uv_layer.data.foreach_get("uv", uv_data.ravel())
 
-    loop_vertex_indices = np.zeros(len(mesh.loops), dtype=np.int32)
+    loop_vertex_indices: np.ndarray = np.zeros(len(mesh.loops), dtype=np.int32)
     mesh.loops.foreach_get("vertex_index", loop_vertex_indices)
 
     width, height = image.size
@@ -753,8 +744,7 @@ def bake_irradiance_map(scene, obj, texture_size: int, samples: int | None = Non
     try:
         obj["heat_sim_flux_uv"] = BAKE_UV_LAYER_NAME
     except Exception:
-        pass
-
+        logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
     image = _ensure_irradiance_image(obj.name, texture_size)
     _prepare_image_nodes_for_bake(obj, image, "HeatSim_Irradiance", "HeatSim Irradiance")
 
@@ -794,10 +784,10 @@ def bake_irradiance_map(scene, obj, texture_size: int, samples: int | None = Non
     try:
         render.engine = "CYCLES"
         if prev_sampling is not None:
-            if hasattr(cycles, "use_adaptive_sampling"):
+            if cycles is not None and hasattr(cycles, "use_adaptive_sampling"):
                 cycles.use_adaptive_sampling = False
-            if hasattr(cycles, "samples"):
-                cycles.samples = int(samples)
+            if cycles is not None and hasattr(cycles, "samples"):
+                cycles.samples = int(samples or 1)
         if hasattr(bake_settings, "use_pass_direct"):
             bake_settings.use_pass_direct = True
         if hasattr(bake_settings, "use_pass_indirect"):
@@ -819,7 +809,7 @@ def bake_irradiance_map(scene, obj, texture_size: int, samples: int | None = Non
             try:
                 bpy.ops.object.mode_set(mode="OBJECT")
             except Exception:
-                pass
+                logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
         bpy.ops.object.select_all(action="DESELECT")
         obj.select_set(True)
         view_layer.objects.active = obj
@@ -827,15 +817,15 @@ def bake_irradiance_map(scene, obj, texture_size: int, samples: int | None = Non
         with bpy.context.temp_override(scene=scene, view_layer=view_layer, active_object=obj, selected_objects=[obj]):
             bpy.ops.object.bake(type="DIFFUSE", pass_filter={"DIRECT", "INDIRECT"}, target="IMAGE_TEXTURES", margin=8, margin_type='EXTEND')
 
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         warnings.warn(f"HeatSim irradiance bake failed for {obj.name}: {exc}")
         return None
     finally:
         render.engine = prev_engine
         if prev_sampling is not None:
-            if prev_sampling[0] is not None and hasattr(cycles, "samples"):
+            if cycles is not None and prev_sampling[0] is not None and hasattr(cycles, "samples"):
                 cycles.samples = prev_sampling[0]
-            if prev_sampling[1] is not None and hasattr(cycles, "use_adaptive_sampling"):
+            if cycles is not None and prev_sampling[1] is not None and hasattr(cycles, "use_adaptive_sampling"):
                 cycles.use_adaptive_sampling = prev_sampling[1]
         if hasattr(bake_settings, "use_pass_direct") and prev_settings[0] is not None:
             bake_settings.use_pass_direct = prev_settings[0]
@@ -854,12 +844,12 @@ def bake_irradiance_map(scene, obj, texture_size: int, samples: int | None = Non
         try:
             bpy.ops.object.select_all(action="DESELECT")
         except Exception:
-            pass
+            logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
         for item in prev_selection:
             try:
                 item.select_set(True)
             except Exception:
-                pass
+                logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
         view_layer.objects.active = prev_active
         # Restore original UV selections
         restore_uv_states(uv_snapshot)
@@ -876,13 +866,13 @@ def bake_irradiance_map(scene, obj, texture_size: int, samples: int | None = Non
     # Use the bake UV layer for mapping baked pixels to vertices.
     uv_layer = mesh.uv_layers.get(BAKE_UV_LAYER_NAME) or (mesh.uv_layers.active or mesh.uv_layers[0])
 
-    loop_indices = np.zeros((len(mesh.loop_triangles), 3), dtype=np.int32)
+    loop_indices: np.ndarray = np.zeros((len(mesh.loop_triangles), 3), dtype=np.int32)
     mesh.loop_triangles.foreach_get("loops", loop_indices.ravel())
 
-    uv_data = np.zeros((len(mesh.loops), 2), dtype=np.float64)
+    uv_data: np.ndarray = np.zeros((len(mesh.loops), 2), dtype=np.float64)
     uv_layer.data.foreach_get("uv", uv_data.ravel())
 
-    loop_vertex_indices = np.zeros(len(mesh.loops), dtype=np.int32)
+    loop_vertex_indices: np.ndarray = np.zeros(len(mesh.loops), dtype=np.int32)
     mesh.loops.foreach_get("vertex_index", loop_vertex_indices)
 
     width, height = image.size
