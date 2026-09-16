@@ -144,7 +144,7 @@ def heatsim_solve(
     ):
         progress.add_task(f"Solving {blend_file.stem}...")
         clients.initialize(blend_file, blend_file.parent)
-        clients.heatsim_solve(**asdict(config.thermal))
+        clients.heatsim_solve_config(asdict(config.thermal))
         if output_file is not None:
             clients.save_file(output_file)
 

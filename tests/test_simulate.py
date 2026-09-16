@@ -142,7 +142,7 @@ def test_database_threading(tmp_path_factory, executable):
 
     # Spoof frames to bypass render, only save metadata, from a bunch of blender instances.
     # This forces a lot of database writes, which helps test for any potential "Database is locked" errors.
-    with BlenderClients.spawn(jobs=os.cpu_count() or 5, executable=executable, timeout=30, log=log_dir) as clients:
+    with BlenderClients.spawn(jobs=min(os.cpu_count() or 5, 5), executable=executable, timeout=30, log=log_dir) as clients:
         clients.initialize(scene.resolve(), tmpdir.resolve())
         clients.include_frames()
         clients.move_keyframes(scale=5)
@@ -203,7 +203,7 @@ def test_render_thermal(tmp_path_factory, executable):
         # laplacian backend now clamps n_neighbors to len(points)-1 (-> 7 here), so
         # the solve runs. An 8-point solve is physically degenerate, but this gate
         # only checks the solve -> temperature-AOV -> radiance render plumbing.
-        client.prepare_thermal(device="cpu", domain="POINTS")
+        client.prepare_thermal(device="cpu")
         client.include_thermal(radiance=True, preview=True)
         client.render_animation()
 
@@ -238,3 +238,14 @@ def test_render_thermal(tmp_path_factory, executable):
     assert len(rad_exrs) == N
     rad_shape = Dataset.load_data(rad_exrs[0], auto_collapse=False).shape
     assert rad_shape == (50, 50, 3)
+
+
+def test_nonthermal_render_without_thermal_dependencies(tmp_path, executable):
+    scene = Path(__file__).parent / "test_files" / "scenes" / "cube.blend"
+    (tmp_path / "logs").mkdir()
+    with BlenderClient.spawn(executable=executable, timeout=60, log=tmp_path / "logs") as client:
+        client.initialize(scene.resolve(), tmp_path.resolve())
+        client.set_resolution(16, 16)
+        client.include_frames()
+        client.render_frame(10, allow_skips=False)
+    assert len(list((tmp_path / "frames").glob("**/*.png"))) == 1

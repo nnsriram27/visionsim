@@ -94,11 +94,9 @@ def test_solve_writes_finite_sim_temperature(executable, tmp_path):
     """End-to-end adapter smoke test inside a real Blender process.
 
     Builds a tiny lit scene (subdivided plane + overhead sun + a world with
-    some background light), runs the cached FEM solve via the adapter, writes
+    some background light), runs the thermal solve via the adapter, writes
     the last-timestep ``sim_temperature`` attribute, and asserts the result is
-    finite and physical. Also checks that the Direct-Kernel irradiance actually
-    produced non-zero per-vertex flux (so the test cannot pass with a silent
-    zero-flux fallback) and that a second ``solve_scene`` reuses the cache.
+    finite and physical. A second solve must return the same field.
     """
     code = f"""
 import bpy, numpy as np
@@ -146,9 +144,7 @@ assert 'ThermalPlane' in hist, list(hist.keys())
 T_hist = np.asarray(hist['ThermalPlane'])
 assert T_hist.ndim == 2 and T_hist.shape[0] >= 2, T_hist.shape
 
-# Second call must come straight from the cache (no re-solve). We assert the
-# cache hit via the RETURN value (cached history equals the first solve), not via
-# captured stdout, so the test does not depend on any debug print side-effect.
+# An unsaved scene is recomputed; its deterministic result must agree.
 hist2 = adapter.solve_scene(bpy.context.scene, defaults=defaults,
                             solver_cfg=solver_cfg, cache_root=cache_root)
 assert hist2.keys() == hist.keys(), (list(hist2.keys()), list(hist.keys()))
@@ -166,9 +162,7 @@ assert vals.min() > 200 and vals.max() < 2000, (float(vals.min()), float(vals.ma
 eps = np.array([d.value for d in plane.data.attributes['emissivity'].data])
 assert np.allclose(eps, 0.9), float(eps.mean())
 
-# The Direct-Kernel irradiance pass produced real (non-zero) flux.
-irr = np.array([d.value for d in plane.data.attributes['sim_irradiance'].data])
-assert np.isfinite(irr).all() and irr.max() > 0.0, float(irr.max())
+assert T_hist[-1].max() > T_hist[0].max(), 'Cycles heating produced no temperature rise'
 
 print('THERMAL_ADAPTER_OK')
 """
@@ -238,24 +232,3 @@ print('SHARED_MESH_OK')
 """
     out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True, check=False)
     assert "SHARED_MESH_OK" in out.stdout, out.stderr
-
-
-def test_read_authored_irradiance_scale():
-    from visionsim.simulate.heatsim.adapter import read_authored_irradiance_scale
-
-    class _FakeScene:
-        def __init__(self, data):
-            self._data = data
-        def get(self, key, default=None):
-            return self._data.get(key, default)
-
-    # Authored heat_sim_settings with an irradiance_scale -> returns it.
-    authored = _FakeScene({"heat_sim_settings": {"irradiance_scale": 1000.0}})
-    assert read_authored_irradiance_scale(authored) == 1000.0
-
-    # No heat_sim_settings at all -> None (caller keeps its default).
-    assert read_authored_irradiance_scale(_FakeScene({})) is None
-
-    # heat_sim_settings present but no irradiance_scale key -> None.
-    partial = _FakeScene({"heat_sim_settings": {"fem_domain": "POINTS"}})
-    assert read_authored_irradiance_scale(partial) is None

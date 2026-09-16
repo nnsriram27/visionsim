@@ -1,12 +1,4 @@
-"""Host-side (no Blender) unit tests for the thermal include-dispatch in ``render_job``.
-
-The parity test (``test_docstrings.test_output_configs``) only checks that the
-``ThermalConfig`` dataclass and the ``exposed_include_thermal`` signature agree; it
-does NOT exercise the job-level dispatch.  These tests close that gap by driving
-``render_job`` with a fake client and asserting that ``config.include_thermal``
-triggers ``prepare_thermal(**asdict(config.thermal))`` immediately followed by
-``include_thermal(**asdict(config.thermal))`` (and that nothing fires when disabled).
-"""
+"""Check that render_job sends one validated thermal configuration to Blender."""
 
 from __future__ import annotations
 
@@ -33,26 +25,18 @@ class _RecordingClient:
         return _record
 
 
-def test_render_job_dispatches_thermal_prepare_then_include():
+def test_render_job_dispatches_one_thermal_config():
     client = _RecordingClient()
     config = RenderConfig(include_thermal=True)
 
     render_job(client, "scene.blend", "out", config=config, dry_run=True)
 
     names = [name for name, _, _ in client.calls]
-    assert "prepare_thermal" in names, names
-    assert "include_thermal" in names, names
-
-    # prepare_thermal must come *immediately* before include_thermal.
-    i = names.index("prepare_thermal")
-    assert names[i + 1] == "include_thermal", names
+    assert names.count("configure_thermal") == 1, names
 
     expected = asdict(config.thermal)
-    _prep_name, prep_args, prep_kwargs = client.calls[i]
-    _incl_name, incl_args, incl_kwargs = client.calls[i + 1]
-    assert prep_args == () and incl_args == ()
-    assert prep_kwargs == expected
-    assert incl_kwargs == expected
+    _name, args, kwargs = client.calls[names.index("configure_thermal")]
+    assert args == (expected,) and kwargs == {}
 
 
 def test_render_job_skips_thermal_when_disabled():
@@ -62,5 +46,4 @@ def test_render_job_skips_thermal_when_disabled():
     render_job(client, "scene.blend", "out", config=config, dry_run=True)
 
     names = [name for name, _, _ in client.calls]
-    assert "prepare_thermal" not in names, names
-    assert "include_thermal" not in names, names
+    assert "configure_thermal" not in names, names

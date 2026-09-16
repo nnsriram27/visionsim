@@ -462,6 +462,7 @@ class BlenderService(rpyc.Service):
         self._camera: bpy.types.Camera | None = None
         self._thermal_radiance: dict[str, Any] | None = None
         self._thermal_assignment: Any | None = None
+        self._persistent_data_before_thermal: bool | None = None
         # TEXEL render domain: the AtlasPlan from the most recent exposed_prepare_thermal
         # call (None in VERTEX mode, or if TEXEL mode found nothing atlas-eligible).
         self._thermal_atlas_plan: Any | None = None
@@ -509,6 +510,7 @@ class BlenderService(rpyc.Service):
         self._camera = None
         self._thermal_radiance = None
         self._thermal_assignment = None
+        self._persistent_data_before_thermal = None
         self._thermal_atlas_plan = None
 
     def register_output_type(
@@ -546,7 +548,7 @@ class BlenderService(rpyc.Service):
             self.log.info(f"Database at {db_path} already exists, overwriting...")
             db_path.unlink()
 
-        db = SqliteDatabase(db_path, pragmas=_DEFAULT_PRAGMAS)
+        db = SqliteDatabase(str(db_path), pragmas=_DEFAULT_PRAGMAS)
         self._outputs[subpath] = (node, slot, db, camera_defaults)
 
     def _include_output(
@@ -1509,7 +1511,6 @@ class BlenderService(rpyc.Service):
         assignments: str | None = None,
     ) -> tuple[dict, dict, Path, Any]:
         """Resolve thermal material defaults, solver settings, cache root and sidecar."""
-        from visionsim.simulate.heatsim import adapter
 
         defaults = {
             "initial_temperature_K": initial_temperature_K,
@@ -1519,17 +1520,6 @@ class BlenderService(rpyc.Service):
             "emissivity": emissivity,
             "irradiance_scale": irradiance_scale,
         }
-        # A heat-sim-authored .blend carries its own scene-level irradiance_scale
-        # (e.g. 1000). Let it override the ThermalConfig default so the scene
-        # renders identically to the addon without manual CLI tuning.
-        _authored_scale = adapter.read_authored_irradiance_scale(self.scene)
-        if _authored_scale is not None and _authored_scale != defaults["irradiance_scale"]:
-            server_log.info(
-                "thermal: using blend-authored irradiance_scale=%.3g (overrides configured %.3g)",
-                _authored_scale, defaults["irradiance_scale"],
-            )
-        if _authored_scale is not None:
-            defaults["irradiance_scale"] = _authored_scale
         solver_cfg = {
             "sim_time_s": sim_time_s,
             "timestep_s": timestep_s,
@@ -1570,6 +1560,7 @@ class BlenderService(rpyc.Service):
         atlas_tile_min: int = 16,
         atlas_tile_max: int = 512,
         atlas_texel_soft_max: int = 500_000,
+        recompute: bool = False,
     ) -> tuple[dict, Any, Path]:
         """Build the requested sampling plan and solve a fixed scene snapshot."""
         from visionsim.simulate.heatsim import adapter, cache
@@ -1612,6 +1603,7 @@ class BlenderService(rpyc.Service):
             assignment=assignment,
             atlas_plan=atlas_plan,
             source_digest=source_digest,
+            recompute=recompute,
         )
         return history, atlas_plan, cache_root
 
@@ -1626,16 +1618,22 @@ class BlenderService(rpyc.Service):
         from visionsim.simulate.heatsim.names import ATLAS_IMAGE_NAME
 
         existing = bpy.data.images.get(ATLAS_IMAGE_NAME)
+        if existing is not None and not existing.get("heatsim_generated", False):
+            raise RuntimeError(f"Image {ATLAS_IMAGE_NAME!r} is user-owned; cannot replace it with a thermal atlas")
+        bound_nodes = [
+            node for mat in bpy.data.materials if mat.use_nodes and mat.node_tree is not None
+            for node in mat.node_tree.nodes
+            if node.bl_idname == "ShaderNodeTexImage" and node.image == existing
+        ] if existing is not None else []
         if existing is not None:
             bpy.data.images.remove(existing)
         image = bpy.data.images.load(str(atlas_path))
         image.name = ATLAS_IMAGE_NAME
-        try:
-            image.colorspace_settings.name = "Non-Color"
-        except Exception:  # noqa: BLE001, S110 - see heatsim per-file-ignores in pyproject.toml
-            # pragma: no cover - defensive, mirrors irradiance.py's style
-            pass
+        image["heatsim_generated"] = True
+        image.colorspace_settings.name = "Non-Color"
         image.pack()
+        for node in bound_nodes:
+            node.image = image
 
     @require_initialized_service
     def exposed_prepare_thermal(
@@ -1658,6 +1656,7 @@ class BlenderService(rpyc.Service):
         atlas_tile_min: int = 16,
         atlas_tile_max: int = 512,
         atlas_texel_soft_max: int = 500_000,
+        recompute: bool = False,
         radiance_scale: float = 1.0,
         exr_codec: EXR_CODECS = "ZIP",
         bit_depth: Literal[16, 32] = 32,
@@ -1677,6 +1676,7 @@ class BlenderService(rpyc.Service):
         # (background only) and makes the sequence deterministic.
         if self.scene.render.use_persistent_data:
             self.log.info("thermal: disabling Cycles persistent data (stale AOV state between frames)")
+            self._persistent_data_before_thermal = True
             self.scene.render.use_persistent_data = False
 
         history, atlas_plan, cache_root = self._thermal_solve(
@@ -1697,6 +1697,7 @@ class BlenderService(rpyc.Service):
             atlas_tile_min=atlas_tile_min,
             atlas_tile_max=atlas_tile_max,
             atlas_texel_soft_max=atlas_texel_soft_max,
+            recompute=recompute,
         )
         self._thermal_atlas_plan = atlas_plan
         # Stamp BEFORE writing frame attributes: stamp_default_temperatures blindly sets
@@ -1772,6 +1773,7 @@ class BlenderService(rpyc.Service):
         atlas_tile_min: int = 16,
         atlas_tile_max: int = 512,
         atlas_texel_soft_max: int = 500_000,
+        recompute: bool = False,
         radiance_scale: float = 1.0,
         exr_codec: EXR_CODECS = "ZIP",
         bit_depth: Literal[16, 32] = 32,
@@ -1796,6 +1798,7 @@ class BlenderService(rpyc.Service):
             atlas_tile_min=atlas_tile_min,
             atlas_tile_max=atlas_tile_max,
             atlas_texel_soft_max=atlas_texel_soft_max,
+            recompute=recompute,
         )
 
     @require_initialized_service
@@ -1819,6 +1822,7 @@ class BlenderService(rpyc.Service):
         atlas_tile_min: int = 16,
         atlas_tile_max: int = 512,
         atlas_texel_soft_max: int = 500_000,
+        recompute: bool = False,
         radiance_scale: float = 1.0,
         exr_codec: EXR_CODECS = "ZIP",
         bit_depth: Literal[16, 32] = 32,
@@ -1890,6 +1894,29 @@ class BlenderService(rpyc.Service):
                 "exr_codec": exr_codec,
                 "bit_depth": bit_depth,
             }
+
+    @staticmethod
+    def _thermal_values(config: dict[str, Any]) -> dict[str, Any]:
+        from dataclasses import asdict
+
+        from visionsim.simulate.config import ThermalConfig
+
+        values = asdict(ThermalConfig(**dict(config)))
+        if values["assignments"] is not None:
+            values["assignments"] = str(values["assignments"])
+        return values
+
+    @require_initialized_service
+    def exposed_configure_thermal(self, config: dict[str, Any]) -> None:
+        """Validate one serialized ThermalConfig and prepare both thermal outputs."""
+        values = self._thermal_values(config)
+        self.exposed_prepare_thermal(**values)
+        self.exposed_include_thermal(**values)
+
+    @require_initialized_service
+    def exposed_heatsim_solve_config(self, config: dict[str, Any]) -> None:
+        """Validate one serialized ThermalConfig and solve without render outputs."""
+        self.exposed_heatsim_solve(**self._thermal_values(config))
 
     @require_initialized_service
     def exposed_load_addons(self, *addons: str) -> None:
@@ -2360,7 +2387,7 @@ class BlenderService(rpyc.Service):
                             _entry[0].mute = _sp != "thermal_radiance"
 
                         _thermal_state = thermal_shader.enter_thermal_scene(
-                            self.scene, radiance_scale=self._thermal_radiance["radiance_scale"]
+                            self.scene, radiance_scale=_thermal_armed["radiance_scale"]
                         )
                         bpy.ops.render.render(animation=False, write_still=False)
                 finally:
@@ -2448,17 +2475,13 @@ class BlenderService(rpyc.Service):
         scene_original_range = self.scene.frame_start, self.scene.frame_end
         self.scene.frame_start, self.scene.frame_end = 0, 1_048_574
 
-        # Capture frames!
-        for frame_number in frame_numbers:
-            # Tell blender to update camera position and all animations and render frame
-            self.exposed_render_frame(frame_number, allow_skips=allow_skips, dry_run=dry_run)
-
-            # Call any progress callbacks
-            if update_fn is not None:
-                update_fn(advance=1)
-
-        # Restore animation range to original values
-        self.scene.frame_start, self.scene.frame_end = scene_original_range
+        try:
+            for frame_number in frame_numbers:
+                self.exposed_render_frame(frame_number, allow_skips=allow_skips, dry_run=dry_run)
+                if update_fn is not None:
+                    update_fn(advance=1)
+        finally:
+            self.scene.frame_start, self.scene.frame_end = scene_original_range
 
     @require_initialized_service
     def exposed_render_animation(
@@ -2518,7 +2541,13 @@ class BlenderService(rpyc.Service):
 
         self.log.info(f"Saving scene to {path}...")
         path.parent.mkdir(exist_ok=True, parents=True)
-        bpy.ops.wm.save_as_mainfile(filepath=str(path))
+        current_persistent = self.scene.render.use_persistent_data
+        try:
+            if self._persistent_data_before_thermal is not None:
+                self.scene.render.use_persistent_data = self._persistent_data_before_thermal
+            bpy.ops.wm.save_as_mainfile(filepath=str(path))
+        finally:
+            self.scene.render.use_persistent_data = current_persistent
 
 
 class BlenderClient:
@@ -2782,6 +2811,12 @@ class BlenderClients(tuple):
 
         return inner
 
+    def __getattr__(self, name: str) -> Callable[..., Any]:
+        method = getattr(BlenderService, EXPOSED_PREFIX + name, None)
+        if method is None:
+            raise AttributeError(name)
+        return self._method_dispatch_factory(name, method)
+
     def __enter__(self) -> Self:
         """Connect all clients to their render servers via a context manager.
 
@@ -2793,17 +2828,6 @@ class BlenderClients(tuple):
             # Enter each client's context, connecting them all to servers
             self.stack.enter_context(client)
 
-            # Dynamically generate methods that dispatch to all clients
-            # TODO: We currently assume all clients use `BlenderService`.
-            # TODO: Move this to a __getattr__ method like in BlenderClient!
-            for method_name in dir(BlenderService):
-                if method_name.startswith(EXPOSED_PREFIX):
-                    name = method_name.removeprefix(EXPOSED_PREFIX)
-
-                    if name not in dir(self):
-                        method = getattr(BlenderService, method_name)
-                        multicall = self._method_dispatch_factory(name, method)
-                        setattr(self, name, multicall)
         return self
 
     def __exit__(

@@ -32,69 +32,18 @@ FORMATS: dict[str, str]
 COLOR_MODE_CHANNELS: Incomplete
 
 def require_connected_client(func: Callable[..., Any]) -> Callable[..., Any]:
-    """Decorator which ensures a client is connected.
-
-    Args:
-        func (Callable[..., Any]): Function to decorate
-
-    Raises:
-        RuntimeError: raised if client is not connected.
-
-    Returns:
-        Callable[..., Any]: Decorated function.
-    """
+    ...
 
 def require_connected_clients(func: Callable[..., Any]) -> Callable[..., Any]:
-    """Decorator which ensures all clients are connected.
-
-    Args:
-        func (Callable[..., Any]): Function to decorate
-
-    Raises:
-        RuntimeError: if at least one client is not connected.
-
-    Returns:
-        Callable[..., Any]: Decorated function.
-    """
+    ...
 
 def require_initialized_service(func: Callable[..., Any]) -> Callable[..., Any]:
-    """Decorator which ensures the render service was initialized.
-
-    Args:
-        func (Callable[..., Any]): Function to decorate
-
-    Raises:
-        RuntimeError: raised if :meth:`client.initialize <BlenderService.exposed_initialize>` has not been previously called.
-
-    Returns:
-        Callable[..., Any]: Decorated function.
-    """
+    ...
 
 def validate_camera_moved(func: Callable[..., Any]) -> Callable[..., Any]:
-    """Decorator which emits a warning if the camera was not moved.
-
-    Args:
-        func (Callable[..., Any]): Function to decorate
-
-    Returns:
-        Callable[..., Any]: Decorated function.
-    """
+    ...
 
 class BlenderServer(rpyc.utils.server.Server):
-    """Expose a :class:`BlenderService` to the outside world via RPCs.
-
-    Example:
-        Once created, it can be started, which will block and await for an external connection from a :class:`BlenderClient`:
-
-        .. code-block:: python
-
-            server = BlenderServer()
-            server.start()
-
-        However, this needs to be called within blender's runtime. Instead one can use :meth:`BlenderServer.spawn`
-        to spawn one or more blender instances, each with their own server.
-
-    """
 
     def __init__(
         self,
@@ -104,23 +53,7 @@ class BlenderServer(rpyc.utils.server.Server):
         extra_config: dict | None = None,
         **kwargs,
     ) -> None:
-        """Initialize a :class:`BlenderServer` instance
-
-        Args:
-            hostname (bytes | str | None, optional): the host to bind to. By default, the 'wildcard address' is used
-                to listen on all interfaces. If not properly secured, the server can receive traffic from
-                unintended or even malicious sources. Defaults to None (wildcard).
-            port (bytes | str | int | None, optional): the TCP port to bind to. Defaults to 0 (bind to a random open port).
-            service (type[BlenderService], optional): the service to expose, must be a :class:`BlenderService` subclass. Defaults to :class:`BlenderService`.
-            extra_config (dict, optional): the configuration dictionary that is passed to the RPyC connection.
-                Defaults to ``{"allow_all_attrs": True, "allow_setattr": True}``.
-            **kwargs: Additional keyword arguments which are passed to the
-                `rpyc.utils.server.Server <https://rpyc.readthedocs.io/en/latest/api/utils_server.html#rpyc.utils.server.Server>`_ constructor.
-
-        Raises:
-            RuntimeError: a :class:`BlenderServer` needs to be instantiated from within a blender instance.
-            ValueError: the exposed service must be :class:`BlenderService` or subclass.
-        """
+        ...
 
     @contextmanager
     @staticmethod
@@ -131,79 +64,21 @@ class BlenderServer(rpyc.utils.server.Server):
         autoexec: bool = False,
         executable: str | os.PathLike | None = None,
     ) -> Generator[tuple[list[subprocess.Popen], list[tuple[str, int]]]]:
-        """Spawn one or more blender instances and start a :class:`BlenderServer` in each.
-
-        This is roughly equivalent to calling ``blender -b --python blender.py`` in many subprocesses,
-        where ``blender.py`` initializes and ``start``\\s a server instance. Proper logging and termination of
-        these processes is also taken care of.
-
-        Note:
-            The returned processes and connection settings are not guaranteed to be in the same order.
-
-        Warning:
-            If ``log`` is a file handle or descriptor, such as redirecting Blender logs to subprocess.STDOUT,
-            the writing process might get overwhelmed which can cause silent errors, dropped logs and locked
-            processes. It is thus not recommended for long render jobs to set ``log`` to anything but DEVNULL
-            or a directory.
-
-        Args:
-            jobs (int, optional): number of jobs to spawn. Defaults to 1.
-            timeout (float, optional): try to discover spawned instances for ``timeout``
-                (in seconds) before giving up. If negative, a port will be randomly selected and assigned to the
-                spawned server, bypassing the need for discovery and timeouts. Note that when a port is assigned
-                this context manager will immediately yield, even if the server is not yet ready to accept
-                incoming connections. Defaults to assigning a port to spawned server (-1 seconds).
-            log (str | os.PathLike | FILE | tuple[FILE, FILE], optional): path to log directory, file handle,
-                descriptor or tuple thereof. Stdout and stderr will be captured and saved if supplied.
-                Defaults to subprocess.DEVNULL for both stdout/stderr.
-            autoexec (bool, optional): if true, allow execution of any embedded python scripts within blender.
-                For more, see blender's CLI documentation. Defaults to False.
-            executable (str | os.PathLike | None, optional): path to Blender's executable. Defaults to looking
-                for blender on $PATH, but is useful when targeting a specific blender install, or when it's installed
-                via a package manager such as flatpak. Setting it to "flatpak run --die-with-parent org.blender.Blender"
-                might be required when using flatpaks. Defaults to None (system PATH).
-
-        Raises:
-            TimeoutError: raise if unable to discover spawned servers in ``timeout`` seconds and kill any spawned processes.
-
-        Yields:
-            Generator[tuple[list[subprocess.Popen], list[tuple[str, int]]]]:  A tuple containing:
-                - list[subprocess.Popen]: List of ``subprocess.Popen`` corresponding to all spawned servers.
-                - list[tuple[str, int]]: List of connection setting for each server, where each element is a (hostname, port) tuple.
-        """
+        ...
 
     @staticmethod
     def spawn_registry() -> tuple[Process, rpyc.utils.registry.UDPRegistryClient]:
-        """Spawn a registry server and client to aid in server discovery, or return cached result.
-        While this method can be called directly, it will be invoked automatically by :meth:`discover` and :meth:`spawn`.
-
-        Returns:
-            tuple[Process, rpyc.utils.registry.UDPRegistryClient]: A tuple containing:
-                - Process: process running the global registry server,
-                - rpyc.utils.registry.UDPRegistryClient: global registry client
-        """
+        ...
 
     @staticmethod
     def _launch_registry() -> None: ...
     @staticmethod
     def discover() -> list[tuple[str, int]]:
-        """Discover any :class:`BlenderServer`\\s that are already running and return their connection parameters.
-
-        Note:
-            A discoverable server might already be in use and can refuse connection attempts.
-
-        Returns:
-            list[tuple[str, int]]: List of connection setting for each server, where each element is a (hostname, port) tuple.
-        """
+        ...
 
     def _accept_method(self, sock: socket.socket) -> None: ...
 
 class BlenderService(rpyc.Service):
-    """Server-side API to interact with blender and render novel views.
-
-    Most of the methods of a :class:`BlenderClient` instance are remote procedure calls to
-    a connected blender service. These methods are prefixed by ``exposed_``.
-    """
 
     ALIASES: tuple[str]
     _conn: rpyc.Connection | None
@@ -214,42 +89,21 @@ class BlenderService(rpyc.Service):
     _outputs: dict[str, Any]
     _camera: bpy.types.Camera | None
     _thermal_radiance: dict[str, Any] | None
-    _thermal_animated_history: dict[str, Any] | None
-    _thermal_animated_frames: list[int] | None
-    _thermal_animated_defaults: dict[str, Any] | None
     _thermal_assignment: Any | None
     _thermal_atlas_plan: Any | None
 
     def __init__(self) -> None:
-        """Initialize render service.
-
-        Raises:
-            RuntimeError: raised if not within blender's runtime.
-        """
+        ...
 
     def _clear_cached_properties(self) -> None: ...
     def on_connect(self, conn: rpyc.Connection) -> None:
-        """Called when the connection is established
-
-        Args:
-            conn (rpyc.Connection): Connection object
-        """
+        ...
 
     def on_disconnect(self, conn: rpyc.Connection) -> None:
-        """Called when the connection has already terminated. Resets blender runtime.
-        (must not perform any IO on the connection)
-
-        Args:
-            conn (rpyc.Connection): Connection object
-        """
+        ...
 
     def reset(self) -> None:
-        """Cleans up and resets blender runtime.
-
-        De-initialize service by restoring blender to it's startup state,
-        ensuring any cached attributes are cleaned (otherwise objects will be stale),
-        and resetting any instance variables that were previously initialized.
-        """
+        ...
 
     def register_output_type(
         self,
@@ -258,27 +112,7 @@ class BlenderService(rpyc.Service):
         slot: bpy.types.NodeOutputFileSlotFile | bpy.types.NodeCompositorFileOutputItem,
         **camera_defaults,
     ) -> None:
-        """Register a new output datatype. If this is not called by an ``include_`` method, the
-        metadata for that datatype will not be saved to the database and the path to which the data
-        is saved will not be updated at every render.
-
-        Warning:
-            You must pass in the slot instance that was returned when a new ``file_output_item``
-            was created and not simply one of the `node.file_output_items <https://docs.blender.org/api/
-            current/bpy.types.CompositorNodeOutputFile.html#bpy.types.CompositorNodeOutputFile.file_output_items>`_
-            as these are readonly!
-
-        Args:
-            subpath (str): Path suffix, from root data directory, of the new datatype (eg: "previews/depths")
-            node (bpy.types.CompositorNodeOutputFile): Output file node responsible for saving
-            slot (bpy.types.NodeOutputFileSlotFile | bpy.types.NodeCompositorFileOutputItem): Slot of node which
-                will save the output data.
-            **camera_defaults: Any addition camera information that will be added by default. Commonly,
-                the number of output channels is passed in (eg: c=4 for RGBA).
-
-        Raises:
-            RuntimeError: raised if output type has already been registered.
-        """
+        ...
 
     def _include_output(
         self,
@@ -294,26 +128,7 @@ class BlenderService(rpyc.Service):
         c: int | None = None,
         denoise: bool = False,
     ) -> None:
-        """Helper function to create a file output node, link it, and register the output type.
-
-        Args:
-            subpath (str): Subpath to save output in.
-            source_socket (bpy.types.NodeSocket): Socket to link to output node.
-            label (str, optional): Label for output node. Defaults to None.
-            file_format (str, optional): Format to save output as. Defaults to "OPEN_EXR".
-            color_mode (str, optional): Color mode to save output as. Defaults to "RGB".
-            exr_codec (str, optional): EXR codec to use. Defaults to "DWAA".
-            bit_depth (int, optional): Bit depth to use. Defaults to 32.
-            preview (bool, optional): If true, output node will be configured for preview. Defaults to False.
-            preview_view_transform (str, optional): When set on a preview output, overrides the preview
-                default "Raw" view transform (e.g. "Standard" to sRGB-encode a colormapped image).
-                Ignored for non-preview outputs. Defaults to None (leave the preview default "Raw").
-            c (int, optional): Number of channels for registration. Defaults to None (inferred from color_mode).
-            denoise (bool, optional): If true, insert a denoise compositor node before the file output.
-                This enables the Cycles denoising data view layer passes (albedo and normal) and connects
-                them to the denoise node for higher-quality denoising. Only available for Cycles render engine.
-                Defaults to False.
-        """
+        ...
 
     def _save_metadata(
         self,
@@ -322,111 +137,62 @@ class BlenderService(rpyc.Service):
         transform_matrix: list[float],
         index: int,
     ) -> None:
-        """Post-render callback responsible for saving frame metadata to each database.
-
-        Args:
-            paths (dict[str, Path]): A dictionary mapping the data type's subpath to the recently rendered file.
-                For example, ``{"frames": "0001/321.png", "depths": "0001/321.exr"}``.
-            camera_info (dict[str, str  |  float  |  int]): Camera info at current index, as retrieved by ``BlenderService.camera_info``.
-            transform_matrix (list[float]): Current camera extrinsic matrix.
-            index (int): Current frame index.
-        """
+        ...
 
     @property
     @require_initialized_service
     def scene(self) -> bpy.types.Scene:
-        """Get current blender scene"""
+        ...
 
     @property
     @require_initialized_service
     def tree(self) -> bpy.types.CompositorNodeTree:
-        """Get current scene's node tree"""
+        ...
 
     @functools.cached_property
     @require_initialized_service
     def render_layers(self) -> bpy.types.CompositorNodeRLayers:
-        """Get and cache render layers node, create one if needed."""
+        ...
 
     @property
     @require_initialized_service
     def view_layer(self) -> bpy.types.ViewLayer:
-        """Get current view layer"""
+        ...
 
     @property
     @require_initialized_service
     def camera(self) -> bpy.types.Camera:
-        """Get active camera, detect when it changes."""
+        ...
 
     @require_initialized_service
     def get_parents(self, obj: bpy.types.Object) -> list[bpy.types.Object]:
-        """Recursively retrieves parent objects of a given object in Blender
-
-        Args:
-            obj: Object to find parent of.
-
-        Returns:
-            list[bpy.types.Object]: Parent objects of obj.
-        """
+        ...
 
     def exposed_with_logger(self, log: logging.Logger) -> None:
-        """Use supplied logger, if logger is initialized in client, messages will log to the client.
-
-        Args:
-            log (logging.Logger): Logger to use for messages
-        """
+        ...
     root_path: Path
     blend_file: Path
     _use_animation: bool
     _disabled_fcurves: set[bpy.types.Action]
 
     def exposed_initialize(self, blend_file: str | os.PathLike, root_path: str | os.PathLike, **kwargs) -> None:
-        """Initialize BlenderService and load blendfile.
-
-        Args:
-            blend_file (str | os.PathLike): path of scene file to load.
-            root_path (str | os.PathLike): path at which to save rendered results.
-            **kwargs: Additional keyword arguments to be passed to
-                `bpy.ops.wm.open_mainfile <https://docs.blender.org/api/current/bpy.ops.wm.html#bpy.ops.wm.open_mainfile>`_.
-        """
+        ...
 
     @require_initialized_service
     def exposed_iter_fcurves(self, actions: list[bpy.types.Action] | None = None) -> Iterator[bpy.types.FCurve]:
-        """Yield fcurves of all actions.
-
-        This abstracts away the API for accessing fcurves which changed to using channelbags in v4.4, see
-        `release notes here <https://developer.blender.org/docs/release_notes/4.4/upgrading/slotted_actions/>`_.
-
-        Args:
-            actions (list[bpy.types.Action] | None, optional): Only yield fcurves from these actions if specified,
-                otherwise use all actions. Defaults to None.
-
-        Yields:
-            Iterator[bpy.types.FCurve]: an fcurve object from the scene or action
-        """
+        ...
 
     @require_initialized_service
     def exposed_get_original_fps(self) -> float:
-        """Get effective framerate (fps/fps_base).
-
-        Returns:
-            float: Frame rate of scene.
-        """
+        ...
 
     @require_initialized_service
     def exposed_animation_range(self) -> range:
-        """Get animation range of current scene as range(start, end+1, step).
-
-        Returns:
-            range: Range of frames in animation.
-        """
+        ...
 
     @require_initialized_service
     def exposed_animation_range_tuple(self) -> tuple[int, int, int]:
-        """Get animation range of current scene as a tuple of (start, end, step).
-
-        Returns:
-            tuple[int, int, int]: Frame start, end, and step of animation.
-        """
+        ...
 
     @require_initialized_service
     def exposed_include_composites(
@@ -436,21 +202,7 @@ class BlenderService(rpyc.Service):
         exr_codec: EXR_CODECS | None = None,
         bit_depth: Literal[8, 16, 32] | None = None,
     ) -> None:
-        """Sets up Blender to include the outputs of any existing compositor nodes groups.
-
-        Note: A default arguments of ``None`` means do not change setting inherited from the blendfile's ``Output`` settings.
-
-        Args:
-            file_format (str | None, optional): Format to save composited render as. Options vary depending on the version of Blender,
-                with the following being broadly available: ('BMP', 'IRIS', 'PNG', 'JPEG', 'JPEG2000', 'TARGA', 'TARGA_RAW',
-                'CINEON', 'DPX', 'OPEN_EXR', 'HDR', 'TIFF', 'WEBP'). Defaults to None.
-            color_mode (str | None, optional): Typically one of ('BW', 'RGB', 'RGBA'). Defaults to None.
-            exr_codec (str | None, optional): Codec used to compress exr file. Only used when ``file_format="OPEN_EXR"``,
-                options vary depending on the version of Blender, with the following being broadly available:
-                ('NONE', 'PXR24', 'ZIP', 'PIZ', 'RLE', 'ZIPS', 'DWAA', 'DWAB'). Defaults to None.
-            bit_depth (int | None, optional): Bit depth per channel, also referred to as color-depth. Options depend on the
-                chosen file format, with 8, 16 and 32bits being common. Defaults to None.
-        """
+        ...
 
     @require_initialized_service
     def exposed_include_frames(
@@ -460,25 +212,7 @@ class BlenderService(rpyc.Service):
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[8, 16, 32] = 8,
     ) -> None:
-        """Sets up Blender compositor to include ground truth rendered images, bypassing any existing compositor nodes.
-
-        Note:
-            For linear intensity renders, use the "OPEN_EXR" format with and 32 or 16 bits.
-
-        Args:
-            file_format (str, optional): Format to save ground truth render as. Options vary depending on the version of Blender,
-                with the following being broadly available: ('BMP', 'IRIS', 'PNG', 'JPEG', 'JPEG2000', 'TARGA', 'TARGA_RAW',
-                'CINEON', 'DPX', 'OPEN_EXR', 'HDR', 'TIFF', 'WEBP'). Defaults to "PNG".
-            color_mode (str, optional): Typically one of ('BW', 'RGB', 'RGBA'). Defaults to "RGB".
-            exr_codec (str, optional): Codec used to compress exr file. Only used when ``file_format="OPEN_EXR"``,
-                options vary depending on the version of Blender, with the following being broadly available:
-                ('NONE', 'PXR24', 'ZIP', 'PIZ', 'RLE', 'ZIPS', 'DWAA', 'DWAB'). Defaults to "DWAA".
-            bit_depth (int, optional): Bit depth per channel, also referred to as color-depth. Options depend on the
-                chosen file format, with 8, 16 and 32 bits being common. Defaults to 8 bits.
-
-        Raises:
-            ValueError: raised when file-format not understood.
-        """
+        ...
 
     @require_initialized_service
     def exposed_include_depths(
@@ -488,41 +222,13 @@ class BlenderService(rpyc.Service):
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[16, 32] = 32,
     ) -> None:
-        """Sets up Blender compositor to include depth map for rendered images.
-
-        Note:
-            The preview colormap is re-normalized on a per-frame basis, to visually
-            compare across frames, apply colorization after rendering using the CLI.
-
-        Args:
-            preview (bool, optional): If true, colorized depth maps, helpful for quick visualizations,
-                will be generated alongside ground-truth depth maps. Defaults to True.
-            file_format (str, optional): Format of depth maps, one of "OPEN_EXR" or "HDR". Defaults to "OPEN_EXR".
-            exr_codec (str, optional): Codec used to compress exr file. Only used when ``file_format="OPEN_EXR"``,
-                options vary depending on the version of Blender, with the following being broadly available:
-                ('NONE', 'PXR24', 'ZIP', 'PIZ', 'RLE', 'ZIPS', 'DWAA', 'DWAB'). Defaults to "DWAA".
-            bit_depth (int, optional): Bit depth per channel, also referred to as color-depth. Options depend on the
-                chosen file format, with 8, 16 and 32 bits being common. Defaults to 32 bits.
-
-        Raises:
-            ValueError: raised when file-format not understood.
-        """
+        ...
 
     @require_initialized_service
     def exposed_include_normals(
         self, preview: bool = True, exr_codec: EXR_CODECS = "DWAA", bit_depth: Literal[16, 32] = 32
     ) -> None:
-        """Sets up Blender compositor to include normal map for rendered images.
-
-        Args:
-            preview (bool, optional): If true, colorized normal maps will also be generated with each vector
-                component being remapped from [-1, 1] to [0-255] where XYZ coordinates are mapped channel-wise to RGB.
-                Defaults to True.
-            exr_codec (str, optional): Codec used to compress exr file. Options vary depending on the version of Blender,
-                with the following being broadly available: ('NONE', 'PXR24', 'ZIP', 'PIZ', 'RLE', 'ZIPS', 'DWAA', 'DWAB').
-                Defaults to "DWAA".
-            bit_depth (int, optional): Bit depth per channel, also referred to as color-depth. Either 16 or 32 bits. Defaults to 32 bits.
-        """
+        ...
 
     @require_initialized_service
     def exposed_include_flows(
@@ -532,27 +238,7 @@ class BlenderService(rpyc.Service):
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[16, 32] = 32,
     ) -> None:
-        """Sets up Blender compositor to include optical flow for rendered images.
-
-        Args:
-            preview (bool, optional): If true, also save preview visualizations of flow. Defaults to True.
-            direction (str, optional): One of 'forward', 'backward' or 'both'. Direction of flow to colorize
-                for preview visualization. Only used when ``preview`` is true, otherwise both forward and backward
-                flows are saved. Defaults to "forward".
-            exr_codec (str, optional): Codec used to compress exr file. Options vary depending on the version of Blender,
-                with the following being broadly available: ('NONE', 'PXR24', 'ZIP', 'PIZ', 'RLE', 'ZIPS', 'DWAA', 'DWAB').
-                Defaults to "DWAA".
-            bit_depth (int, optional): Bit depth per channel, also referred to as color-depth. Options depend on the
-                chosen file format, with 8, 16 and 32 bits being common. Defaults to 32 bits.
-
-        Note:
-            The preview colormap is re-normalized on a per-frame basis, to visually
-            compare across frames, apply colorization after rendering using the CLI.
-
-        Raises:
-            ValueError: raised when ``direction`` is not understood.
-            RuntimeError: raised when motion blur is enabled as flow cannot be computed.
-        """
+        ...
 
     @require_initialized_service
     def _include_ids(
@@ -565,7 +251,7 @@ class BlenderService(rpyc.Service):
         bit_depth: Literal[16, 32] = 32,
         shade: bool = False,
     ) -> None:
-        """Shared logic for including segmentation or material ID maps."""
+        ...
 
     @require_initialized_service
     def exposed_include_segmentations(
@@ -576,25 +262,7 @@ class BlenderService(rpyc.Service):
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[16, 32] = 32,
     ) -> None:
-        """Sets up Blender compositor to include segmentation maps for rendered images.
-
-        The preview visualization simply assigns a color to each object ID by mapping the
-        objects ID value to a hue using a HSV node with saturation=1 and value=1 (except
-        for the background which will have a value of 0 to ensure it is black).
-
-        Args:
-            preview (bool, optional): If true, also save preview visualizations of segmentation. Defaults to True.
-            shuffle (bool, optional): Shuffle preview colors, helps differentiate object instances. Defaults to True.
-            seed (int, optional): Random seed used when shuffling colors. Defaults to 1234.
-            exr_codec (str, optional): Codec used to compress exr file. Options vary depending on the version of Blender,
-                with the following being broadly available: ('NONE', 'PXR24', 'ZIP', 'PIZ', 'RLE', 'ZIPS', 'DWAA', 'DWAB').
-                Defaults to "DWAA".
-            bit_depth (int, optional): Bit depth per channel, also referred to as color-depth.
-                Either 16 or 32 bits. Defaults to 32 bits.
-
-        Raises:
-            RuntimeError: raised when not using CYCLES, as other renderers do not support a segmentation pass.
-        """
+        ...
 
     @require_initialized_service
     def exposed_include_materials(
@@ -605,25 +273,7 @@ class BlenderService(rpyc.Service):
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[16, 32] = 32,
     ) -> None:
-        """Sets up Blender compositor to include material ID maps for rendered images.
-
-        The preview visualization simply assigns a color to each material ID by mapping the
-        materials ID value to a hue using a HSV node with saturation=1 and value=1 (except
-        for the background which will have a value of 0 to ensure it is black).
-
-        Args:
-            preview (bool, optional): If true, also save preview visualizations of material IDs. Defaults to True.
-            shuffle (bool, optional): Shuffle preview colors, helps differentiate material instances. Defaults to True.
-            seed (int, optional): Random seed used when shuffling colors. Defaults to 1234.
-            exr_codec (str, optional): Codec used to compress exr file. Options vary depending on the version of Blender,
-                with the following being broadly available: ('NONE', 'PXR24', 'ZIP', 'PIZ', 'RLE', 'ZIPS', 'DWAA', 'DWAB').
-                Defaults to "DWAA".
-            bit_depth (int, optional): Bit depth per channel, also referred to as color-depth.
-                Either 16 or 32 bits. Defaults to 32 bits.
-
-        Raises:
-            RuntimeError: raised when not using CYCLES, as other renderers do not support a material ID pass.
-        """
+        ...
 
     @require_initialized_service
     def exposed_include_diffuse_pass(
@@ -634,24 +284,7 @@ class BlenderService(rpyc.Service):
         bit_depth: Literal[8, 16, 32] = 32,
         denoise: bool = True,
     ) -> None:
-        """Sets up Blender compositor to include diffuse light passes for rendered images.
-
-        For CYCLES, this includes: Diffuse Direct, Diffuse Indirect and Diffuse Color.
-        For EEVEE, this includes: Diffuse Light and Diffuse Color.
-
-        Note:
-            When using CYCLES, these extra light passes might be very noisy, especially the indirect ones,
-            as they rely on raytracing. To mitigate this, you can either increase the number of samples, or the threshold in the :meth:`cycles_settings <exposed_cycles_settings>`, or/and use the denoise option.
-
-        Args:
-            file_format (str, optional): Format to save diffuse passes as. Defaults to "OPEN_EXR".
-            color_mode (str, optional): Typically one of ('BW', 'RGB', 'RGBA'). Defaults to "RGB".
-            exr_codec (str, optional): Codec used to compress exr file. Only used when ``file_format="OPEN_EXR"``. Defaults to "DWAA".
-            bit_depth (int, optional): Bit depth per channel. Defaults to 32 bits.
-            denoise (bool, optional): If true, apply Cycles denoising to the direct and indirect passes
-                before saving. The colour pass is left undenoised as it is noise-free by nature.
-                Has no effect when not using Cycles. Defaults to True.
-        """
+        ...
 
     @require_initialized_service
     def exposed_include_specular_pass(
@@ -662,44 +295,13 @@ class BlenderService(rpyc.Service):
         bit_depth: Literal[8, 16, 32] = 32,
         denoise: bool = True,
     ) -> None:
-        """Sets up Blender compositor to include specular light passes for rendered images.
-
-        For CYCLES, this includes: Glossy Direct, Glossy Indirect and Glossy Color.
-        For EEVEE, this includes: Specular Light and Specular Color.
-
-        Note:
-            When using CYCLES, these extra light passes might be very noisy, especially the indirect ones,
-            as they rely on raytracing. To mitigate this, you can either increase the number of samples, or the threshold in the :meth:`cycles_settings <exposed_cycles_settings>`, or/and use the denoise option.
-
-        Args:
-            file_format (str, optional): Format to save specular passes as. Defaults to "OPEN_EXR".
-            color_mode (str, optional): Typically one of ('BW', 'RGB', 'RGBA'). Defaults to "RGB".
-            exr_codec (str, optional): Codec used to compress exr file. Only used when ``file_format="OPEN_EXR"``. Defaults to "DWAA".
-            bit_depth (int, optional): Bit depth per channel. Defaults to 32 bits.
-            denoise (bool, optional): If true, apply Cycles denoising to the direct and indirect passes
-                before saving. The colour pass is left undenoised as it is noise-free by nature.
-                Has no effect when not using Cycles. Defaults to True.
-        """
+        ...
 
     @require_initialized_service
     def exposed_include_points(
         self, preview: bool = True, exr_codec: EXR_CODECS = "DWAA", bit_depth: Literal[16, 32] = 32
     ) -> None:
-        """Sets up Blender compositor to include a world-space point map for each frame.
-
-        Note:
-            The point map corresponds to world-space positions, like those used in VGGT [1]_,
-            and not the camera-centric positions used in DUSt3R [2]_.
-
-        Args:
-            preview (bool, optional): If true, colorized point maps will also be generated, where colors are
-                assigned based on the absolute fractional world coordinates. Defaults to True.
-            exr_codec (str, optional): Codec used to compress exr file. Defaults to "DWAA".
-            bit_depth (int, optional): Bit depth per channel. Either 16 or 32 bits. Defaults to 32 bits.
-
-        .. [1] `VGGT: Visual Geometry Grounded Transformer <https://arxiv.org/abs/2503.11651>`_
-        .. [2] `DUSt3R: Geometric 3D Vision Made Easy with Unconstrained Image Collections <https://arxiv.org/abs/2312.14132>`_
-        """
+        ...
 
     def _thermal_config(
         self,
@@ -717,18 +319,7 @@ class BlenderService(rpyc.Service):
         device: Literal["cuda", "cpu"],
         assignments: str | None = None,
     ) -> tuple[dict, dict, Path, Any]:
-        """Shared ``defaults``/``solver_cfg``/``cache_root`` builder for every thermal-solve
-        entry point.
-
-        Factored out of :meth:`_thermal_solve` (M2) so the static solve
-        (``adapter.solve_scene``) and the animated solve (``adapter.solve_scene_animated``,
-        called from :meth:`exposed_prepare_thermal`'s animated branch) compute byte-identical
-        ``defaults``/``solver_cfg`` -- including the blend-authored ``irradiance_scale``
-        override -- and therefore share the same cache-key convention.
-
-        Returns:
-            tuple[dict, dict, Path, Any]: ``(defaults, solver_cfg, cache_root, assignment)``.
-        """
+        ...
 
     def _thermal_solve(
         self,
@@ -750,37 +341,12 @@ class BlenderService(rpyc.Service):
         atlas_tile_min: int = 16,
         atlas_tile_max: int = 512,
         atlas_texel_soft_max: int = 500000,
+        recompute: bool = False,
     ) -> tuple[dict, Any, Path]:
-        """Shared FEM-solve core used by :meth:`exposed_prepare_thermal` and
-        :meth:`exposed_heatsim_solve`.
-
-        Builds the ``defaults`` and ``solver_cfg`` dicts (via :meth:`_thermal_config`),
-        derives ``cache_root`` from the always-set :attr:`blend_file` path (avoids
-        ``bpy.data.filepath`` which is empty for an unsaved scene), and delegates to
-        ``adapter.solve_scene``.  Both callers produce identical cache keys
-        because they share this single code path.
-
-        When ``render_domain="TEXEL"``, builds an ``adapter.AtlasPlan`` (``adapter.
-        build_atlas_plan``) from the 4 ``atlas_*`` knobs BEFORE solving and threads it
-        through to ``adapter.solve_scene``, which folds the plan's effective density/tile
-        bounds/layout digest into the solve cache key (Task 2's existing ``"atlas"`` key
-        field). ``render_domain="VERTEX"`` (the default) never builds a plan, so the solve
-        cache key and ``adapter.solve_scene``/``adapter._combine`` code path are exactly
-        what they were before the atlas existed.
-
-        Returns:
-            tuple[dict, Any, Path]: ``(history, atlas_plan, cache_root)`` -- ``atlas_plan``
-            is ``None`` in VERTEX mode (or when TEXEL mode found nothing eligible).
-        """
+        ...
 
     def _thermal_load_pack_atlas_image(self, atlas_path: Path) -> None:
-        """Load the EXR :func:`adapter.write_atlas` wrote and (re)register it as the
-        ``HeatSim_Temperature_Atlas`` Blender image, packed so the shader (built right
-        after this call, by ``thermal_shader.setup_temperature_aov``, and later at render
-        time by ``thermal_shader.enter_thermal_scene``) can find it by name -- and so it
-        keeps working even if the source EXR under the ``.heatsim`` cache directory later
-        moves or is cleaned up.
-        """
+        ...
     _thermal_temp_range: Incomplete
 
     @require_initialized_service
@@ -802,99 +368,16 @@ class BlenderService(rpyc.Service):
         atlas_tile_min: int = 16,
         atlas_tile_max: int = 512,
         atlas_texel_soft_max: int = 500000,
+        recompute: bool = False,
         radiance_scale: float = 1.0,
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[16, 32] = 32,
         assignments: str | None = None,
     ) -> None:
-        """Solve the scene's heat-transfer simulation and prepare it for thermal rendering.
-
-        Runs the (cache-aware) FEM solve, writes the solved per-vertex ``sim_temperature``
-        attribute onto every mesh, stamps a default temperature on any unsolved mesh, and
-        registers the ``temperature`` value AOV on the original materials.
-
-        Note:
-            This must be called before :meth:`include_thermal <visionsim.simulate.blender.BlenderService.exposed_include_thermal>`,
-            since the AOV is registered on the original materials and exposes the ``temperature`` render-layer
-            output socket that ``include_thermal`` wires into the compositor. M1 is a static solve, so the final
-            timestep (``timestep=-1``) is written to every frame. When ``animated`` is true (M2, ``domain="POINTS"``
-            only), a per-frame transient solve is run instead (``adapter.solve_scene_animated``): the per-object
-            frame history is stashed on the service and the first solved frame's field is written immediately so the
-            initial render is correct; subsequent frames are written by :meth:`exposed_render_frame`'s per-frame
-            hook. Requesting ``animated`` with ``domain="MESH"`` logs a warning and falls back to the static solve.
-            The full ``ThermalConfig`` field set is accepted so a single ``**asdict(config.thermal)`` dispatch can
-            drive this method; the output-only fields are ignored. When ``render_domain="TEXEL"``, atlas-eligible
-            objects (see ``atlas_texel_density``) are additionally solved at texel resolution and their final
-            temperatures are written to an EXR atlas image (``adapter.write_atlas``), loaded/packed as the
-            ``HeatSim_Temperature_Atlas`` Blender image before the AOV is registered so the shader can sample it;
-            those objects get only the OBJECT-level fallback temperature written to their mesh (their per-pixel
-            signal comes from the atlas at render time), not a per-vertex ``sim_temperature`` attribute. Requesting
-            ``animated`` with ``render_domain="TEXEL"`` logs a warning and falls back to ``render_domain="VERTEX"``
-            for that solve (the atlas is a static-solve-only feature; M2/TEXEL is out of scope).
-
-        Args:
-            radiance (bool, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
-                by ``include_thermal`` / the radiance render). Defaults to True.
-            preview (bool, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
-                by ``include_thermal`` / the radiance render). Defaults to True.
-            initial_temperature_K (float, optional): Default initial temperature, in Kelvin, for meshes without a
-                per-object value. Defaults to 295.0.
-            thermal_diffusivity_mm2_s (float, optional): Default thermal diffusivity in ``mm^2/s``. Defaults to 0.17.
-            density_kg_m3 (float, optional): Default material density in ``kg/m^3``. Defaults to 1330.0.
-            specific_heat_J_kgK (float, optional): Default specific heat in ``J/kg*K``. Defaults to 880.0.
-            emissivity (float, optional): Default surface emissivity in ``[0, 1]``. Defaults to 0.9.
-            irradiance_scale (float, optional): Scale factor applied to the computed irradiance (heating input).
-                Defaults to 100.0.
-            sim_time_s (float, optional): Total simulated time, in seconds, for the static scene solve. Defaults to 1.0.
-            timestep_s (float, optional): Solver timestep in seconds. Defaults to 0.05.
-            domain (str, optional): FEM domain, either ``"POINTS"`` (surface point cloud, recommended) or ``"MESH"``.
-                Defaults to ``"POINTS"``.
-            laplacian_backend (str, optional): Laplacian backend, either ``"ROBUST"`` or ``"IGL"``. Defaults to ``"ROBUST"``.
-            device (str, optional): Torch device for the solve, either ``"cuda"`` or ``"cpu"``; falls back to ``"cpu"``
-                if cuda is unavailable. Defaults to ``"cuda"``.
-            render_domain (str, optional): Where solved temperatures live for rendering: ``"VERTEX"`` (per-vertex,
-                byte-identical to before the atlas existed) or ``"TEXEL"`` (a shared texture atlas, sampled per-pixel
-                by the shader). Defaults to ``"VERTEX"``.
-            atlas_texel_density (float, optional): Target texels/m^2 for atlas-eligible objects (TEXEL mode only).
-                Defaults to 1500.0.
-            atlas_tile_min (int, optional): Minimum atlas tile side, in texels (TEXEL mode only). Defaults to 16.
-            atlas_tile_max (int, optional): Maximum atlas tile side, in texels (TEXEL mode only). Defaults to 512.
-            atlas_texel_soft_max (int, optional): Soft ceiling on total atlas texels + retained vertices (TEXEL mode
-                only); exceeding it rescales the effective density down uniformly and warns. Defaults to 500000.
-            radiance_scale (float, optional): Accepted for uniform thermal-config dispatch; not used by this method
-                (consumed by ``include_thermal`` / the radiance render). Defaults to 1.0.
-            exr_codec (str, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
-                by ``include_thermal`` / the radiance render). Defaults to ``"DWAA"``.
-            bit_depth (int, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
-                by ``include_thermal`` / the radiance render). Defaults to 32.
-            animated (bool, optional): Solve heat transfer per-frame as geometry animates (transient), instead of the
-                static M1 solve. Requires ``domain="POINTS"``. Defaults to False.
-            substeps_per_frame (int, optional): Solver substeps per Blender frame in animated mode. Defaults to 4.
-            frame_start (int | None, optional): First frame of the animated solve; defaults to the scene's
-                ``frame_start`` when None. Defaults to None.
-            frame_end (int | None, optional): Last frame of the animated solve; defaults to the scene's
-                ``frame_end`` when None. Defaults to None.
-            every_n_frames (int, optional): Solve every Nth frame in animated mode (cost control); skipped frames
-                hold the last solved field. Defaults to 1.
-            assignments (str | None, optional): Path to a thermal material assignment sidecar
-                (``<scene>.thermal.json``). When set, thermal properties are resolved per material
-                slot; when unset the global defaults are used everywhere. Defaults to None.
-        """
+        ...
 
     def _thermal_write_frame(self, frame_number: int) -> None:
-        """Write the animated (M2) thermal field for the render frame nearest a solved timestep.
-
-        Called once from :meth:`exposed_prepare_thermal`'s animated branch (frame 0, right
-        after the animated solve) and per-frame from :meth:`exposed_render_frame`. Looks up
-        the latest solved frame at or before ``frame_number`` (``every_n_frames`` may hold the
-        field across skipped frames), builds a single-row ``{obj: (1, n_verts)}`` history
-        slice for that frame, and delegates to ``adapter.write_frame_attributes``. Objects
-        absent from the animated history (e.g. ``DIRICHLET_SOURCE`` fluids with changing
-        topology) fall through to the reservoir-temperature fallback there.
-
-        Args:
-            frame_number (int): The (Blender) frame currently being written/rendered.
-        """
+        ...
 
     @require_initialized_service
     def exposed_heatsim_solve(
@@ -915,77 +398,13 @@ class BlenderService(rpyc.Service):
         atlas_tile_min: int = 16,
         atlas_tile_max: int = 512,
         atlas_texel_soft_max: int = 500000,
+        recompute: bool = False,
         radiance_scale: float = 1.0,
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[16, 32] = 32,
         assignments: str | None = None,
     ) -> None:
-        """Solve and cache the scene's heat-transfer simulation without preparing it for rendering.
-
-        This is the solve-and-cache half of
-        :meth:`prepare_thermal <visionsim.simulate.blender.BlenderService.exposed_prepare_thermal>`: it runs the
-        cache-aware FEM solve so the result is written to disk, but does not write the ``sim_temperature`` attribute,
-        stamp default temperatures, or register the ``temperature`` AOV. It exists for the optional standalone
-        solve command, letting an expensive solve be primed ahead of rendering. The full ``ThermalConfig`` field set
-        is accepted so a single ``**asdict(config.thermal)`` dispatch can drive this method; the output-only fields
-        are ignored. When ``render_domain="TEXEL"``, this also primes the atlas-eligible objects' texel solve (via
-        the same cache key ``prepare_thermal`` would use), but does NOT write the atlas EXR image -- that happens
-        in ``prepare_thermal``, which needs the loaded/packed image to wire the shader.
-
-        Note:
-            The ``animated``/``substeps_per_frame``/``frame_start``/``frame_end``/``every_n_frames`` fields (M2) are
-            accepted only to mirror ``ThermalConfig``; this standalone cache-priming path always runs the static M1
-            solve regardless of ``animated``.
-
-        Args:
-            radiance (bool, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
-                by ``include_thermal`` / the radiance render). Defaults to True.
-            preview (bool, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
-                by ``include_thermal`` / the radiance render). Defaults to True.
-            initial_temperature_K (float, optional): Default initial temperature, in Kelvin, for meshes without a
-                per-object value. Defaults to 295.0.
-            thermal_diffusivity_mm2_s (float, optional): Default thermal diffusivity in ``mm^2/s``. Defaults to 0.17.
-            density_kg_m3 (float, optional): Default material density in ``kg/m^3``. Defaults to 1330.0.
-            specific_heat_J_kgK (float, optional): Default specific heat in ``J/kg*K``. Defaults to 880.0.
-            emissivity (float, optional): Default surface emissivity in ``[0, 1]``. Defaults to 0.9.
-            irradiance_scale (float, optional): Scale factor applied to the computed irradiance (heating input).
-                Defaults to 100.0.
-            sim_time_s (float, optional): Total simulated time, in seconds, for the static scene solve. Defaults to 1.0.
-            timestep_s (float, optional): Solver timestep in seconds. Defaults to 0.05.
-            domain (str, optional): FEM domain, either ``"POINTS"`` (surface point cloud, recommended) or ``"MESH"``.
-                Defaults to ``"POINTS"``.
-            laplacian_backend (str, optional): Laplacian backend, either ``"ROBUST"`` or ``"IGL"``. Defaults to ``"ROBUST"``.
-            device (str, optional): Torch device for the solve, either ``"cuda"`` or ``"cpu"``; falls back to ``"cpu"``
-                if cuda is unavailable. Defaults to ``"cuda"``.
-            render_domain (str, optional): Where solved temperatures live for rendering: ``"VERTEX"`` (per-vertex,
-                byte-identical to before the atlas existed) or ``"TEXEL"`` (a shared texture atlas, sampled per-pixel
-                by the shader). Defaults to ``"VERTEX"``.
-            atlas_texel_density (float, optional): Target texels/m^2 for atlas-eligible objects (TEXEL mode only).
-                Defaults to 1500.0.
-            atlas_tile_min (int, optional): Minimum atlas tile side, in texels (TEXEL mode only). Defaults to 16.
-            atlas_tile_max (int, optional): Maximum atlas tile side, in texels (TEXEL mode only). Defaults to 512.
-            atlas_texel_soft_max (int, optional): Soft ceiling on total atlas texels + retained vertices (TEXEL mode
-                only); exceeding it rescales the effective density down uniformly and warns. Defaults to 500000.
-            radiance_scale (float, optional): Accepted for uniform thermal-config dispatch; not used by this method
-                (consumed by ``include_thermal`` / the radiance render). Defaults to 1.0.
-            exr_codec (str, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
-                by ``include_thermal`` / the radiance render). Defaults to ``"DWAA"``.
-            bit_depth (int, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
-                by ``include_thermal`` / the radiance render). Defaults to 32.
-            animated (bool, optional): Accepted for uniform thermal-config dispatch; not used by this method (see
-                Note above). Defaults to False.
-            substeps_per_frame (int, optional): Accepted for uniform thermal-config dispatch; not used by this method.
-                Defaults to 4.
-            frame_start (int | None, optional): Accepted for uniform thermal-config dispatch; not used by this method.
-                Defaults to None.
-            frame_end (int | None, optional): Accepted for uniform thermal-config dispatch; not used by this method.
-                Defaults to None.
-            every_n_frames (int, optional): Accepted for uniform thermal-config dispatch; not used by this method.
-                Defaults to 1.
-            assignments (str | None, optional): Path to a thermal material assignment sidecar
-                (``<scene>.thermal.json``). When set, thermal properties are resolved per material
-                slot; when unset the global defaults are used everywhere. Defaults to None.
-        """
+        ...
 
     @require_initialized_service
     def exposed_include_thermal(
@@ -1006,97 +425,27 @@ class BlenderService(rpyc.Service):
         atlas_tile_min: int = 16,
         atlas_tile_max: int = 512,
         atlas_texel_soft_max: int = 500000,
+        recompute: bool = False,
         radiance_scale: float = 1.0,
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[16, 32] = 32,
         assignments: str | None = None,
     ) -> None:
-        """Sets up Blender compositor to include thermal outputs for rendered images.
-
-        Wires the per-vertex temperature map (in Kelvin) from the ``temperature`` AOV registered by
-        :meth:`prepare_thermal <visionsim.simulate.blender.BlenderService.exposed_prepare_thermal>` into the
-        compositor, optionally adds an inferno-colormap preview, and optionally arms a second gray-body render pass
-        that produces a thermal-camera radiance image (emitted at render time by
-        :meth:`render_current_frame <visionsim.simulate.blender.BlenderService.exposed_render_current_frame>`).
-
-        Note:
-            This must be called after ``prepare_thermal``, which registers the ``temperature`` AOV (and, in TEXEL
-            mode, loads/packs the ``HeatSim_Temperature_Atlas`` image the shader samples) and exposes the matching
-            render-layer output socket. The solver and material parameters (``initial_temperature_K`` through
-            ``device``, the ``render_domain``/``atlas_*`` fields, ``assignments``, and the ``animated``/
-            ``substeps_per_frame``/``frame_start``/``frame_end``/``every_n_frames`` M2 fields) are accepted only to
-            mirror ``ThermalConfig`` and are consumed by ``prepare_thermal``; ``include_thermal`` itself ignores them.
-            For animated scenes, the per-frame field update happens later, in
-            :meth:`render_frame <visionsim.simulate.blender.BlenderService.exposed_render_frame>`.
-
-        Args:
-            radiance (bool, optional): If true, arm the gray-body thermal-camera radiance image as a second render
-                pass and register its per-frame output. Defaults to True.
-            preview (bool, optional): If true, also save an inferno-colormap PNG preview of the temperature map.
-                Defaults to True.
-            initial_temperature_K (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
-                ignored here. Default initial temperature, in Kelvin, for meshes without a per-object value.
-                Defaults to 295.0.
-            thermal_diffusivity_mm2_s (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal``
-                and ignored here. Default thermal diffusivity in ``mm^2/s``. Defaults to 0.17.
-            density_kg_m3 (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
-                here. Default material density in ``kg/m^3``. Defaults to 1330.0.
-            specific_heat_J_kgK (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
-                ignored here. Default specific heat in ``J/kg*K``. Defaults to 880.0.
-            emissivity (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
-                here. Default surface emissivity in ``[0, 1]``. Defaults to 0.9.
-            irradiance_scale (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
-                ignored here. Scale factor applied to the computed irradiance. Defaults to 100.0.
-            sim_time_s (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
-                here. Total simulated time in seconds. Defaults to 1.0.
-            timestep_s (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
-                here. Solver timestep in seconds. Defaults to 0.05.
-            domain (str, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored here.
-                FEM domain, either ``"POINTS"`` or ``"MESH"``. Defaults to ``"POINTS"``.
-            laplacian_backend (str, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
-                ignored here. Laplacian backend, either ``"ROBUST"`` or ``"IGL"``. Defaults to ``"ROBUST"``.
-            device (str, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored here.
-                Torch device, either ``"cuda"`` or ``"cpu"``. Defaults to ``"cuda"``.
-            render_domain (str, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
-                here. Where solved temperatures live for rendering, ``"VERTEX"`` or ``"TEXEL"``. Defaults to
-                ``"VERTEX"``.
-            atlas_texel_density (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
-                ignored here. Target texels/m^2 for atlas-eligible objects. Defaults to 1500.0.
-            atlas_tile_min (int, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
-                here. Minimum atlas tile side, in texels. Defaults to 16.
-            atlas_tile_max (int, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
-                here. Maximum atlas tile side, in texels. Defaults to 512.
-            atlas_texel_soft_max (int, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
-                ignored here. Soft ceiling on total atlas texels + retained vertices. Defaults to 500000.
-            radiance_scale (float, optional): Gray-body emission magnitude knob for the ``thermal_radiance`` render.
-                Defaults to 1.0.
-            exr_codec (str, optional): Codec used to compress the temperature and radiance EXR files. Options vary
-                depending on the version of Blender, with the following being broadly available:
-                ('NONE', 'PXR24', 'ZIP', 'PIZ', 'RLE', 'ZIPS', 'DWAA', 'DWAB'). Defaults to ``"DWAA"``.
-            bit_depth (int, optional): Bit depth per channel for the temperature and radiance EXRs, either 16 or 32.
-                Defaults to 32.
-            animated (bool, optional): Mirrors ``ThermalConfig`` (M2); consumed by ``prepare_thermal`` and ignored
-                here. Defaults to False.
-            substeps_per_frame (int, optional): Mirrors ``ThermalConfig`` (M2); consumed by ``prepare_thermal`` and
-                ignored here. Defaults to 4.
-            frame_start (int | None, optional): Mirrors ``ThermalConfig`` (M2); consumed by ``prepare_thermal`` and
-                ignored here. Defaults to None.
-            frame_end (int | None, optional): Mirrors ``ThermalConfig`` (M2); consumed by ``prepare_thermal`` and
-                ignored here. Defaults to None.
-            every_n_frames (int, optional): Mirrors ``ThermalConfig`` (M2); consumed by ``prepare_thermal`` and
-                ignored here. Defaults to 1.
-            assignments (str | None, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
-                ignored here. Path to a thermal material assignment sidecar (``<scene>.thermal.json``). Defaults
-                to None.
-        """
+        ...
 
     @require_initialized_service
-    def exposed_load_addons(self, *addons: str) -> None:
-        """Load blender addons by name (case-insensitive).
+    @staticmethod
+    def _thermal_values(config: dict[str, Any]) -> dict[str, Any]:
+        ...
 
-        Args:
-            *addons (str): name of addons to load.
-        """
+    def exposed_configure_thermal(self, config: dict[str, Any]) -> None:
+        ...
+
+    def exposed_heatsim_solve_config(self, config: dict[str, Any]) -> None:
+        ...
+
+    def exposed_load_addons(self, *addons: str) -> None:
+        ...
 
     @require_initialized_service
     def exposed_set_resolution(
@@ -1105,36 +454,15 @@ class BlenderService(rpyc.Service):
         width: int | None = None,
         resolution_percentage: int = 100,
     ) -> None:
-        """Set frame resolution (height, width) in pixels.
-        If a single tuple is passed, instead of using keyword arguments, it will be parsed as (height, width).
-
-        Args:
-            height (tuple[int] | list[int] | int | None, optional): Height of render in pixels. Defaults to value from file.
-            width (int | None, optional): Width of render in pixels. Defaults to value from file.
-            resolution_percentage (float, optional): Percentage of the original resolution to render at. Defaults to 100%.
-
-        Raises:
-            ValueError: raised if resolution is not understood.
-        """
+        ...
 
     @require_initialized_service
     def exposed_use_motion_blur(self, enable: bool) -> None:
-        """Enable/disable motion blur.
-
-        Args:
-            enable (bool): If true, enable motion blur.
-
-        Raises:
-            RuntimeError: raised when motion blur is enabled as flow cannot be computed.
-        """
+        ...
 
     @require_initialized_service
     def exposed_use_animations(self, enable: bool) -> None:
-        """Enable/disable all animations.
-
-        Args:
-            enable (bool): If true, enable animations.
-        """
+        ...
 
     @require_initialized_service
     def exposed_cycles_settings(
@@ -1145,72 +473,27 @@ class BlenderService(rpyc.Service):
         max_samples: int | None = None,
         use_denoising: bool | None = None,
     ) -> list[str]:
-        """Enables/activates cycles render devices and settings.
-
-        Note: A default arguments of ``None`` means do not change setting inherited from blendfile.
-
-        Args:
-            device_type (str, optional): Name of device to use, one of "cpu", "cuda", "optix", "metal", etc.
-                See `blender docs <https://docs.blender.org/manual/en/latest/render/cycles/gpu_rendering.html>`_
-                for full list. Defaults to None.
-            use_cpu (bool, optional): Boolean flag to enable CPUs alongside GPU devices. Defaults to None.
-            adaptive_threshold (float, optional): Set noise threshold upon which to stop taking samples. Defaults to None.
-            max_samples (int, optional): Maximum number of samples per pixel to take. Defaults to None.
-            use_denoising (bool, optional): If enabled, a denoising pass will be used. Defaults to None.
-
-        Raises:
-            RuntimeError: raised when no devices are found.
-            ValueError: raised when setting ``use_cpu`` is required.
-
-        Returns:
-            list[str]: Name of activated devices.
-        """
+        ...
 
     @require_initialized_service
     def exposed_unbind_camera(self, clear_animations: bool = True) -> None:
-        """Remove constraints, animations and parents from main camera.
-
-        Note: In order to undo this, you'll need to re-initialize.
-
-        Args:
-            clear_animations (bool, optional): If true clear animation data for camera.
-        """
+        ...
 
     @require_initialized_service
     def exposed_move_keyframes(self, scale: float = 1.0, shift: float = 0.0) -> None:
-        """Adjusts keyframes in Blender animations, keypoints are first scaled then shifted.
-
-        Args:
-            scale (float, optional): Factor used to rescale keyframe positions along x-axis. Defaults to 1.0.
-            shift (float, optional): Factor used to shift keyframe positions along x-axis. Defaults to 0.0.
-
-        Raises:
-            RuntimeError: raised if trying to move keyframes beyond blender's limits.
-        """
+        ...
 
     @require_initialized_service
     def exposed_set_current_frame(self, frame_number: int) -> None:
-        """Set current frame number. This might advance any animations.
-
-        Args:
-            frame_number (int): index of frame to skip to.
-        """
+        ...
 
     @require_initialized_service
     def exposed_camera_info(self) -> dict[str, Any]:
-        """Return a dictionary with camera intrinsics.
-
-        Returns:
-            dict[str, Any]: dictionary containing camera parameters.
-        """
+        ...
 
     @require_initialized_service
     def exposed_camera_extrinsics(self) -> npt.NDArray[np.floating]:
-        """Get the 4x4 transform matrix encoding the current camera pose.
-
-        Returns:
-            npt.NDArray[np.floating]: Current camera pose in matrix form.
-        """
+        ...
 
     @require_initialized_service
     @validate_camera_moved
@@ -1221,103 +504,35 @@ class BlenderService(rpyc.Service):
         look_at: npt.ArrayLike | None = None,
         in_order: bool = True,
     ) -> None:
-        """Positions and orients camera according to specified parameters. All transformations are local,
-        use :meth:`unbind_camera <exposed_unbind_camera>` to ensure position is set in world coordinates.
-
-        Note: Only one of ``look_at`` or ``rotation`` can be set at once.
-
-        Args:
-            location (npt.ArrayLike, optional): Location to place camera in 3D space. Defaults to none.
-            rotation (npt.ArrayLike, optional): Rotation matrix for camera. Defaults to none.
-            look_at (npt.ArrayLike, optional): Location to point camera. Defaults to none.
-            in_order (bool, optional): If set, assume current camera pose is from previous/next
-                frame and ensure new rotation set by ``look_at`` is compatible with current position.
-                Without this, a rotations will stay in the [-pi, pi] range and this wrapping will
-                mess up interpolations. Only used when ``look_at`` is set. Defaults to True.
-
-        Raises:
-            ValueError: raised if camera orientation is over-defined.
-        """
+        ...
 
     @require_initialized_service
     @validate_camera_moved
     def exposed_rotate_camera(self, angle: float) -> None:
-        """Rotate camera around it's optical axis, relative to current orientation. All transformations are local,
-        use :meth:`unbind_camera <exposed_unbind_camera>` to ensure position is set in world coordinates.
-
-        Args:
-            angle: Relative amount to rotate by (clockwise, in radians).
-        """
+        ...
 
     @require_initialized_service
     @validate_camera_moved
     def exposed_offset_camera(self, offset: npt.ArrayLike) -> None:
-        """Move camera by a given vector in its local coordinate frame.
-
-        Args:
-            offset (npt.ArrayLike): Amount to offset by (x, y, z) in local coordinates.
-        """
+        ...
 
     @require_initialized_service
     def exposed_set_camera_keyframe(self, frame_num: int, matrix: npt.ArrayLike | None = None) -> None:
-        """Set camera keyframe at given frame number.
-        If camera matrix is not supplied, currently set camera position/rotation/scale will be used,
-        this allows users to set camera position using :meth:`position_camera <exposed_position_camera>`
-        and :meth:`rotate_camera <exposed_rotate_camera>`.
-
-        Args:
-            frame_num (int): index of frame to set keyframe for.
-            matrix (npt.ArrayLike | None, optional): 4x4 camera transform, if not supplied,
-                use current camera matrix. Defaults to None.
-        """
+        ...
 
     @require_initialized_service
     def exposed_set_animation_range(
         self, start: int | None = None, stop: int | None = None, step: int | None = None
     ) -> None:
-        """Set animation range for scene.
-
-        Args:
-            start (int | None, optional): frame start, inclusive. Defaults to None.
-            stop (int | None, optional): frame stop, exclusive. Defaults to None.
-            step (int | None, optional): frame interval. Defaults to None.
-        """
+        ...
 
     @require_initialized_service
     def exposed_render_current_frame(self, allow_skips: bool = True, dry_run: bool = False) -> None:
-        """Generates a single frame in Blender at the current camera location,
-        return the file paths for that frame, potentially including depth, normals, etc.
-
-        Note:
-            This method renders the current frame as-is, it assumes the camera position,
-            frame number and all other parameters have been set.
-
-        Args:
-            allow_skips (bool, optional): if true, blender will not re-render and overwrite existing frames.
-                This does not however apply to depth/normals/etc, which cannot be skipped. Defaults to True.
-            dry_run (bool, optional): if true, nothing will be rendered at all. Defaults to False.
-        """
+        ...
 
     @require_initialized_service
     def exposed_render_frame(self, frame_number: int, allow_skips: bool = True, dry_run: bool = False) -> None:
-        """Same as first setting current frame then rendering it.
-
-        Warning:
-            Calling this has the side-effect of changing the current frame.
-
-        Note:
-            If :meth:`prepare_thermal <exposed_prepare_thermal>` ran an animated (M2) solve,
-            this writes that frame's solved thermal field (via ``_thermal_write_frame``)
-            before rendering, so both the temperature AOV and the gray-body radiance pass
-            reflect the current frame -- Cycles reads ``sim_temperature`` live, so no
-            compositor changes are needed.
-
-        Args:
-            frame_number (int): frame to render
-            allow_skips (bool, optional): if true, blender will not re-render and overwrite existing frames.
-                This does not however apply to depth/normals/etc, which cannot be skipped. Defaults to True.
-            dry_run (bool, optional): if true, nothing will be rendered at all. Defaults to False.
-        """
+        ...
 
     @require_initialized_service
     def exposed_render_frames(
@@ -1327,21 +542,7 @@ class BlenderService(rpyc.Service):
         dry_run: bool = False,
         update_fn: UpdateFn | None = None,
     ) -> None:
-        """Render all requested frames and return associated transforms dictionary.
-
-        Args:
-            frame_numbers (Iterable[int]): frames to render.
-            allow_skips (bool, optional): if true, blender will not re-render and overwrite existing frames.
-                This does not however apply to depth/normals/etc, which cannot be skipped. Defaults to True.
-            dry_run (bool, optional): if true, nothing will be rendered at all. Defaults to False.
-            update_fn (UpdateFn, optional): callback function to track render progress. Will first be called with ``total`` kwarg,
-                indicating number of steps to be taken, then will be called with ``advance=1`` at every step. Closely mirrors the
-                `rich.Progress API <https://rich.readthedocs.io/en/stable/reference/progress.html#rich.progress.Progress.update>`_.
-                Defaults to None.
-
-        Raises:
-            RuntimeError: raised if trying to render frames beyond blender's limits.
-        """
+        ...
 
     @require_initialized_service
     def exposed_render_animation(
@@ -1353,56 +554,13 @@ class BlenderService(rpyc.Service):
         dry_run: bool = False,
         update_fn: UpdateFn | None = None,
     ) -> None:
-        """Determines frame range to render, sets camera positions and orientations, and renders all frames in animation range.
-
-        Note: All frame start/end/step arguments are absolute quantities, applied after any keyframe moves.
-              If the animation is from (1-100) and you've scaled it by calling :meth:`move_keyframes(scale=2.0) <exposed_move_keyframes>`
-              then calling :meth:`render_animation(frame_start=1, frame_end=100) <exposed_render_animation>` will only render half of the animation.
-              By default the whole animation will render when no start/end and step values are set.
-
-        Args:
-            frame_start (int, optional): Starting index (inclusive) of frames to render as seen in blender. Defaults to None, meaning value from ``.blend`` file.
-            frame_end (int, optional): Ending index (inclusive) of frames to render as seen in blender. Defaults to None, meaning value from ``.blend`` file.
-            frame_step (int, optional): Skip every nth frame. Defaults to None, meaning value from ``.blend`` file.
-            allow_skips (bool, optional): Same as :meth:`render_current_frame <exposed_render_current_frame>`.
-            dry_run (bool, optional): Same as :meth:`render_current_frame <exposed_render_current_frame>`.
-            update_fn (UpdateFn, optional): Same as :meth:`render_frames <exposed_render_frames>`.
-
-        Raises:
-            ValueError: raised if scene and camera are entirely static.
-        """
+        ...
 
     @require_initialized_service
     def exposed_save_file(self, path: str | os.PathLike) -> None:
-        """Save the opened blender file. This is useful for introspecting the state of the compositor/scene/etc.
-
-        Args:
-            path (str | os.PathLike): path where to save blendfile.
-
-        Raises:
-            ValueError: raised if file already exists.
-        """
+        ...
 
 class BlenderClient:
-    """Client-side API to interact with blender and render novel views.
-
-    The :class:`BlenderClient` is responsible for communicating with (and potentially spawning)
-    separate :class:`BlenderServer`s that will actually perform the rendering via a :class:`BlenderService`.
-
-    The client acts as a context manager, it will connect to it's server when the context is
-    entered and cleanly disconnect and close the connection in case of errors or when exiting
-    the with-block.
-
-    Many useful methods to interact with blender are provided, such as
-    :meth:`set_resolution <BlenderService.exposed_set_resolution>` or
-    :meth:`render_animation <BlenderService.exposed_render_animation>`.
-    These methods are dynamically generated when the client connects to
-    the server. Available methods are directly inherited from :class:`BlenderService`
-    (or whichever service the server is exposing), specifically any service method
-    starting with ``exposed_`` will be accessible to the client at runtime.
-    For example, ``BlenderClient.include_depths`` is a remote procedure call
-    to :meth:`BlenderService.exposed_include_depths`.
-    """
 
     addr: tuple[str, int]
     conn: rpyc.Connection | None
@@ -1411,37 +569,11 @@ class BlenderClient:
     timeout: float
 
     def __init__(self, addr: tuple[str, int], timeout: float = 10.0) -> None:
-        """Initialize a client with known address of server.
-        Note: Using :meth:`auto_connect` or :meth:`spawn` is often more convenient.
-
-        Args:
-            addr (tuple[str, int]): Connection tuple containing the hostname and port
-            timeout (float, optional): Maximum time in seconds the client will attempt
-                to connect to the server for before an error is thrown. Only used when
-                entering context manager. Defaults to 10 seconds.
-        """
+        ...
 
     @classmethod
     def auto_connect(cls, timeout: float = 10.0) -> Self:
-        """Automatically connect to available server.
-
-        Use :meth:`BlenderServer.discover` to find available server within ``timeout``.
-
-        Note: This doesn't actually connect to the server instance, the connection happens
-            when the context manager is entered. This simply creates a client instance with
-            the connection settings (i.e: hostname, port) of an existing server. The connection
-            might still fail when entering the with-block.
-
-        Args:
-            timeout (float, optional): try to discover server instance for ``timeout``
-                (in seconds) before giving up. Defaults to 10.0 seconds.
-
-        Raises:
-            TimeoutError: raise if unable to discover server in ``timeout`` seconds.
-
-        Returns:
-            Self: client instance initialized with connection settings of existing server.
-        """
+        ...
 
     @classmethod
     @contextmanager
@@ -1452,151 +584,53 @@ class BlenderClient:
         autoexec: bool = False,
         executable: str | os.PathLike | None = None,
     ) -> Generator[Self]:
-        """Spawn and connect to a blender server.
-        The spawned process is accessible through the client's ``process`` attribute.
-
-        Args:
-            timeout (float, optional): try to discover spawned instances for ``timeout``
-                (in seconds) before giving up. If negative, a port will be randomly selected and assigned to the
-                spawned server, bypassing the need for discovery and timeouts. Note that when a port is assigned
-                this context manager will immediately yield, even if the server is not yet ready to accept
-                incoming connections. Defaults to assigning a port to spawned server (-1 seconds).
-            log (str | os.PathLike | FILE | tuple[FILE, FILE], optional): path to log directory, file handle,
-                descriptor or tuple thereof. Stdout and stderr will be captured and saved if supplied.
-                Defaults to subprocess.DEVNULL for both stdout/stderr.
-            autoexec (bool, optional): if true, allow execution of any embedded python scripts within blender.
-                For more, see blender's CLI documentation. Defaults to False.
-            executable (str | os.PathLike | None, optional): path to Blender's executable. Defaults to looking
-                for blender on $PATH, but is useful when targeting a specific blender install, or when it's installed
-                via a package manager such as flatpak. Setting it to "flatpak run --die-with-parent org.blender.Blender"
-                might be required when using flatpaks. Defaults to None (system PATH).
-
-        Yields:
-            Generator[Self]: the connected client
-        """
+        ...
 
     @require_connected_client
     def render_animation_async(self, *args, **kwargs) -> rpyc.AsyncResult:
-        """Asynchronously call :meth:`render_animation <BlenderService.exposed_render_animation>`
-        and return an rpyc.AsyncResult.
-
-        Args:
-            *args: Same as :meth:`BlendService.exposed_render_animation`
-            *kwargs: Same as :meth:`BlendService.exposed_render_animation`
-
-        Returns:
-            rpyc.AsyncResult: Result encapsulating the return value of ``render_animation``.
-                After ``wait``ing for the render to finish, it can be accessed using
-                the ``.value`` attribute.
-        """
+        ...
 
     @require_connected_client
     def render_frames_async(self, *args, **kwargs) -> rpyc.AsyncResult:
-        """Asynchronously call :meth:`render_frames <BlenderService.exposed_render_frames>`
-        and return an rpyc.AsyncResult.
-
-        Args:
-            *args: Same as :meth:`BlendService.exposed_render_frames`
-            *kwargs: Same as :meth:`BlendService.exposed_render_frames`
-
-        Returns:
-            rpyc.AsyncResult: Result encapsulating the return value of ``render_frames``.
-                After ``wait``ing for the render to finish, it can be accessed using
-                the ``.value`` attribute.
-        """
+        ...
 
     def wait(self) -> None:
-        """Block and await any async results."""
+        ...
 
     def __enter__(self) -> Self:
-        """Connect to the render server via a context manager.
-
-        Raises:
-            TimeoutError: raised if unable to connect to server in time.
-        """
+        ...
 
     def __getattr__(self, name: str) -> rpyc.BaseNetref:
-        """Retrieve remote attribute if client is connected.
-        This will be called when local attribute is not found.
-
-        Args:
-            name (str): Name of attribute.
-
-        Raises:
-            AttributeError: raised if attribute is not found.
-
-        Returns:
-            rpyc.BaseNetref: remote proxy object.
-        """
+        ...
 
     def __exit__(
         self, type: type[BaseException] | None, value: BaseException | None, traceback: TracebackType | None
     ) -> None:
-        """Disconnect to the render server via a context manager.
-
-        Args:
-            type (type[BaseException] | None): Type of exception that was caught, if any.
-            value (BaseException | None): Value of exception if any.
-            traceback (TracebackType | None): Traceback of exception if any.
-        """
+        ...
 
     @type_check_only
     def with_logger(self, log: logging.Logger) -> None:
-        """Use supplied logger, if logger is initialized in client, messages will log to the client.
-
-        Args:
-            log (logging.Logger): Logger to use for messages
-        """
+        ...
 
     @type_check_only
     def initialize(self, blend_file: str | os.PathLike, root_path: str | os.PathLike, **kwargs) -> None:
-        """Initialize BlenderService and load blendfile.
-
-        Args:
-            blend_file (str | os.PathLike): path of scene file to load.
-            root_path (str | os.PathLike): path at which to save rendered results.
-            **kwargs: Additional keyword arguments to be passed to
-                `bpy.ops.wm.open_mainfile <https://docs.blender.org/api/current/bpy.ops.wm.html#bpy.ops.wm.open_mainfile>`_.
-        """
+        ...
 
     @type_check_only
     def iter_fcurves(self, actions: list[bpy.types.Action] | None = None) -> Iterator[bpy.types.FCurve]:
-        """Yield fcurves of all actions.
-
-        This abstracts away the API for accessing fcurves which changed to using channelbags in v4.4, see
-        `release notes here <https://developer.blender.org/docs/release_notes/4.4/upgrading/slotted_actions/>`_.
-
-        Args:
-            actions (list[bpy.types.Action] | None, optional): Only yield fcurves from these actions if specified,
-                otherwise use all actions. Defaults to None.
-
-        Yields:
-            Iterator[bpy.types.FCurve]: an fcurve object from the scene or action
-        """
+        ...
 
     @type_check_only
     def get_original_fps(self) -> float:
-        """Get effective framerate (fps/fps_base).
-
-        Returns:
-            float: Frame rate of scene.
-        """
+        ...
 
     @type_check_only
     def animation_range(self) -> range:
-        """Get animation range of current scene as range(start, end+1, step).
-
-        Returns:
-            range: Range of frames in animation.
-        """
+        ...
 
     @type_check_only
     def animation_range_tuple(self) -> tuple[int, int, int]:
-        """Get animation range of current scene as a tuple of (start, end, step).
-
-        Returns:
-            tuple[int, int, int]: Frame start, end, and step of animation.
-        """
+        ...
 
     @type_check_only
     def include_composites(
@@ -1606,21 +640,7 @@ class BlenderClient:
         exr_codec: EXR_CODECS | None = None,
         bit_depth: Literal[8, 16, 32] | None = None,
     ) -> None:
-        """Sets up Blender to include the outputs of any existing compositor nodes groups.
-
-        Note: A default arguments of ``None`` means do not change setting inherited from the blendfile's ``Output`` settings.
-
-        Args:
-            file_format (str | None, optional): Format to save composited render as. Options vary depending on the version of Blender,
-                with the following being broadly available: ('BMP', 'IRIS', 'PNG', 'JPEG', 'JPEG2000', 'TARGA', 'TARGA_RAW',
-                'CINEON', 'DPX', 'OPEN_EXR', 'HDR', 'TIFF', 'WEBP'). Defaults to None.
-            color_mode (str | None, optional): Typically one of ('BW', 'RGB', 'RGBA'). Defaults to None.
-            exr_codec (str | None, optional): Codec used to compress exr file. Only used when ``file_format="OPEN_EXR"``,
-                options vary depending on the version of Blender, with the following being broadly available:
-                ('NONE', 'PXR24', 'ZIP', 'PIZ', 'RLE', 'ZIPS', 'DWAA', 'DWAB'). Defaults to None.
-            bit_depth (int | None, optional): Bit depth per channel, also referred to as color-depth. Options depend on the
-                chosen file format, with 8, 16 and 32bits being common. Defaults to None.
-        """
+        ...
 
     @type_check_only
     def include_frames(
@@ -1630,25 +650,7 @@ class BlenderClient:
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[8, 16, 32] = 8,
     ) -> None:
-        """Sets up Blender compositor to include ground truth rendered images, bypassing any existing compositor nodes.
-
-        Note:
-            For linear intensity renders, use the "OPEN_EXR" format with and 32 or 16 bits.
-
-        Args:
-            file_format (str, optional): Format to save ground truth render as. Options vary depending on the version of Blender,
-                with the following being broadly available: ('BMP', 'IRIS', 'PNG', 'JPEG', 'JPEG2000', 'TARGA', 'TARGA_RAW',
-                'CINEON', 'DPX', 'OPEN_EXR', 'HDR', 'TIFF', 'WEBP'). Defaults to "PNG".
-            color_mode (str, optional): Typically one of ('BW', 'RGB', 'RGBA'). Defaults to "RGB".
-            exr_codec (str, optional): Codec used to compress exr file. Only used when ``file_format="OPEN_EXR"``,
-                options vary depending on the version of Blender, with the following being broadly available:
-                ('NONE', 'PXR24', 'ZIP', 'PIZ', 'RLE', 'ZIPS', 'DWAA', 'DWAB'). Defaults to "DWAA".
-            bit_depth (int, optional): Bit depth per channel, also referred to as color-depth. Options depend on the
-                chosen file format, with 8, 16 and 32 bits being common. Defaults to 8 bits.
-
-        Raises:
-            ValueError: raised when file-format not understood.
-        """
+        ...
 
     @type_check_only
     def include_depths(
@@ -1658,41 +660,13 @@ class BlenderClient:
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[16, 32] = 32,
     ) -> None:
-        """Sets up Blender compositor to include depth map for rendered images.
-
-        Note:
-            The preview colormap is re-normalized on a per-frame basis, to visually
-            compare across frames, apply colorization after rendering using the CLI.
-
-        Args:
-            preview (bool, optional): If true, colorized depth maps, helpful for quick visualizations,
-                will be generated alongside ground-truth depth maps. Defaults to True.
-            file_format (str, optional): Format of depth maps, one of "OPEN_EXR" or "HDR". Defaults to "OPEN_EXR".
-            exr_codec (str, optional): Codec used to compress exr file. Only used when ``file_format="OPEN_EXR"``,
-                options vary depending on the version of Blender, with the following being broadly available:
-                ('NONE', 'PXR24', 'ZIP', 'PIZ', 'RLE', 'ZIPS', 'DWAA', 'DWAB'). Defaults to "DWAA".
-            bit_depth (int, optional): Bit depth per channel, also referred to as color-depth. Options depend on the
-                chosen file format, with 8, 16 and 32 bits being common. Defaults to 32 bits.
-
-        Raises:
-            ValueError: raised when file-format not understood.
-        """
+        ...
 
     @type_check_only
     def include_normals(
         self, preview: bool = True, exr_codec: EXR_CODECS = "DWAA", bit_depth: Literal[16, 32] = 32
     ) -> None:
-        """Sets up Blender compositor to include normal map for rendered images.
-
-        Args:
-            preview (bool, optional): If true, colorized normal maps will also be generated with each vector
-                component being remapped from [-1, 1] to [0-255] where XYZ coordinates are mapped channel-wise to RGB.
-                Defaults to True.
-            exr_codec (str, optional): Codec used to compress exr file. Options vary depending on the version of Blender,
-                with the following being broadly available: ('NONE', 'PXR24', 'ZIP', 'PIZ', 'RLE', 'ZIPS', 'DWAA', 'DWAB').
-                Defaults to "DWAA".
-            bit_depth (int, optional): Bit depth per channel, also referred to as color-depth. Either 16 or 32 bits. Defaults to 32 bits.
-        """
+        ...
 
     @type_check_only
     def include_flows(
@@ -1702,27 +676,7 @@ class BlenderClient:
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[16, 32] = 32,
     ) -> None:
-        """Sets up Blender compositor to include optical flow for rendered images.
-
-        Args:
-            preview (bool, optional): If true, also save preview visualizations of flow. Defaults to True.
-            direction (str, optional): One of 'forward', 'backward' or 'both'. Direction of flow to colorize
-                for preview visualization. Only used when ``preview`` is true, otherwise both forward and backward
-                flows are saved. Defaults to "forward".
-            exr_codec (str, optional): Codec used to compress exr file. Options vary depending on the version of Blender,
-                with the following being broadly available: ('NONE', 'PXR24', 'ZIP', 'PIZ', 'RLE', 'ZIPS', 'DWAA', 'DWAB').
-                Defaults to "DWAA".
-            bit_depth (int, optional): Bit depth per channel, also referred to as color-depth. Options depend on the
-                chosen file format, with 8, 16 and 32 bits being common. Defaults to 32 bits.
-
-        Note:
-            The preview colormap is re-normalized on a per-frame basis, to visually
-            compare across frames, apply colorization after rendering using the CLI.
-
-        Raises:
-            ValueError: raised when ``direction`` is not understood.
-            RuntimeError: raised when motion blur is enabled as flow cannot be computed.
-        """
+        ...
 
     @type_check_only
     def include_segmentations(
@@ -1733,25 +687,7 @@ class BlenderClient:
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[16, 32] = 32,
     ) -> None:
-        """Sets up Blender compositor to include segmentation maps for rendered images.
-
-        The preview visualization simply assigns a color to each object ID by mapping the
-        objects ID value to a hue using a HSV node with saturation=1 and value=1 (except
-        for the background which will have a value of 0 to ensure it is black).
-
-        Args:
-            preview (bool, optional): If true, also save preview visualizations of segmentation. Defaults to True.
-            shuffle (bool, optional): Shuffle preview colors, helps differentiate object instances. Defaults to True.
-            seed (int, optional): Random seed used when shuffling colors. Defaults to 1234.
-            exr_codec (str, optional): Codec used to compress exr file. Options vary depending on the version of Blender,
-                with the following being broadly available: ('NONE', 'PXR24', 'ZIP', 'PIZ', 'RLE', 'ZIPS', 'DWAA', 'DWAB').
-                Defaults to "DWAA".
-            bit_depth (int, optional): Bit depth per channel, also referred to as color-depth.
-                Either 16 or 32 bits. Defaults to 32 bits.
-
-        Raises:
-            RuntimeError: raised when not using CYCLES, as other renderers do not support a segmentation pass.
-        """
+        ...
 
     @type_check_only
     def include_materials(
@@ -1762,25 +698,7 @@ class BlenderClient:
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[16, 32] = 32,
     ) -> None:
-        """Sets up Blender compositor to include material ID maps for rendered images.
-
-        The preview visualization simply assigns a color to each material ID by mapping the
-        materials ID value to a hue using a HSV node with saturation=1 and value=1 (except
-        for the background which will have a value of 0 to ensure it is black).
-
-        Args:
-            preview (bool, optional): If true, also save preview visualizations of material IDs. Defaults to True.
-            shuffle (bool, optional): Shuffle preview colors, helps differentiate material instances. Defaults to True.
-            seed (int, optional): Random seed used when shuffling colors. Defaults to 1234.
-            exr_codec (str, optional): Codec used to compress exr file. Options vary depending on the version of Blender,
-                with the following being broadly available: ('NONE', 'PXR24', 'ZIP', 'PIZ', 'RLE', 'ZIPS', 'DWAA', 'DWAB').
-                Defaults to "DWAA".
-            bit_depth (int, optional): Bit depth per channel, also referred to as color-depth.
-                Either 16 or 32 bits. Defaults to 32 bits.
-
-        Raises:
-            RuntimeError: raised when not using CYCLES, as other renderers do not support a material ID pass.
-        """
+        ...
 
     @type_check_only
     def include_diffuse_pass(
@@ -1791,24 +709,7 @@ class BlenderClient:
         bit_depth: Literal[8, 16, 32] = 32,
         denoise: bool = True,
     ) -> None:
-        """Sets up Blender compositor to include diffuse light passes for rendered images.
-
-        For CYCLES, this includes: Diffuse Direct, Diffuse Indirect and Diffuse Color.
-        For EEVEE, this includes: Diffuse Light and Diffuse Color.
-
-        Note:
-            When using CYCLES, these extra light passes might be very noisy, especially the indirect ones,
-            as they rely on raytracing. To mitigate this, you can either increase the number of samples, or the threshold in the :meth:`cycles_settings <exposed_cycles_settings>`, or/and use the denoise option.
-
-        Args:
-            file_format (str, optional): Format to save diffuse passes as. Defaults to "OPEN_EXR".
-            color_mode (str, optional): Typically one of ('BW', 'RGB', 'RGBA'). Defaults to "RGB".
-            exr_codec (str, optional): Codec used to compress exr file. Only used when ``file_format="OPEN_EXR"``. Defaults to "DWAA".
-            bit_depth (int, optional): Bit depth per channel. Defaults to 32 bits.
-            denoise (bool, optional): If true, apply Cycles denoising to the direct and indirect passes
-                before saving. The colour pass is left undenoised as it is noise-free by nature.
-                Has no effect when not using Cycles. Defaults to True.
-        """
+        ...
 
     @type_check_only
     def include_specular_pass(
@@ -1819,44 +720,13 @@ class BlenderClient:
         bit_depth: Literal[8, 16, 32] = 32,
         denoise: bool = True,
     ) -> None:
-        """Sets up Blender compositor to include specular light passes for rendered images.
-
-        For CYCLES, this includes: Glossy Direct, Glossy Indirect and Glossy Color.
-        For EEVEE, this includes: Specular Light and Specular Color.
-
-        Note:
-            When using CYCLES, these extra light passes might be very noisy, especially the indirect ones,
-            as they rely on raytracing. To mitigate this, you can either increase the number of samples, or the threshold in the :meth:`cycles_settings <exposed_cycles_settings>`, or/and use the denoise option.
-
-        Args:
-            file_format (str, optional): Format to save specular passes as. Defaults to "OPEN_EXR".
-            color_mode (str, optional): Typically one of ('BW', 'RGB', 'RGBA'). Defaults to "RGB".
-            exr_codec (str, optional): Codec used to compress exr file. Only used when ``file_format="OPEN_EXR"``. Defaults to "DWAA".
-            bit_depth (int, optional): Bit depth per channel. Defaults to 32 bits.
-            denoise (bool, optional): If true, apply Cycles denoising to the direct and indirect passes
-                before saving. The colour pass is left undenoised as it is noise-free by nature.
-                Has no effect when not using Cycles. Defaults to True.
-        """
+        ...
 
     @type_check_only
     def include_points(
         self, preview: bool = True, exr_codec: EXR_CODECS = "DWAA", bit_depth: Literal[16, 32] = 32
     ) -> None:
-        """Sets up Blender compositor to include a world-space point map for each frame.
-
-        Note:
-            The point map corresponds to world-space positions, like those used in VGGT [1]_,
-            and not the camera-centric positions used in DUSt3R [2]_.
-
-        Args:
-            preview (bool, optional): If true, colorized point maps will also be generated, where colors are
-                assigned based on the absolute fractional world coordinates. Defaults to True.
-            exr_codec (str, optional): Codec used to compress exr file. Defaults to "DWAA".
-            bit_depth (int, optional): Bit depth per channel. Either 16 or 32 bits. Defaults to 32 bits.
-
-        .. [1] `VGGT: Visual Geometry Grounded Transformer <https://arxiv.org/abs/2503.11651>`_
-        .. [2] `DUSt3R: Geometric 3D Vision Made Easy with Unconstrained Image Collections <https://arxiv.org/abs/2312.14132>`_
-        """
+        ...
 
     @type_check_only
     def prepare_thermal(
@@ -1877,84 +747,13 @@ class BlenderClient:
         atlas_tile_min: int = 16,
         atlas_tile_max: int = 512,
         atlas_texel_soft_max: int = 500000,
+        recompute: bool = False,
         radiance_scale: float = 1.0,
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[16, 32] = 32,
         assignments: str | None = None,
     ) -> None:
-        """Solve the scene's heat-transfer simulation and prepare it for thermal rendering.
-
-        Runs the (cache-aware) FEM solve, writes the solved per-vertex ``sim_temperature``
-        attribute onto every mesh, stamps a default temperature on any unsolved mesh, and
-        registers the ``temperature`` value AOV on the original materials.
-
-        Note:
-            This must be called before :meth:`include_thermal <visionsim.simulate.blender.BlenderService.exposed_include_thermal>`,
-            since the AOV is registered on the original materials and exposes the ``temperature`` render-layer
-            output socket that ``include_thermal`` wires into the compositor. M1 is a static solve, so the final
-            timestep (``timestep=-1``) is written to every frame. When ``animated`` is true (M2, ``domain="POINTS"``
-            only), a per-frame transient solve is run instead (``adapter.solve_scene_animated``): the per-object
-            frame history is stashed on the service and the first solved frame's field is written immediately so the
-            initial render is correct; subsequent frames are written by :meth:`exposed_render_frame`'s per-frame
-            hook. Requesting ``animated`` with ``domain="MESH"`` logs a warning and falls back to the static solve.
-            The full ``ThermalConfig`` field set is accepted so a single ``**asdict(config.thermal)`` dispatch can
-            drive this method; the output-only fields are ignored. When ``render_domain="TEXEL"``, atlas-eligible
-            objects (see ``atlas_texel_density``) are additionally solved at texel resolution and their final
-            temperatures are written to an EXR atlas image (``adapter.write_atlas``), loaded/packed as the
-            ``HeatSim_Temperature_Atlas`` Blender image before the AOV is registered so the shader can sample it;
-            those objects get only the OBJECT-level fallback temperature written to their mesh (their per-pixel
-            signal comes from the atlas at render time), not a per-vertex ``sim_temperature`` attribute. Requesting
-            ``animated`` with ``render_domain="TEXEL"`` logs a warning and falls back to ``render_domain="VERTEX"``
-            for that solve (the atlas is a static-solve-only feature; M2/TEXEL is out of scope).
-
-        Args:
-            radiance (bool, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
-                by ``include_thermal`` / the radiance render). Defaults to True.
-            preview (bool, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
-                by ``include_thermal`` / the radiance render). Defaults to True.
-            initial_temperature_K (float, optional): Default initial temperature, in Kelvin, for meshes without a
-                per-object value. Defaults to 295.0.
-            thermal_diffusivity_mm2_s (float, optional): Default thermal diffusivity in ``mm^2/s``. Defaults to 0.17.
-            density_kg_m3 (float, optional): Default material density in ``kg/m^3``. Defaults to 1330.0.
-            specific_heat_J_kgK (float, optional): Default specific heat in ``J/kg*K``. Defaults to 880.0.
-            emissivity (float, optional): Default surface emissivity in ``[0, 1]``. Defaults to 0.9.
-            irradiance_scale (float, optional): Scale factor applied to the computed irradiance (heating input).
-                Defaults to 100.0.
-            sim_time_s (float, optional): Total simulated time, in seconds, for the static scene solve. Defaults to 1.0.
-            timestep_s (float, optional): Solver timestep in seconds. Defaults to 0.05.
-            domain (str, optional): FEM domain, either ``"POINTS"`` (surface point cloud, recommended) or ``"MESH"``.
-                Defaults to ``"POINTS"``.
-            laplacian_backend (str, optional): Laplacian backend, either ``"ROBUST"`` or ``"IGL"``. Defaults to ``"ROBUST"``.
-            device (str, optional): Torch device for the solve, either ``"cuda"`` or ``"cpu"``; falls back to ``"cpu"``
-                if cuda is unavailable. Defaults to ``"cuda"``.
-            render_domain (str, optional): Where solved temperatures live for rendering: ``"VERTEX"`` (per-vertex,
-                byte-identical to before the atlas existed) or ``"TEXEL"`` (a shared texture atlas, sampled per-pixel
-                by the shader). Defaults to ``"VERTEX"``.
-            atlas_texel_density (float, optional): Target texels/m^2 for atlas-eligible objects (TEXEL mode only).
-                Defaults to 1500.0.
-            atlas_tile_min (int, optional): Minimum atlas tile side, in texels (TEXEL mode only). Defaults to 16.
-            atlas_tile_max (int, optional): Maximum atlas tile side, in texels (TEXEL mode only). Defaults to 512.
-            atlas_texel_soft_max (int, optional): Soft ceiling on total atlas texels + retained vertices (TEXEL mode
-                only); exceeding it rescales the effective density down uniformly and warns. Defaults to 500000.
-            radiance_scale (float, optional): Accepted for uniform thermal-config dispatch; not used by this method
-                (consumed by ``include_thermal`` / the radiance render). Defaults to 1.0.
-            exr_codec (str, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
-                by ``include_thermal`` / the radiance render). Defaults to ``"DWAA"``.
-            bit_depth (int, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
-                by ``include_thermal`` / the radiance render). Defaults to 32.
-            animated (bool, optional): Solve heat transfer per-frame as geometry animates (transient), instead of the
-                static M1 solve. Requires ``domain="POINTS"``. Defaults to False.
-            substeps_per_frame (int, optional): Solver substeps per Blender frame in animated mode. Defaults to 4.
-            frame_start (int | None, optional): First frame of the animated solve; defaults to the scene's
-                ``frame_start`` when None. Defaults to None.
-            frame_end (int | None, optional): Last frame of the animated solve; defaults to the scene's
-                ``frame_end`` when None. Defaults to None.
-            every_n_frames (int, optional): Solve every Nth frame in animated mode (cost control); skipped frames
-                hold the last solved field. Defaults to 1.
-            assignments (str | None, optional): Path to a thermal material assignment sidecar
-                (``<scene>.thermal.json``). When set, thermal properties are resolved per material
-                slot; when unset the global defaults are used everywhere. Defaults to None.
-        """
+        ...
 
     @type_check_only
     def heatsim_solve(
@@ -1975,77 +774,13 @@ class BlenderClient:
         atlas_tile_min: int = 16,
         atlas_tile_max: int = 512,
         atlas_texel_soft_max: int = 500000,
+        recompute: bool = False,
         radiance_scale: float = 1.0,
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[16, 32] = 32,
         assignments: str | None = None,
     ) -> None:
-        """Solve and cache the scene's heat-transfer simulation without preparing it for rendering.
-
-        This is the solve-and-cache half of
-        :meth:`prepare_thermal <visionsim.simulate.blender.BlenderService.exposed_prepare_thermal>`: it runs the
-        cache-aware FEM solve so the result is written to disk, but does not write the ``sim_temperature`` attribute,
-        stamp default temperatures, or register the ``temperature`` AOV. It exists for the optional standalone
-        solve command, letting an expensive solve be primed ahead of rendering. The full ``ThermalConfig`` field set
-        is accepted so a single ``**asdict(config.thermal)`` dispatch can drive this method; the output-only fields
-        are ignored. When ``render_domain="TEXEL"``, this also primes the atlas-eligible objects' texel solve (via
-        the same cache key ``prepare_thermal`` would use), but does NOT write the atlas EXR image -- that happens
-        in ``prepare_thermal``, which needs the loaded/packed image to wire the shader.
-
-        Note:
-            The ``animated``/``substeps_per_frame``/``frame_start``/``frame_end``/``every_n_frames`` fields (M2) are
-            accepted only to mirror ``ThermalConfig``; this standalone cache-priming path always runs the static M1
-            solve regardless of ``animated``.
-
-        Args:
-            radiance (bool, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
-                by ``include_thermal`` / the radiance render). Defaults to True.
-            preview (bool, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
-                by ``include_thermal`` / the radiance render). Defaults to True.
-            initial_temperature_K (float, optional): Default initial temperature, in Kelvin, for meshes without a
-                per-object value. Defaults to 295.0.
-            thermal_diffusivity_mm2_s (float, optional): Default thermal diffusivity in ``mm^2/s``. Defaults to 0.17.
-            density_kg_m3 (float, optional): Default material density in ``kg/m^3``. Defaults to 1330.0.
-            specific_heat_J_kgK (float, optional): Default specific heat in ``J/kg*K``. Defaults to 880.0.
-            emissivity (float, optional): Default surface emissivity in ``[0, 1]``. Defaults to 0.9.
-            irradiance_scale (float, optional): Scale factor applied to the computed irradiance (heating input).
-                Defaults to 100.0.
-            sim_time_s (float, optional): Total simulated time, in seconds, for the static scene solve. Defaults to 1.0.
-            timestep_s (float, optional): Solver timestep in seconds. Defaults to 0.05.
-            domain (str, optional): FEM domain, either ``"POINTS"`` (surface point cloud, recommended) or ``"MESH"``.
-                Defaults to ``"POINTS"``.
-            laplacian_backend (str, optional): Laplacian backend, either ``"ROBUST"`` or ``"IGL"``. Defaults to ``"ROBUST"``.
-            device (str, optional): Torch device for the solve, either ``"cuda"`` or ``"cpu"``; falls back to ``"cpu"``
-                if cuda is unavailable. Defaults to ``"cuda"``.
-            render_domain (str, optional): Where solved temperatures live for rendering: ``"VERTEX"`` (per-vertex,
-                byte-identical to before the atlas existed) or ``"TEXEL"`` (a shared texture atlas, sampled per-pixel
-                by the shader). Defaults to ``"VERTEX"``.
-            atlas_texel_density (float, optional): Target texels/m^2 for atlas-eligible objects (TEXEL mode only).
-                Defaults to 1500.0.
-            atlas_tile_min (int, optional): Minimum atlas tile side, in texels (TEXEL mode only). Defaults to 16.
-            atlas_tile_max (int, optional): Maximum atlas tile side, in texels (TEXEL mode only). Defaults to 512.
-            atlas_texel_soft_max (int, optional): Soft ceiling on total atlas texels + retained vertices (TEXEL mode
-                only); exceeding it rescales the effective density down uniformly and warns. Defaults to 500000.
-            radiance_scale (float, optional): Accepted for uniform thermal-config dispatch; not used by this method
-                (consumed by ``include_thermal`` / the radiance render). Defaults to 1.0.
-            exr_codec (str, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
-                by ``include_thermal`` / the radiance render). Defaults to ``"DWAA"``.
-            bit_depth (int, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
-                by ``include_thermal`` / the radiance render). Defaults to 32.
-            animated (bool, optional): Accepted for uniform thermal-config dispatch; not used by this method (see
-                Note above). Defaults to False.
-            substeps_per_frame (int, optional): Accepted for uniform thermal-config dispatch; not used by this method.
-                Defaults to 4.
-            frame_start (int | None, optional): Accepted for uniform thermal-config dispatch; not used by this method.
-                Defaults to None.
-            frame_end (int | None, optional): Accepted for uniform thermal-config dispatch; not used by this method.
-                Defaults to None.
-            every_n_frames (int, optional): Accepted for uniform thermal-config dispatch; not used by this method.
-                Defaults to 1.
-            assignments (str | None, optional): Path to a thermal material assignment sidecar
-                (``<scene>.thermal.json``). When set, thermal properties are resolved per material
-                slot; when unset the global defaults are used everywhere. Defaults to None.
-        """
+        ...
 
     @type_check_only
     def include_thermal(
@@ -2066,97 +801,23 @@ class BlenderClient:
         atlas_tile_min: int = 16,
         atlas_tile_max: int = 512,
         atlas_texel_soft_max: int = 500000,
+        recompute: bool = False,
         radiance_scale: float = 1.0,
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[16, 32] = 32,
         assignments: str | None = None,
     ) -> None:
-        """Sets up Blender compositor to include thermal outputs for rendered images.
-
-        Wires the per-vertex temperature map (in Kelvin) from the ``temperature`` AOV registered by
-        :meth:`prepare_thermal <visionsim.simulate.blender.BlenderService.exposed_prepare_thermal>` into the
-        compositor, optionally adds an inferno-colormap preview, and optionally arms a second gray-body render pass
-        that produces a thermal-camera radiance image (emitted at render time by
-        :meth:`render_current_frame <visionsim.simulate.blender.BlenderService.exposed_render_current_frame>`).
-
-        Note:
-            This must be called after ``prepare_thermal``, which registers the ``temperature`` AOV (and, in TEXEL
-            mode, loads/packs the ``HeatSim_Temperature_Atlas`` image the shader samples) and exposes the matching
-            render-layer output socket. The solver and material parameters (``initial_temperature_K`` through
-            ``device``, the ``render_domain``/``atlas_*`` fields, ``assignments``, and the ``animated``/
-            ``substeps_per_frame``/``frame_start``/``frame_end``/``every_n_frames`` M2 fields) are accepted only to
-            mirror ``ThermalConfig`` and are consumed by ``prepare_thermal``; ``include_thermal`` itself ignores them.
-            For animated scenes, the per-frame field update happens later, in
-            :meth:`render_frame <visionsim.simulate.blender.BlenderService.exposed_render_frame>`.
-
-        Args:
-            radiance (bool, optional): If true, arm the gray-body thermal-camera radiance image as a second render
-                pass and register its per-frame output. Defaults to True.
-            preview (bool, optional): If true, also save an inferno-colormap PNG preview of the temperature map.
-                Defaults to True.
-            initial_temperature_K (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
-                ignored here. Default initial temperature, in Kelvin, for meshes without a per-object value.
-                Defaults to 295.0.
-            thermal_diffusivity_mm2_s (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal``
-                and ignored here. Default thermal diffusivity in ``mm^2/s``. Defaults to 0.17.
-            density_kg_m3 (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
-                here. Default material density in ``kg/m^3``. Defaults to 1330.0.
-            specific_heat_J_kgK (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
-                ignored here. Default specific heat in ``J/kg*K``. Defaults to 880.0.
-            emissivity (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
-                here. Default surface emissivity in ``[0, 1]``. Defaults to 0.9.
-            irradiance_scale (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
-                ignored here. Scale factor applied to the computed irradiance. Defaults to 100.0.
-            sim_time_s (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
-                here. Total simulated time in seconds. Defaults to 1.0.
-            timestep_s (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
-                here. Solver timestep in seconds. Defaults to 0.05.
-            domain (str, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored here.
-                FEM domain, either ``"POINTS"`` or ``"MESH"``. Defaults to ``"POINTS"``.
-            laplacian_backend (str, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
-                ignored here. Laplacian backend, either ``"ROBUST"`` or ``"IGL"``. Defaults to ``"ROBUST"``.
-            device (str, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored here.
-                Torch device, either ``"cuda"`` or ``"cpu"``. Defaults to ``"cuda"``.
-            render_domain (str, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
-                here. Where solved temperatures live for rendering, ``"VERTEX"`` or ``"TEXEL"``. Defaults to
-                ``"VERTEX"``.
-            atlas_texel_density (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
-                ignored here. Target texels/m^2 for atlas-eligible objects. Defaults to 1500.0.
-            atlas_tile_min (int, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
-                here. Minimum atlas tile side, in texels. Defaults to 16.
-            atlas_tile_max (int, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
-                here. Maximum atlas tile side, in texels. Defaults to 512.
-            atlas_texel_soft_max (int, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
-                ignored here. Soft ceiling on total atlas texels + retained vertices. Defaults to 500000.
-            radiance_scale (float, optional): Gray-body emission magnitude knob for the ``thermal_radiance`` render.
-                Defaults to 1.0.
-            exr_codec (str, optional): Codec used to compress the temperature and radiance EXR files. Options vary
-                depending on the version of Blender, with the following being broadly available:
-                ('NONE', 'PXR24', 'ZIP', 'PIZ', 'RLE', 'ZIPS', 'DWAA', 'DWAB'). Defaults to ``"DWAA"``.
-            bit_depth (int, optional): Bit depth per channel for the temperature and radiance EXRs, either 16 or 32.
-                Defaults to 32.
-            animated (bool, optional): Mirrors ``ThermalConfig`` (M2); consumed by ``prepare_thermal`` and ignored
-                here. Defaults to False.
-            substeps_per_frame (int, optional): Mirrors ``ThermalConfig`` (M2); consumed by ``prepare_thermal`` and
-                ignored here. Defaults to 4.
-            frame_start (int | None, optional): Mirrors ``ThermalConfig`` (M2); consumed by ``prepare_thermal`` and
-                ignored here. Defaults to None.
-            frame_end (int | None, optional): Mirrors ``ThermalConfig`` (M2); consumed by ``prepare_thermal`` and
-                ignored here. Defaults to None.
-            every_n_frames (int, optional): Mirrors ``ThermalConfig`` (M2); consumed by ``prepare_thermal`` and
-                ignored here. Defaults to 1.
-            assignments (str | None, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
-                ignored here. Path to a thermal material assignment sidecar (``<scene>.thermal.json``). Defaults
-                to None.
-        """
+        ...
 
     @type_check_only
-    def load_addons(self, *addons: str) -> None:
-        """Load blender addons by name (case-insensitive).
+    def configure_thermal(self, config: dict[str, Any]) -> None:
+        ...
 
-        Args:
-            *addons (str): name of addons to load.
-        """
+    def heatsim_solve_config(self, config: dict[str, Any]) -> None:
+        ...
+
+    def load_addons(self, *addons: str) -> None:
+        ...
 
     @type_check_only
     def set_resolution(
@@ -2165,36 +826,15 @@ class BlenderClient:
         width: int | None = None,
         resolution_percentage: int = 100,
     ) -> None:
-        """Set frame resolution (height, width) in pixels.
-        If a single tuple is passed, instead of using keyword arguments, it will be parsed as (height, width).
-
-        Args:
-            height (tuple[int] | list[int] | int | None, optional): Height of render in pixels. Defaults to value from file.
-            width (int | None, optional): Width of render in pixels. Defaults to value from file.
-            resolution_percentage (float, optional): Percentage of the original resolution to render at. Defaults to 100%.
-
-        Raises:
-            ValueError: raised if resolution is not understood.
-        """
+        ...
 
     @type_check_only
     def use_motion_blur(self, enable: bool) -> None:
-        """Enable/disable motion blur.
-
-        Args:
-            enable (bool): If true, enable motion blur.
-
-        Raises:
-            RuntimeError: raised when motion blur is enabled as flow cannot be computed.
-        """
+        ...
 
     @type_check_only
     def use_animations(self, enable: bool) -> None:
-        """Enable/disable all animations.
-
-        Args:
-            enable (bool): If true, enable animations.
-        """
+        ...
 
     @type_check_only
     def cycles_settings(
@@ -2205,72 +845,27 @@ class BlenderClient:
         max_samples: int | None = None,
         use_denoising: bool | None = None,
     ) -> list[str]:
-        """Enables/activates cycles render devices and settings.
-
-        Note: A default arguments of ``None`` means do not change setting inherited from blendfile.
-
-        Args:
-            device_type (str, optional): Name of device to use, one of "cpu", "cuda", "optix", "metal", etc.
-                See `blender docs <https://docs.blender.org/manual/en/latest/render/cycles/gpu_rendering.html>`_
-                for full list. Defaults to None.
-            use_cpu (bool, optional): Boolean flag to enable CPUs alongside GPU devices. Defaults to None.
-            adaptive_threshold (float, optional): Set noise threshold upon which to stop taking samples. Defaults to None.
-            max_samples (int, optional): Maximum number of samples per pixel to take. Defaults to None.
-            use_denoising (bool, optional): If enabled, a denoising pass will be used. Defaults to None.
-
-        Raises:
-            RuntimeError: raised when no devices are found.
-            ValueError: raised when setting ``use_cpu`` is required.
-
-        Returns:
-            list[str]: Name of activated devices.
-        """
+        ...
 
     @type_check_only
     def unbind_camera(self, clear_animations: bool = True) -> None:
-        """Remove constraints, animations and parents from main camera.
-
-        Note: In order to undo this, you'll need to re-initialize.
-
-        Args:
-            clear_animations (bool, optional): If true clear animation data for camera.
-        """
+        ...
 
     @type_check_only
     def move_keyframes(self, scale: float = 1.0, shift: float = 0.0) -> None:
-        """Adjusts keyframes in Blender animations, keypoints are first scaled then shifted.
-
-        Args:
-            scale (float, optional): Factor used to rescale keyframe positions along x-axis. Defaults to 1.0.
-            shift (float, optional): Factor used to shift keyframe positions along x-axis. Defaults to 0.0.
-
-        Raises:
-            RuntimeError: raised if trying to move keyframes beyond blender's limits.
-        """
+        ...
 
     @type_check_only
     def set_current_frame(self, frame_number: int) -> None:
-        """Set current frame number. This might advance any animations.
-
-        Args:
-            frame_number (int): index of frame to skip to.
-        """
+        ...
 
     @type_check_only
     def camera_info(self) -> dict[str, Any]:
-        """Return a dictionary with camera intrinsics.
-
-        Returns:
-            dict[str, Any]: dictionary containing camera parameters.
-        """
+        ...
 
     @type_check_only
     def camera_extrinsics(self) -> npt.NDArray[np.floating]:
-        """Get the 4x4 transform matrix encoding the current camera pose.
-
-        Returns:
-            npt.NDArray[np.floating]: Current camera pose in matrix form.
-        """
+        ...
 
     @type_check_only
     def position_camera(
@@ -2280,99 +875,31 @@ class BlenderClient:
         look_at: npt.ArrayLike | None = None,
         in_order: bool = True,
     ) -> None:
-        """Positions and orients camera according to specified parameters. All transformations are local,
-        use :meth:`unbind_camera <exposed_unbind_camera>` to ensure position is set in world coordinates.
-
-        Note: Only one of ``look_at`` or ``rotation`` can be set at once.
-
-        Args:
-            location (npt.ArrayLike, optional): Location to place camera in 3D space. Defaults to none.
-            rotation (npt.ArrayLike, optional): Rotation matrix for camera. Defaults to none.
-            look_at (npt.ArrayLike, optional): Location to point camera. Defaults to none.
-            in_order (bool, optional): If set, assume current camera pose is from previous/next
-                frame and ensure new rotation set by ``look_at`` is compatible with current position.
-                Without this, a rotations will stay in the [-pi, pi] range and this wrapping will
-                mess up interpolations. Only used when ``look_at`` is set. Defaults to True.
-
-        Raises:
-            ValueError: raised if camera orientation is over-defined.
-        """
+        ...
 
     @type_check_only
     def rotate_camera(self, angle: float) -> None:
-        """Rotate camera around it's optical axis, relative to current orientation. All transformations are local,
-        use :meth:`unbind_camera <exposed_unbind_camera>` to ensure position is set in world coordinates.
-
-        Args:
-            angle: Relative amount to rotate by (clockwise, in radians).
-        """
+        ...
 
     @type_check_only
     def offset_camera(self, offset: npt.ArrayLike) -> None:
-        """Move camera by a given vector in its local coordinate frame.
-
-        Args:
-            offset (npt.ArrayLike): Amount to offset by (x, y, z) in local coordinates.
-        """
+        ...
 
     @type_check_only
     def set_camera_keyframe(self, frame_num: int, matrix: npt.ArrayLike | None = None) -> None:
-        """Set camera keyframe at given frame number.
-        If camera matrix is not supplied, currently set camera position/rotation/scale will be used,
-        this allows users to set camera position using :meth:`position_camera <exposed_position_camera>`
-        and :meth:`rotate_camera <exposed_rotate_camera>`.
-
-        Args:
-            frame_num (int): index of frame to set keyframe for.
-            matrix (npt.ArrayLike | None, optional): 4x4 camera transform, if not supplied,
-                use current camera matrix. Defaults to None.
-        """
+        ...
 
     @type_check_only
     def set_animation_range(self, start: int | None = None, stop: int | None = None, step: int | None = None) -> None:
-        """Set animation range for scene.
-
-        Args:
-            start (int | None, optional): frame start, inclusive. Defaults to None.
-            stop (int | None, optional): frame stop, exclusive. Defaults to None.
-            step (int | None, optional): frame interval. Defaults to None.
-        """
+        ...
 
     @type_check_only
     def render_current_frame(self, allow_skips: bool = True, dry_run: bool = False) -> None:
-        """Generates a single frame in Blender at the current camera location,
-        return the file paths for that frame, potentially including depth, normals, etc.
-
-        Note:
-            This method renders the current frame as-is, it assumes the camera position,
-            frame number and all other parameters have been set.
-
-        Args:
-            allow_skips (bool, optional): if true, blender will not re-render and overwrite existing frames.
-                This does not however apply to depth/normals/etc, which cannot be skipped. Defaults to True.
-            dry_run (bool, optional): if true, nothing will be rendered at all. Defaults to False.
-        """
+        ...
 
     @type_check_only
     def render_frame(self, frame_number: int, allow_skips: bool = True, dry_run: bool = False) -> None:
-        """Same as first setting current frame then rendering it.
-
-        Warning:
-            Calling this has the side-effect of changing the current frame.
-
-        Note:
-            If :meth:`prepare_thermal <exposed_prepare_thermal>` ran an animated (M2) solve,
-            this writes that frame's solved thermal field (via ``_thermal_write_frame``)
-            before rendering, so both the temperature AOV and the gray-body radiance pass
-            reflect the current frame -- Cycles reads ``sim_temperature`` live, so no
-            compositor changes are needed.
-
-        Args:
-            frame_number (int): frame to render
-            allow_skips (bool, optional): if true, blender will not re-render and overwrite existing frames.
-                This does not however apply to depth/normals/etc, which cannot be skipped. Defaults to True.
-            dry_run (bool, optional): if true, nothing will be rendered at all. Defaults to False.
-        """
+        ...
 
     @type_check_only
     def render_frames(
@@ -2382,21 +909,7 @@ class BlenderClient:
         dry_run: bool = False,
         update_fn: UpdateFn | None = None,
     ) -> None:
-        """Render all requested frames and return associated transforms dictionary.
-
-        Args:
-            frame_numbers (Iterable[int]): frames to render.
-            allow_skips (bool, optional): if true, blender will not re-render and overwrite existing frames.
-                This does not however apply to depth/normals/etc, which cannot be skipped. Defaults to True.
-            dry_run (bool, optional): if true, nothing will be rendered at all. Defaults to False.
-            update_fn (UpdateFn, optional): callback function to track render progress. Will first be called with ``total`` kwarg,
-                indicating number of steps to be taken, then will be called with ``advance=1`` at every step. Closely mirrors the
-                `rich.Progress API <https://rich.readthedocs.io/en/stable/reference/progress.html#rich.progress.Progress.update>`_.
-                Defaults to None.
-
-        Raises:
-            RuntimeError: raised if trying to render frames beyond blender's limits.
-        """
+        ...
 
     @type_check_only
     def render_animation(
@@ -2408,84 +921,32 @@ class BlenderClient:
         dry_run: bool = False,
         update_fn: UpdateFn | None = None,
     ) -> None:
-        """Determines frame range to render, sets camera positions and orientations, and renders all frames in animation range.
-
-        Note: All frame start/end/step arguments are absolute quantities, applied after any keyframe moves.
-              If the animation is from (1-100) and you've scaled it by calling :meth:`move_keyframes(scale=2.0) <exposed_move_keyframes>`
-              then calling :meth:`render_animation(frame_start=1, frame_end=100) <exposed_render_animation>` will only render half of the animation.
-              By default the whole animation will render when no start/end and step values are set.
-
-        Args:
-            frame_start (int, optional): Starting index (inclusive) of frames to render as seen in blender. Defaults to None, meaning value from ``.blend`` file.
-            frame_end (int, optional): Ending index (inclusive) of frames to render as seen in blender. Defaults to None, meaning value from ``.blend`` file.
-            frame_step (int, optional): Skip every nth frame. Defaults to None, meaning value from ``.blend`` file.
-            allow_skips (bool, optional): Same as :meth:`render_current_frame <exposed_render_current_frame>`.
-            dry_run (bool, optional): Same as :meth:`render_current_frame <exposed_render_current_frame>`.
-            update_fn (UpdateFn, optional): Same as :meth:`render_frames <exposed_render_frames>`.
-
-        Raises:
-            ValueError: raised if scene and camera are entirely static.
-        """
+        ...
 
     @type_check_only
     def save_file(self, path: str | os.PathLike) -> None:
-        """Save the opened blender file. This is useful for introspecting the state of the compositor/scene/etc.
-
-        Args:
-            path (str | os.PathLike): path where to save blendfile.
-
-        Raises:
-            ValueError: raised if file already exists.
-        """
+        ...
 
 class BlenderClients(tuple):
-    """Collection of :class:`BlenderClient` instances.
 
-    Most methods in this class simply call the equivalent method of each client, that is,
-    calling ``clients.set_resolution`` is equivalent to calling :meth:`set_resolution <BlenderService.exposed_set_resolution>`
-    for each client in clients. Some special methods, namely the :meth:`render_frames` and :meth:`render_animation`
-    methods will instead distribute the rendering load to all clients.
-
-    Finally, entering each client's context-manager, and closing each client connection
-    is ensured by using this class' context-manager.
-    """
+    def __getattr__(self, name: str) -> Callable[..., Any]:
+        ...
 
     def __new__(cls, *objs: Iterator[BlenderClient | tuple[str, int]]) -> Self:
-        """Create a new instance from iterable of clients, or their connection settings.
-
-        Args:
-            *objs (Iterator[BlenderClient | tuple[str, int]]): :class:`BlenderClient` instances or their hostnames and ports.
-
-        Raises:
-            TypeError: raised when input objects are of incorrect type.
-        """
+        ...
     stack: ExitStack
 
     def __init__(self, *objs) -> None:
-        """Initialize collection of :class:`BlenderClient` from iterable of clients, or their connection settings.
-
-        Args:
-            *objs (Iterator[BlenderClient | tuple[str, int]]): :class:`BlenderClient` instances or their hostnames and ports.
-        """
+        ...
 
     def _method_dispatch_factory(self, name: str, method: Callable) -> Callable: ...
     def __enter__(self) -> Self:
-        """Connect all clients to their render servers via a context manager.
-
-        Raises:
-            TimeoutError: raised if unable to connect to servers in time.
-        """
+        ...
 
     def __exit__(
         self, type: type[BaseException] | None, value: BaseException | None, traceback: TracebackType | None
     ) -> None:
-        """Disconnect from each render server via a context manager.
-
-        Args:
-            type (type[BaseException] | None): Type of exception that was caught, if any.
-            value (BaseException | None): Value of exception if any.
-            traceback (TracebackType | None): Traceback of exception if any.
-        """
+        ...
 
     @classmethod
     @contextmanager
@@ -2497,29 +958,7 @@ class BlenderClients(tuple):
         autoexec: bool = False,
         executable: str | os.PathLike | None = None,
     ) -> Generator[Self]:
-        """Spawn and connect to one or more blender servers.
-        The spawned processes are accessible through the client's ``process`` attribute.
-
-        Args:
-            jobs (int, optional): number of jobs to spawn. Defaults to 1.
-            timeout (float, optional): try to discover spawned instances for ``timeout``
-                (in seconds) before giving up. If negative, a port will be randomly selected and assigned to the
-                spawned server, bypassing the need for discovery and timeouts. Note that when a port is assigned
-                this context manager will immediately yield, even if the server is not yet ready to accept
-                incoming connections. Defaults to assigning a port to spawned server (-1 seconds).
-            log (str | os.PathLike | FILE | tuple[FILE, FILE], optional): path to log directory, file handle,
-                descriptor or tuple thereof. Stdout and stderr will be captured and saved if supplied.
-                Defaults to subprocess.DEVNULL for both stdout/stderr.
-            autoexec (bool, optional): if true, allow execution of any embedded python scripts within blender.
-                For more, see blender's CLI documentation. Defaults to False.
-            executable (str | os.PathLike | None, optional): path to Blender's executable. Defaults to looking
-                for blender on $PATH, but is useful when targeting a specific blender install, or when it's installed
-                via a package manager such as flatpak. Setting it to "flatpak run --die-with-parent org.blender.Blender"
-                might be required when using flatpaks. Defaults to None (system PATH).
-
-        Yields:
-            Generator[Self]: the connected clients
-        """
+        ...
 
     @contextmanager
     @staticmethod
@@ -2531,72 +970,15 @@ class BlenderClients(tuple):
         executable: str | os.PathLike | None = None,
         conns: list[tuple[str, int]] | None = None,
     ) -> Generator[multiprocess.Pool]:
-        """Spawns a multiprocessing-like worker pool, each with their own :class:`BlenderClient` instance.
-        The function supplied to pool.map/imap/starmap and their async variants will be automagically
-        passed a client instance as their first argument that they can use for rendering.
-
-        Example:
-            .. code-block:: python
-
-                def render(client, blend_file):
-                    root = Path("renders") / Path(blend_file).stem
-                    client.initialize(blend_file, root)
-                    client.render_animation()
-
-                if __name__ == "__main__":
-                    with BlenderClients.pool(2) as pool:
-                        pool.map(render, ["monkey.blend", "cube.blend", "metaballs.blend"])
-
-        Note:
-            Here we use ``multiprocess`` instead of the builtin multiprocessing library to take
-            advantage of the more advanced dill serialization (as opposed to the standard pickling).
-
-        Args:
-            jobs (int, optional): number of jobs to spawn. Defaults to 1.
-            timeout (float, optional): try to discover spawned instances for ``timeout``
-                (in seconds) before giving up. If negative, a port will be randomly selected and assigned to the
-                spawned server, bypassing the need for discovery and timeouts. Note that when a port is assigned
-                this context manager will immediately yield, even if the server is not yet ready to accept
-                incoming connections. Defaults to assigning a port to spawned server (-1 seconds).
-            log (str | os.PathLike | FILE | tuple[FILE, FILE], optional): path to log directory, file handle,
-                descriptor or tuple thereof. Stdout and stderr will be captured and saved if supplied.
-                Defaults to subprocess.DEVNULL for both stdout/stderr.
-            autoexec (bool, optional): if true, allow execution of any embedded python scripts within blender.
-                For more, see blender's CLI documentation. Defaults to False.
-            executable (str | os.PathLike | None, optional): path to Blender's executable. Defaults to looking
-                for blender on $PATH, but is useful when targeting a specific blender install, or when it's installed
-                via a package manager such as flatpak. Setting it to "flatpak run --die-with-parent org.blender.Blender"
-                might be required when using flatpaks. Defaults to None (system PATH).
-            conns: List of connection tuples containing the hostnames and ports of existing servers.
-                If specified, the pool will use these servers (and ``jobs`` and other spawn arguments will
-                be ignored) instead of spawning new ones.
-
-        Yields:
-            Generator[multiprocess.Pool]: A ``multiprocess.Pool`` instance which has had it's applicator methods
-                (map/imap/starmap/etc) monkey-patched to inject a client instance as first argument.
-        """
+        ...
 
     @require_connected_clients
     def common_animation_range(self) -> range:
-        """Get animation range shared by all clients as range(start, end+1, step).
-
-        Raises:
-            RuntimeError: animation ranges for all clients are expected to be the same.
-
-        Returns:
-            range: Range of frames in animation.
-        """
+        ...
 
     @require_connected_clients
     def common_animation_range_tuple(self) -> tuple[int, int, int]:
-        """Get animation range shared by all clients as a tuple of (start, end, step).
-
-        Raises:
-            RuntimeError: animation ranges for all clients are expected to be the same.
-
-        Returns:
-            tuple[int, int, int]: Frame start, end, and step of animation.
-        """
+        ...
 
     @require_connected_clients
     def render_frames(
@@ -2606,25 +988,7 @@ class BlenderClients(tuple):
         dry_run: bool = False,
         update_fn: UpdateFn | None = None,
     ) -> None:
-        """Render all requested frames by distributing workload across connected clients and return associated transforms dictionary.
-
-        Warning:
-            Assumes all clients are initialized in the same manner, that is, to the same blendfile, with the same animation range,
-            render settings, etc.
-
-        Args:
-            frame_numbers (Collection[int]): frames to render.
-            allow_skips (bool, optional): if true, blender will not re-render and overwrite existing frames.
-                This does not however apply to depth/normals/etc, which cannot be skipped. Defaults to True.
-            dry_run (bool, optional): if true, nothing will be rendered at all. Defaults to False.
-            update_fn (UpdateFn, optional): callback function to track render progress. Will first be called with ``total`` kwarg,
-                indicating number of steps to be taken, then will be called with ``advance=1`` at every step. Closely mirrors the
-                `rich.Progress API <https://rich.readthedocs.io/en/stable/reference/progress.html#rich.progress.Progress.update>`_.
-                Defaults to None.
-
-        Raises:
-            RuntimeError: raised if trying to render frames beyond blender's limits.
-        """
+        ...
 
     @require_connected_clients
     def render_animation(
@@ -2636,100 +1000,38 @@ class BlenderClients(tuple):
         dry_run: bool = False,
         update_fn: UpdateFn | None = None,
     ) -> None:
-        """Determines frame range to render, sets camera positions and orientations, and renders all frames in animation range by distributing
-        workload onto all connected clients.
-
-        Note: All frame start/end/step arguments are absolute quantities, applied after any keyframe moves.
-              If the animation is from (1-100) and you've scaled it by calling :meth:`move_keyframes(scale=2.0) <exposed_move_keyframes>`
-              then calling :meth:`render_animation(frame_start=1, frame_end=100) <exposed_render_animation>` will only render half of the animation.
-              By default the whole animation will render when no start/end and step values are set.
-
-        Args:
-            frame_start (int, optional): Starting index (inclusive) of frames to render as seen in blender. Defaults to None, meaning value from ``.blend`` file.
-            frame_end (int, optional): Ending index (inclusive) of frames to render as seen in blender. Defaults to None, meaning value from ``.blend`` file.
-            frame_step (int, optional): Skip every nth frame. Defaults to None, meaning value from ``.blend`` file.
-            allow_skips (bool, optional): Same as :meth:`render_current_frame <exposed_render_current_frame>`.
-            dry_run (bool, optional): Same as :meth:`render_current_frame <exposed_render_current_frame>`.
-            update_fn (UpdateFn, optional): Same as :meth:`render_frames <exposed_render_frames>`.
-
-        Raises:
-            ValueError: raised if scene and camera are entirely static.
-        """
+        ...
 
     @require_connected_clients
     def save_file(self, path: str | os.PathLike) -> None:
-        """Save opened blender file. This is useful for introspecting the state of the compositor/scene/etc.
-
-        Note: Only saves file once (from a single connected client), assumes all clients have
-            been initialized in the same manner.
-
-        Args:
-            path (str | os.PathLike): path where to save blendfile.
-
-        Raises:
-            ValueError: raised if file already exists.
-        """
+        ...
 
     def wait(self) -> None:
-        """Wait for all clients at once."""
+        ...
 
     @type_check_only
     def with_logger(self, log: logging.Logger) -> None:
-        """Use supplied logger, if logger is initialized in client, messages will log to the client.
-
-        Args:
-            log (logging.Logger): Logger to use for messages
-        """
+        ...
 
     @type_check_only
     def initialize(self, blend_file: str | os.PathLike, root_path: str | os.PathLike, **kwargs) -> None:
-        """Initialize BlenderService and load blendfile.
-
-        Args:
-            blend_file (str | os.PathLike): path of scene file to load.
-            root_path (str | os.PathLike): path at which to save rendered results.
-            **kwargs: Additional keyword arguments to be passed to
-                `bpy.ops.wm.open_mainfile <https://docs.blender.org/api/current/bpy.ops.wm.html#bpy.ops.wm.open_mainfile>`_.
-        """
+        ...
 
     @type_check_only
     def iter_fcurves(self, actions: list[bpy.types.Action] | None = None) -> tuple[Iterator[bpy.types.FCurve],]:
-        """Yield fcurves of all actions.
-
-        This abstracts away the API for accessing fcurves which changed to using channelbags in v4.4, see
-        `release notes here <https://developer.blender.org/docs/release_notes/4.4/upgrading/slotted_actions/>`_.
-
-        Args:
-            actions (list[bpy.types.Action] | None, optional): Only yield fcurves from these actions if specified,
-                otherwise use all actions. Defaults to None.
-
-        Yields:
-            Iterator[bpy.types.FCurve]: an fcurve object from the scene or action
-        """
+        ...
 
     @type_check_only
     def get_original_fps(self) -> tuple[float,]:
-        """Get effective framerate (fps/fps_base).
-
-        Returns:
-            float: Frame rate of scene.
-        """
+        ...
 
     @type_check_only
     def animation_range(self) -> tuple[range,]:
-        """Get animation range of current scene as range(start, end+1, step).
-
-        Returns:
-            range: Range of frames in animation.
-        """
+        ...
 
     @type_check_only
     def animation_range_tuple(self) -> tuple[tuple[int, int, int],]:
-        """Get animation range of current scene as a tuple of (start, end, step).
-
-        Returns:
-            tuple[int, int, int]: Frame start, end, and step of animation.
-        """
+        ...
 
     @type_check_only
     def include_composites(
@@ -2739,21 +1041,7 @@ class BlenderClients(tuple):
         exr_codec: EXR_CODECS | None = None,
         bit_depth: Literal[8, 16, 32] | None = None,
     ) -> None:
-        """Sets up Blender to include the outputs of any existing compositor nodes groups.
-
-        Note: A default arguments of ``None`` means do not change setting inherited from the blendfile's ``Output`` settings.
-
-        Args:
-            file_format (str | None, optional): Format to save composited render as. Options vary depending on the version of Blender,
-                with the following being broadly available: ('BMP', 'IRIS', 'PNG', 'JPEG', 'JPEG2000', 'TARGA', 'TARGA_RAW',
-                'CINEON', 'DPX', 'OPEN_EXR', 'HDR', 'TIFF', 'WEBP'). Defaults to None.
-            color_mode (str | None, optional): Typically one of ('BW', 'RGB', 'RGBA'). Defaults to None.
-            exr_codec (str | None, optional): Codec used to compress exr file. Only used when ``file_format="OPEN_EXR"``,
-                options vary depending on the version of Blender, with the following being broadly available:
-                ('NONE', 'PXR24', 'ZIP', 'PIZ', 'RLE', 'ZIPS', 'DWAA', 'DWAB'). Defaults to None.
-            bit_depth (int | None, optional): Bit depth per channel, also referred to as color-depth. Options depend on the
-                chosen file format, with 8, 16 and 32bits being common. Defaults to None.
-        """
+        ...
 
     @type_check_only
     def include_frames(
@@ -2763,25 +1051,7 @@ class BlenderClients(tuple):
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[8, 16, 32] = 8,
     ) -> None:
-        """Sets up Blender compositor to include ground truth rendered images, bypassing any existing compositor nodes.
-
-        Note:
-            For linear intensity renders, use the "OPEN_EXR" format with and 32 or 16 bits.
-
-        Args:
-            file_format (str, optional): Format to save ground truth render as. Options vary depending on the version of Blender,
-                with the following being broadly available: ('BMP', 'IRIS', 'PNG', 'JPEG', 'JPEG2000', 'TARGA', 'TARGA_RAW',
-                'CINEON', 'DPX', 'OPEN_EXR', 'HDR', 'TIFF', 'WEBP'). Defaults to "PNG".
-            color_mode (str, optional): Typically one of ('BW', 'RGB', 'RGBA'). Defaults to "RGB".
-            exr_codec (str, optional): Codec used to compress exr file. Only used when ``file_format="OPEN_EXR"``,
-                options vary depending on the version of Blender, with the following being broadly available:
-                ('NONE', 'PXR24', 'ZIP', 'PIZ', 'RLE', 'ZIPS', 'DWAA', 'DWAB'). Defaults to "DWAA".
-            bit_depth (int, optional): Bit depth per channel, also referred to as color-depth. Options depend on the
-                chosen file format, with 8, 16 and 32 bits being common. Defaults to 8 bits.
-
-        Raises:
-            ValueError: raised when file-format not understood.
-        """
+        ...
 
     @type_check_only
     def include_depths(
@@ -2791,41 +1061,13 @@ class BlenderClients(tuple):
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[16, 32] = 32,
     ) -> None:
-        """Sets up Blender compositor to include depth map for rendered images.
-
-        Note:
-            The preview colormap is re-normalized on a per-frame basis, to visually
-            compare across frames, apply colorization after rendering using the CLI.
-
-        Args:
-            preview (bool, optional): If true, colorized depth maps, helpful for quick visualizations,
-                will be generated alongside ground-truth depth maps. Defaults to True.
-            file_format (str, optional): Format of depth maps, one of "OPEN_EXR" or "HDR". Defaults to "OPEN_EXR".
-            exr_codec (str, optional): Codec used to compress exr file. Only used when ``file_format="OPEN_EXR"``,
-                options vary depending on the version of Blender, with the following being broadly available:
-                ('NONE', 'PXR24', 'ZIP', 'PIZ', 'RLE', 'ZIPS', 'DWAA', 'DWAB'). Defaults to "DWAA".
-            bit_depth (int, optional): Bit depth per channel, also referred to as color-depth. Options depend on the
-                chosen file format, with 8, 16 and 32 bits being common. Defaults to 32 bits.
-
-        Raises:
-            ValueError: raised when file-format not understood.
-        """
+        ...
 
     @type_check_only
     def include_normals(
         self, preview: bool = True, exr_codec: EXR_CODECS = "DWAA", bit_depth: Literal[16, 32] = 32
     ) -> None:
-        """Sets up Blender compositor to include normal map for rendered images.
-
-        Args:
-            preview (bool, optional): If true, colorized normal maps will also be generated with each vector
-                component being remapped from [-1, 1] to [0-255] where XYZ coordinates are mapped channel-wise to RGB.
-                Defaults to True.
-            exr_codec (str, optional): Codec used to compress exr file. Options vary depending on the version of Blender,
-                with the following being broadly available: ('NONE', 'PXR24', 'ZIP', 'PIZ', 'RLE', 'ZIPS', 'DWAA', 'DWAB').
-                Defaults to "DWAA".
-            bit_depth (int, optional): Bit depth per channel, also referred to as color-depth. Either 16 or 32 bits. Defaults to 32 bits.
-        """
+        ...
 
     @type_check_only
     def include_flows(
@@ -2835,27 +1077,7 @@ class BlenderClients(tuple):
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[16, 32] = 32,
     ) -> None:
-        """Sets up Blender compositor to include optical flow for rendered images.
-
-        Args:
-            preview (bool, optional): If true, also save preview visualizations of flow. Defaults to True.
-            direction (str, optional): One of 'forward', 'backward' or 'both'. Direction of flow to colorize
-                for preview visualization. Only used when ``preview`` is true, otherwise both forward and backward
-                flows are saved. Defaults to "forward".
-            exr_codec (str, optional): Codec used to compress exr file. Options vary depending on the version of Blender,
-                with the following being broadly available: ('NONE', 'PXR24', 'ZIP', 'PIZ', 'RLE', 'ZIPS', 'DWAA', 'DWAB').
-                Defaults to "DWAA".
-            bit_depth (int, optional): Bit depth per channel, also referred to as color-depth. Options depend on the
-                chosen file format, with 8, 16 and 32 bits being common. Defaults to 32 bits.
-
-        Note:
-            The preview colormap is re-normalized on a per-frame basis, to visually
-            compare across frames, apply colorization after rendering using the CLI.
-
-        Raises:
-            ValueError: raised when ``direction`` is not understood.
-            RuntimeError: raised when motion blur is enabled as flow cannot be computed.
-        """
+        ...
 
     @type_check_only
     def include_segmentations(
@@ -2866,25 +1088,7 @@ class BlenderClients(tuple):
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[16, 32] = 32,
     ) -> None:
-        """Sets up Blender compositor to include segmentation maps for rendered images.
-
-        The preview visualization simply assigns a color to each object ID by mapping the
-        objects ID value to a hue using a HSV node with saturation=1 and value=1 (except
-        for the background which will have a value of 0 to ensure it is black).
-
-        Args:
-            preview (bool, optional): If true, also save preview visualizations of segmentation. Defaults to True.
-            shuffle (bool, optional): Shuffle preview colors, helps differentiate object instances. Defaults to True.
-            seed (int, optional): Random seed used when shuffling colors. Defaults to 1234.
-            exr_codec (str, optional): Codec used to compress exr file. Options vary depending on the version of Blender,
-                with the following being broadly available: ('NONE', 'PXR24', 'ZIP', 'PIZ', 'RLE', 'ZIPS', 'DWAA', 'DWAB').
-                Defaults to "DWAA".
-            bit_depth (int, optional): Bit depth per channel, also referred to as color-depth.
-                Either 16 or 32 bits. Defaults to 32 bits.
-
-        Raises:
-            RuntimeError: raised when not using CYCLES, as other renderers do not support a segmentation pass.
-        """
+        ...
 
     @type_check_only
     def include_materials(
@@ -2895,25 +1099,7 @@ class BlenderClients(tuple):
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[16, 32] = 32,
     ) -> None:
-        """Sets up Blender compositor to include material ID maps for rendered images.
-
-        The preview visualization simply assigns a color to each material ID by mapping the
-        materials ID value to a hue using a HSV node with saturation=1 and value=1 (except
-        for the background which will have a value of 0 to ensure it is black).
-
-        Args:
-            preview (bool, optional): If true, also save preview visualizations of material IDs. Defaults to True.
-            shuffle (bool, optional): Shuffle preview colors, helps differentiate material instances. Defaults to True.
-            seed (int, optional): Random seed used when shuffling colors. Defaults to 1234.
-            exr_codec (str, optional): Codec used to compress exr file. Options vary depending on the version of Blender,
-                with the following being broadly available: ('NONE', 'PXR24', 'ZIP', 'PIZ', 'RLE', 'ZIPS', 'DWAA', 'DWAB').
-                Defaults to "DWAA".
-            bit_depth (int, optional): Bit depth per channel, also referred to as color-depth.
-                Either 16 or 32 bits. Defaults to 32 bits.
-
-        Raises:
-            RuntimeError: raised when not using CYCLES, as other renderers do not support a material ID pass.
-        """
+        ...
 
     @type_check_only
     def include_diffuse_pass(
@@ -2924,24 +1110,7 @@ class BlenderClients(tuple):
         bit_depth: Literal[8, 16, 32] = 32,
         denoise: bool = True,
     ) -> None:
-        """Sets up Blender compositor to include diffuse light passes for rendered images.
-
-        For CYCLES, this includes: Diffuse Direct, Diffuse Indirect and Diffuse Color.
-        For EEVEE, this includes: Diffuse Light and Diffuse Color.
-
-        Note:
-            When using CYCLES, these extra light passes might be very noisy, especially the indirect ones,
-            as they rely on raytracing. To mitigate this, you can either increase the number of samples, or the threshold in the :meth:`cycles_settings <exposed_cycles_settings>`, or/and use the denoise option.
-
-        Args:
-            file_format (str, optional): Format to save diffuse passes as. Defaults to "OPEN_EXR".
-            color_mode (str, optional): Typically one of ('BW', 'RGB', 'RGBA'). Defaults to "RGB".
-            exr_codec (str, optional): Codec used to compress exr file. Only used when ``file_format="OPEN_EXR"``. Defaults to "DWAA".
-            bit_depth (int, optional): Bit depth per channel. Defaults to 32 bits.
-            denoise (bool, optional): If true, apply Cycles denoising to the direct and indirect passes
-                before saving. The colour pass is left undenoised as it is noise-free by nature.
-                Has no effect when not using Cycles. Defaults to True.
-        """
+        ...
 
     @type_check_only
     def include_specular_pass(
@@ -2952,44 +1121,13 @@ class BlenderClients(tuple):
         bit_depth: Literal[8, 16, 32] = 32,
         denoise: bool = True,
     ) -> None:
-        """Sets up Blender compositor to include specular light passes for rendered images.
-
-        For CYCLES, this includes: Glossy Direct, Glossy Indirect and Glossy Color.
-        For EEVEE, this includes: Specular Light and Specular Color.
-
-        Note:
-            When using CYCLES, these extra light passes might be very noisy, especially the indirect ones,
-            as they rely on raytracing. To mitigate this, you can either increase the number of samples, or the threshold in the :meth:`cycles_settings <exposed_cycles_settings>`, or/and use the denoise option.
-
-        Args:
-            file_format (str, optional): Format to save specular passes as. Defaults to "OPEN_EXR".
-            color_mode (str, optional): Typically one of ('BW', 'RGB', 'RGBA'). Defaults to "RGB".
-            exr_codec (str, optional): Codec used to compress exr file. Only used when ``file_format="OPEN_EXR"``. Defaults to "DWAA".
-            bit_depth (int, optional): Bit depth per channel. Defaults to 32 bits.
-            denoise (bool, optional): If true, apply Cycles denoising to the direct and indirect passes
-                before saving. The colour pass is left undenoised as it is noise-free by nature.
-                Has no effect when not using Cycles. Defaults to True.
-        """
+        ...
 
     @type_check_only
     def include_points(
         self, preview: bool = True, exr_codec: EXR_CODECS = "DWAA", bit_depth: Literal[16, 32] = 32
     ) -> None:
-        """Sets up Blender compositor to include a world-space point map for each frame.
-
-        Note:
-            The point map corresponds to world-space positions, like those used in VGGT [1]_,
-            and not the camera-centric positions used in DUSt3R [2]_.
-
-        Args:
-            preview (bool, optional): If true, colorized point maps will also be generated, where colors are
-                assigned based on the absolute fractional world coordinates. Defaults to True.
-            exr_codec (str, optional): Codec used to compress exr file. Defaults to "DWAA".
-            bit_depth (int, optional): Bit depth per channel. Either 16 or 32 bits. Defaults to 32 bits.
-
-        .. [1] `VGGT: Visual Geometry Grounded Transformer <https://arxiv.org/abs/2503.11651>`_
-        .. [2] `DUSt3R: Geometric 3D Vision Made Easy with Unconstrained Image Collections <https://arxiv.org/abs/2312.14132>`_
-        """
+        ...
 
     @type_check_only
     def prepare_thermal(
@@ -3010,84 +1148,13 @@ class BlenderClients(tuple):
         atlas_tile_min: int = 16,
         atlas_tile_max: int = 512,
         atlas_texel_soft_max: int = 500000,
+        recompute: bool = False,
         radiance_scale: float = 1.0,
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[16, 32] = 32,
         assignments: str | None = None,
     ) -> None:
-        """Solve the scene's heat-transfer simulation and prepare it for thermal rendering.
-
-        Runs the (cache-aware) FEM solve, writes the solved per-vertex ``sim_temperature``
-        attribute onto every mesh, stamps a default temperature on any unsolved mesh, and
-        registers the ``temperature`` value AOV on the original materials.
-
-        Note:
-            This must be called before :meth:`include_thermal <visionsim.simulate.blender.BlenderService.exposed_include_thermal>`,
-            since the AOV is registered on the original materials and exposes the ``temperature`` render-layer
-            output socket that ``include_thermal`` wires into the compositor. M1 is a static solve, so the final
-            timestep (``timestep=-1``) is written to every frame. When ``animated`` is true (M2, ``domain="POINTS"``
-            only), a per-frame transient solve is run instead (``adapter.solve_scene_animated``): the per-object
-            frame history is stashed on the service and the first solved frame's field is written immediately so the
-            initial render is correct; subsequent frames are written by :meth:`exposed_render_frame`'s per-frame
-            hook. Requesting ``animated`` with ``domain="MESH"`` logs a warning and falls back to the static solve.
-            The full ``ThermalConfig`` field set is accepted so a single ``**asdict(config.thermal)`` dispatch can
-            drive this method; the output-only fields are ignored. When ``render_domain="TEXEL"``, atlas-eligible
-            objects (see ``atlas_texel_density``) are additionally solved at texel resolution and their final
-            temperatures are written to an EXR atlas image (``adapter.write_atlas``), loaded/packed as the
-            ``HeatSim_Temperature_Atlas`` Blender image before the AOV is registered so the shader can sample it;
-            those objects get only the OBJECT-level fallback temperature written to their mesh (their per-pixel
-            signal comes from the atlas at render time), not a per-vertex ``sim_temperature`` attribute. Requesting
-            ``animated`` with ``render_domain="TEXEL"`` logs a warning and falls back to ``render_domain="VERTEX"``
-            for that solve (the atlas is a static-solve-only feature; M2/TEXEL is out of scope).
-
-        Args:
-            radiance (bool, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
-                by ``include_thermal`` / the radiance render). Defaults to True.
-            preview (bool, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
-                by ``include_thermal`` / the radiance render). Defaults to True.
-            initial_temperature_K (float, optional): Default initial temperature, in Kelvin, for meshes without a
-                per-object value. Defaults to 295.0.
-            thermal_diffusivity_mm2_s (float, optional): Default thermal diffusivity in ``mm^2/s``. Defaults to 0.17.
-            density_kg_m3 (float, optional): Default material density in ``kg/m^3``. Defaults to 1330.0.
-            specific_heat_J_kgK (float, optional): Default specific heat in ``J/kg*K``. Defaults to 880.0.
-            emissivity (float, optional): Default surface emissivity in ``[0, 1]``. Defaults to 0.9.
-            irradiance_scale (float, optional): Scale factor applied to the computed irradiance (heating input).
-                Defaults to 100.0.
-            sim_time_s (float, optional): Total simulated time, in seconds, for the static scene solve. Defaults to 1.0.
-            timestep_s (float, optional): Solver timestep in seconds. Defaults to 0.05.
-            domain (str, optional): FEM domain, either ``"POINTS"`` (surface point cloud, recommended) or ``"MESH"``.
-                Defaults to ``"POINTS"``.
-            laplacian_backend (str, optional): Laplacian backend, either ``"ROBUST"`` or ``"IGL"``. Defaults to ``"ROBUST"``.
-            device (str, optional): Torch device for the solve, either ``"cuda"`` or ``"cpu"``; falls back to ``"cpu"``
-                if cuda is unavailable. Defaults to ``"cuda"``.
-            render_domain (str, optional): Where solved temperatures live for rendering: ``"VERTEX"`` (per-vertex,
-                byte-identical to before the atlas existed) or ``"TEXEL"`` (a shared texture atlas, sampled per-pixel
-                by the shader). Defaults to ``"VERTEX"``.
-            atlas_texel_density (float, optional): Target texels/m^2 for atlas-eligible objects (TEXEL mode only).
-                Defaults to 1500.0.
-            atlas_tile_min (int, optional): Minimum atlas tile side, in texels (TEXEL mode only). Defaults to 16.
-            atlas_tile_max (int, optional): Maximum atlas tile side, in texels (TEXEL mode only). Defaults to 512.
-            atlas_texel_soft_max (int, optional): Soft ceiling on total atlas texels + retained vertices (TEXEL mode
-                only); exceeding it rescales the effective density down uniformly and warns. Defaults to 500000.
-            radiance_scale (float, optional): Accepted for uniform thermal-config dispatch; not used by this method
-                (consumed by ``include_thermal`` / the radiance render). Defaults to 1.0.
-            exr_codec (str, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
-                by ``include_thermal`` / the radiance render). Defaults to ``"DWAA"``.
-            bit_depth (int, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
-                by ``include_thermal`` / the radiance render). Defaults to 32.
-            animated (bool, optional): Solve heat transfer per-frame as geometry animates (transient), instead of the
-                static M1 solve. Requires ``domain="POINTS"``. Defaults to False.
-            substeps_per_frame (int, optional): Solver substeps per Blender frame in animated mode. Defaults to 4.
-            frame_start (int | None, optional): First frame of the animated solve; defaults to the scene's
-                ``frame_start`` when None. Defaults to None.
-            frame_end (int | None, optional): Last frame of the animated solve; defaults to the scene's
-                ``frame_end`` when None. Defaults to None.
-            every_n_frames (int, optional): Solve every Nth frame in animated mode (cost control); skipped frames
-                hold the last solved field. Defaults to 1.
-            assignments (str | None, optional): Path to a thermal material assignment sidecar
-                (``<scene>.thermal.json``). When set, thermal properties are resolved per material
-                slot; when unset the global defaults are used everywhere. Defaults to None.
-        """
+        ...
 
     @type_check_only
     def heatsim_solve(
@@ -3108,77 +1175,13 @@ class BlenderClients(tuple):
         atlas_tile_min: int = 16,
         atlas_tile_max: int = 512,
         atlas_texel_soft_max: int = 500000,
+        recompute: bool = False,
         radiance_scale: float = 1.0,
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[16, 32] = 32,
         assignments: str | None = None,
     ) -> None:
-        """Solve and cache the scene's heat-transfer simulation without preparing it for rendering.
-
-        This is the solve-and-cache half of
-        :meth:`prepare_thermal <visionsim.simulate.blender.BlenderService.exposed_prepare_thermal>`: it runs the
-        cache-aware FEM solve so the result is written to disk, but does not write the ``sim_temperature`` attribute,
-        stamp default temperatures, or register the ``temperature`` AOV. It exists for the optional standalone
-        solve command, letting an expensive solve be primed ahead of rendering. The full ``ThermalConfig`` field set
-        is accepted so a single ``**asdict(config.thermal)`` dispatch can drive this method; the output-only fields
-        are ignored. When ``render_domain="TEXEL"``, this also primes the atlas-eligible objects' texel solve (via
-        the same cache key ``prepare_thermal`` would use), but does NOT write the atlas EXR image -- that happens
-        in ``prepare_thermal``, which needs the loaded/packed image to wire the shader.
-
-        Note:
-            The ``animated``/``substeps_per_frame``/``frame_start``/``frame_end``/``every_n_frames`` fields (M2) are
-            accepted only to mirror ``ThermalConfig``; this standalone cache-priming path always runs the static M1
-            solve regardless of ``animated``.
-
-        Args:
-            radiance (bool, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
-                by ``include_thermal`` / the radiance render). Defaults to True.
-            preview (bool, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
-                by ``include_thermal`` / the radiance render). Defaults to True.
-            initial_temperature_K (float, optional): Default initial temperature, in Kelvin, for meshes without a
-                per-object value. Defaults to 295.0.
-            thermal_diffusivity_mm2_s (float, optional): Default thermal diffusivity in ``mm^2/s``. Defaults to 0.17.
-            density_kg_m3 (float, optional): Default material density in ``kg/m^3``. Defaults to 1330.0.
-            specific_heat_J_kgK (float, optional): Default specific heat in ``J/kg*K``. Defaults to 880.0.
-            emissivity (float, optional): Default surface emissivity in ``[0, 1]``. Defaults to 0.9.
-            irradiance_scale (float, optional): Scale factor applied to the computed irradiance (heating input).
-                Defaults to 100.0.
-            sim_time_s (float, optional): Total simulated time, in seconds, for the static scene solve. Defaults to 1.0.
-            timestep_s (float, optional): Solver timestep in seconds. Defaults to 0.05.
-            domain (str, optional): FEM domain, either ``"POINTS"`` (surface point cloud, recommended) or ``"MESH"``.
-                Defaults to ``"POINTS"``.
-            laplacian_backend (str, optional): Laplacian backend, either ``"ROBUST"`` or ``"IGL"``. Defaults to ``"ROBUST"``.
-            device (str, optional): Torch device for the solve, either ``"cuda"`` or ``"cpu"``; falls back to ``"cpu"``
-                if cuda is unavailable. Defaults to ``"cuda"``.
-            render_domain (str, optional): Where solved temperatures live for rendering: ``"VERTEX"`` (per-vertex,
-                byte-identical to before the atlas existed) or ``"TEXEL"`` (a shared texture atlas, sampled per-pixel
-                by the shader). Defaults to ``"VERTEX"``.
-            atlas_texel_density (float, optional): Target texels/m^2 for atlas-eligible objects (TEXEL mode only).
-                Defaults to 1500.0.
-            atlas_tile_min (int, optional): Minimum atlas tile side, in texels (TEXEL mode only). Defaults to 16.
-            atlas_tile_max (int, optional): Maximum atlas tile side, in texels (TEXEL mode only). Defaults to 512.
-            atlas_texel_soft_max (int, optional): Soft ceiling on total atlas texels + retained vertices (TEXEL mode
-                only); exceeding it rescales the effective density down uniformly and warns. Defaults to 500000.
-            radiance_scale (float, optional): Accepted for uniform thermal-config dispatch; not used by this method
-                (consumed by ``include_thermal`` / the radiance render). Defaults to 1.0.
-            exr_codec (str, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
-                by ``include_thermal`` / the radiance render). Defaults to ``"DWAA"``.
-            bit_depth (int, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
-                by ``include_thermal`` / the radiance render). Defaults to 32.
-            animated (bool, optional): Accepted for uniform thermal-config dispatch; not used by this method (see
-                Note above). Defaults to False.
-            substeps_per_frame (int, optional): Accepted for uniform thermal-config dispatch; not used by this method.
-                Defaults to 4.
-            frame_start (int | None, optional): Accepted for uniform thermal-config dispatch; not used by this method.
-                Defaults to None.
-            frame_end (int | None, optional): Accepted for uniform thermal-config dispatch; not used by this method.
-                Defaults to None.
-            every_n_frames (int, optional): Accepted for uniform thermal-config dispatch; not used by this method.
-                Defaults to 1.
-            assignments (str | None, optional): Path to a thermal material assignment sidecar
-                (``<scene>.thermal.json``). When set, thermal properties are resolved per material
-                slot; when unset the global defaults are used everywhere. Defaults to None.
-        """
+        ...
 
     @type_check_only
     def include_thermal(
@@ -3199,97 +1202,23 @@ class BlenderClients(tuple):
         atlas_tile_min: int = 16,
         atlas_tile_max: int = 512,
         atlas_texel_soft_max: int = 500000,
+        recompute: bool = False,
         radiance_scale: float = 1.0,
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[16, 32] = 32,
         assignments: str | None = None,
     ) -> None:
-        """Sets up Blender compositor to include thermal outputs for rendered images.
-
-        Wires the per-vertex temperature map (in Kelvin) from the ``temperature`` AOV registered by
-        :meth:`prepare_thermal <visionsim.simulate.blender.BlenderService.exposed_prepare_thermal>` into the
-        compositor, optionally adds an inferno-colormap preview, and optionally arms a second gray-body render pass
-        that produces a thermal-camera radiance image (emitted at render time by
-        :meth:`render_current_frame <visionsim.simulate.blender.BlenderService.exposed_render_current_frame>`).
-
-        Note:
-            This must be called after ``prepare_thermal``, which registers the ``temperature`` AOV (and, in TEXEL
-            mode, loads/packs the ``HeatSim_Temperature_Atlas`` image the shader samples) and exposes the matching
-            render-layer output socket. The solver and material parameters (``initial_temperature_K`` through
-            ``device``, the ``render_domain``/``atlas_*`` fields, ``assignments``, and the ``animated``/
-            ``substeps_per_frame``/``frame_start``/``frame_end``/``every_n_frames`` M2 fields) are accepted only to
-            mirror ``ThermalConfig`` and are consumed by ``prepare_thermal``; ``include_thermal`` itself ignores them.
-            For animated scenes, the per-frame field update happens later, in
-            :meth:`render_frame <visionsim.simulate.blender.BlenderService.exposed_render_frame>`.
-
-        Args:
-            radiance (bool, optional): If true, arm the gray-body thermal-camera radiance image as a second render
-                pass and register its per-frame output. Defaults to True.
-            preview (bool, optional): If true, also save an inferno-colormap PNG preview of the temperature map.
-                Defaults to True.
-            initial_temperature_K (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
-                ignored here. Default initial temperature, in Kelvin, for meshes without a per-object value.
-                Defaults to 295.0.
-            thermal_diffusivity_mm2_s (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal``
-                and ignored here. Default thermal diffusivity in ``mm^2/s``. Defaults to 0.17.
-            density_kg_m3 (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
-                here. Default material density in ``kg/m^3``. Defaults to 1330.0.
-            specific_heat_J_kgK (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
-                ignored here. Default specific heat in ``J/kg*K``. Defaults to 880.0.
-            emissivity (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
-                here. Default surface emissivity in ``[0, 1]``. Defaults to 0.9.
-            irradiance_scale (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
-                ignored here. Scale factor applied to the computed irradiance. Defaults to 100.0.
-            sim_time_s (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
-                here. Total simulated time in seconds. Defaults to 1.0.
-            timestep_s (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
-                here. Solver timestep in seconds. Defaults to 0.05.
-            domain (str, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored here.
-                FEM domain, either ``"POINTS"`` or ``"MESH"``. Defaults to ``"POINTS"``.
-            laplacian_backend (str, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
-                ignored here. Laplacian backend, either ``"ROBUST"`` or ``"IGL"``. Defaults to ``"ROBUST"``.
-            device (str, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored here.
-                Torch device, either ``"cuda"`` or ``"cpu"``. Defaults to ``"cuda"``.
-            render_domain (str, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
-                here. Where solved temperatures live for rendering, ``"VERTEX"`` or ``"TEXEL"``. Defaults to
-                ``"VERTEX"``.
-            atlas_texel_density (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
-                ignored here. Target texels/m^2 for atlas-eligible objects. Defaults to 1500.0.
-            atlas_tile_min (int, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
-                here. Minimum atlas tile side, in texels. Defaults to 16.
-            atlas_tile_max (int, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
-                here. Maximum atlas tile side, in texels. Defaults to 512.
-            atlas_texel_soft_max (int, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
-                ignored here. Soft ceiling on total atlas texels + retained vertices. Defaults to 500000.
-            radiance_scale (float, optional): Gray-body emission magnitude knob for the ``thermal_radiance`` render.
-                Defaults to 1.0.
-            exr_codec (str, optional): Codec used to compress the temperature and radiance EXR files. Options vary
-                depending on the version of Blender, with the following being broadly available:
-                ('NONE', 'PXR24', 'ZIP', 'PIZ', 'RLE', 'ZIPS', 'DWAA', 'DWAB'). Defaults to ``"DWAA"``.
-            bit_depth (int, optional): Bit depth per channel for the temperature and radiance EXRs, either 16 or 32.
-                Defaults to 32.
-            animated (bool, optional): Mirrors ``ThermalConfig`` (M2); consumed by ``prepare_thermal`` and ignored
-                here. Defaults to False.
-            substeps_per_frame (int, optional): Mirrors ``ThermalConfig`` (M2); consumed by ``prepare_thermal`` and
-                ignored here. Defaults to 4.
-            frame_start (int | None, optional): Mirrors ``ThermalConfig`` (M2); consumed by ``prepare_thermal`` and
-                ignored here. Defaults to None.
-            frame_end (int | None, optional): Mirrors ``ThermalConfig`` (M2); consumed by ``prepare_thermal`` and
-                ignored here. Defaults to None.
-            every_n_frames (int, optional): Mirrors ``ThermalConfig`` (M2); consumed by ``prepare_thermal`` and
-                ignored here. Defaults to 1.
-            assignments (str | None, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
-                ignored here. Path to a thermal material assignment sidecar (``<scene>.thermal.json``). Defaults
-                to None.
-        """
+        ...
 
     @type_check_only
-    def load_addons(self, *addons: str) -> None:
-        """Load blender addons by name (case-insensitive).
+    def configure_thermal(self, config: dict[str, Any]) -> None:
+        ...
 
-        Args:
-            *addons (str): name of addons to load.
-        """
+    def heatsim_solve_config(self, config: dict[str, Any]) -> None:
+        ...
+
+    def load_addons(self, *addons: str) -> None:
+        ...
 
     @type_check_only
     def set_resolution(
@@ -3298,36 +1227,15 @@ class BlenderClients(tuple):
         width: int | None = None,
         resolution_percentage: int = 100,
     ) -> None:
-        """Set frame resolution (height, width) in pixels.
-        If a single tuple is passed, instead of using keyword arguments, it will be parsed as (height, width).
-
-        Args:
-            height (tuple[int] | list[int] | int | None, optional): Height of render in pixels. Defaults to value from file.
-            width (int | None, optional): Width of render in pixels. Defaults to value from file.
-            resolution_percentage (float, optional): Percentage of the original resolution to render at. Defaults to 100%.
-
-        Raises:
-            ValueError: raised if resolution is not understood.
-        """
+        ...
 
     @type_check_only
     def use_motion_blur(self, enable: bool) -> None:
-        """Enable/disable motion blur.
-
-        Args:
-            enable (bool): If true, enable motion blur.
-
-        Raises:
-            RuntimeError: raised when motion blur is enabled as flow cannot be computed.
-        """
+        ...
 
     @type_check_only
     def use_animations(self, enable: bool) -> None:
-        """Enable/disable all animations.
-
-        Args:
-            enable (bool): If true, enable animations.
-        """
+        ...
 
     @type_check_only
     def cycles_settings(
@@ -3338,72 +1246,27 @@ class BlenderClients(tuple):
         max_samples: int | None = None,
         use_denoising: bool | None = None,
     ) -> tuple[list[str],]:
-        """Enables/activates cycles render devices and settings.
-
-        Note: A default arguments of ``None`` means do not change setting inherited from blendfile.
-
-        Args:
-            device_type (str, optional): Name of device to use, one of "cpu", "cuda", "optix", "metal", etc.
-                See `blender docs <https://docs.blender.org/manual/en/latest/render/cycles/gpu_rendering.html>`_
-                for full list. Defaults to None.
-            use_cpu (bool, optional): Boolean flag to enable CPUs alongside GPU devices. Defaults to None.
-            adaptive_threshold (float, optional): Set noise threshold upon which to stop taking samples. Defaults to None.
-            max_samples (int, optional): Maximum number of samples per pixel to take. Defaults to None.
-            use_denoising (bool, optional): If enabled, a denoising pass will be used. Defaults to None.
-
-        Raises:
-            RuntimeError: raised when no devices are found.
-            ValueError: raised when setting ``use_cpu`` is required.
-
-        Returns:
-            list[str]: Name of activated devices.
-        """
+        ...
 
     @type_check_only
     def unbind_camera(self, clear_animations: bool = True) -> None:
-        """Remove constraints, animations and parents from main camera.
-
-        Note: In order to undo this, you'll need to re-initialize.
-
-        Args:
-            clear_animations (bool, optional): If true clear animation data for camera.
-        """
+        ...
 
     @type_check_only
     def move_keyframes(self, scale: float = 1.0, shift: float = 0.0) -> None:
-        """Adjusts keyframes in Blender animations, keypoints are first scaled then shifted.
-
-        Args:
-            scale (float, optional): Factor used to rescale keyframe positions along x-axis. Defaults to 1.0.
-            shift (float, optional): Factor used to shift keyframe positions along x-axis. Defaults to 0.0.
-
-        Raises:
-            RuntimeError: raised if trying to move keyframes beyond blender's limits.
-        """
+        ...
 
     @type_check_only
     def set_current_frame(self, frame_number: int) -> None:
-        """Set current frame number. This might advance any animations.
-
-        Args:
-            frame_number (int): index of frame to skip to.
-        """
+        ...
 
     @type_check_only
     def camera_info(self) -> tuple[dict[str, Any],]:
-        """Return a dictionary with camera intrinsics.
-
-        Returns:
-            dict[str, Any]: dictionary containing camera parameters.
-        """
+        ...
 
     @type_check_only
     def camera_extrinsics(self) -> tuple[npt.NDArray[np.floating],]:
-        """Get the 4x4 transform matrix encoding the current camera pose.
-
-        Returns:
-            npt.NDArray[np.floating]: Current camera pose in matrix form.
-        """
+        ...
 
     @type_check_only
     def position_camera(
@@ -3413,96 +1276,28 @@ class BlenderClients(tuple):
         look_at: npt.ArrayLike | None = None,
         in_order: bool = True,
     ) -> None:
-        """Positions and orients camera according to specified parameters. All transformations are local,
-        use :meth:`unbind_camera <exposed_unbind_camera>` to ensure position is set in world coordinates.
-
-        Note: Only one of ``look_at`` or ``rotation`` can be set at once.
-
-        Args:
-            location (npt.ArrayLike, optional): Location to place camera in 3D space. Defaults to none.
-            rotation (npt.ArrayLike, optional): Rotation matrix for camera. Defaults to none.
-            look_at (npt.ArrayLike, optional): Location to point camera. Defaults to none.
-            in_order (bool, optional): If set, assume current camera pose is from previous/next
-                frame and ensure new rotation set by ``look_at`` is compatible with current position.
-                Without this, a rotations will stay in the [-pi, pi] range and this wrapping will
-                mess up interpolations. Only used when ``look_at`` is set. Defaults to True.
-
-        Raises:
-            ValueError: raised if camera orientation is over-defined.
-        """
+        ...
 
     @type_check_only
     def rotate_camera(self, angle: float) -> None:
-        """Rotate camera around it's optical axis, relative to current orientation. All transformations are local,
-        use :meth:`unbind_camera <exposed_unbind_camera>` to ensure position is set in world coordinates.
-
-        Args:
-            angle: Relative amount to rotate by (clockwise, in radians).
-        """
+        ...
 
     @type_check_only
     def offset_camera(self, offset: npt.ArrayLike) -> None:
-        """Move camera by a given vector in its local coordinate frame.
-
-        Args:
-            offset (npt.ArrayLike): Amount to offset by (x, y, z) in local coordinates.
-        """
+        ...
 
     @type_check_only
     def set_camera_keyframe(self, frame_num: int, matrix: npt.ArrayLike | None = None) -> None:
-        """Set camera keyframe at given frame number.
-        If camera matrix is not supplied, currently set camera position/rotation/scale will be used,
-        this allows users to set camera position using :meth:`position_camera <exposed_position_camera>`
-        and :meth:`rotate_camera <exposed_rotate_camera>`.
-
-        Args:
-            frame_num (int): index of frame to set keyframe for.
-            matrix (npt.ArrayLike | None, optional): 4x4 camera transform, if not supplied,
-                use current camera matrix. Defaults to None.
-        """
+        ...
 
     @type_check_only
     def set_animation_range(self, start: int | None = None, stop: int | None = None, step: int | None = None) -> None:
-        """Set animation range for scene.
-
-        Args:
-            start (int | None, optional): frame start, inclusive. Defaults to None.
-            stop (int | None, optional): frame stop, exclusive. Defaults to None.
-            step (int | None, optional): frame interval. Defaults to None.
-        """
+        ...
 
     @type_check_only
     def render_current_frame(self, allow_skips: bool = True, dry_run: bool = False) -> None:
-        """Generates a single frame in Blender at the current camera location,
-        return the file paths for that frame, potentially including depth, normals, etc.
-
-        Note:
-            This method renders the current frame as-is, it assumes the camera position,
-            frame number and all other parameters have been set.
-
-        Args:
-            allow_skips (bool, optional): if true, blender will not re-render and overwrite existing frames.
-                This does not however apply to depth/normals/etc, which cannot be skipped. Defaults to True.
-            dry_run (bool, optional): if true, nothing will be rendered at all. Defaults to False.
-        """
+        ...
 
     @type_check_only
     def render_frame(self, frame_number: int, allow_skips: bool = True, dry_run: bool = False) -> None:
-        """Same as first setting current frame then rendering it.
-
-        Warning:
-            Calling this has the side-effect of changing the current frame.
-
-        Note:
-            If :meth:`prepare_thermal <exposed_prepare_thermal>` ran an animated (M2) solve,
-            this writes that frame's solved thermal field (via ``_thermal_write_frame``)
-            before rendering, so both the temperature AOV and the gray-body radiance pass
-            reflect the current frame -- Cycles reads ``sim_temperature`` live, so no
-            compositor changes are needed.
-
-        Args:
-            frame_number (int): frame to render
-            allow_skips (bool, optional): if true, blender will not re-render and overwrite existing frames.
-                This does not however apply to depth/normals/etc, which cannot be skipped. Defaults to True.
-            dry_run (bool, optional): if true, nothing will be rendered at all. Defaults to False.
-        """
+        ...

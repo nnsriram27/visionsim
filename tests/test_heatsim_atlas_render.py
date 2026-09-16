@@ -99,6 +99,7 @@ print('WRITE_ATLAS_OK')
     exr_path = next(tmp_path.glob("atlas_*/atlas_temperature.exr"))
     assert exr_path.exists(), exr_path
     exr = OpenEXR.InputFile(str(exr_path))
+    assert str(exr.header()["compression"]) == "NO_COMPRESSION"
     dw = exr.header()["dataWindow"]
     w = dw.max.x - dw.min.x + 1
     h = dw.max.y - dw.min.y + 1
@@ -138,6 +139,24 @@ print('WRITE_ATLAS_EMPTY_OK')
 """
     out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True, check=False)
     assert "WRITE_ATLAS_EMPTY_OK" in out.stdout, out.stdout + "\n" + out.stderr
+
+
+def test_atlas_path_changes_with_solved_values(executable, tmp_path):
+    code = f"""
+import numpy as np
+from pathlib import Path
+from visionsim.simulate.heatsim import adapter, atlas
+tile = atlas.TileSpec(obj_name='wall', size=(4, 4), offset=(0, 0))
+layout = atlas.AtlasLayout(atlas_size=(4, 4), tiles={{'wall': tile}}, effective_density=4.0, rescaled=False)
+plan = adapter.AtlasPlan(layout=layout, texels={{'wall': {{'xy': np.array([[1, 1]])}}}}, digest='same-layout')
+root = Path(r'{tmp_path}')
+first = adapter.write_atlas({{'wall': np.array([[300.0]])}}, plan, root)
+second = adapter.write_atlas({{'wall': np.array([[320.0]])}}, plan, root)
+assert first != second and first.exists() and second.exists()
+print('ATLAS_RESULT_IDENTITY_OK')
+"""
+    out = subprocess.run([str(executable), "-b", "--python-expr", code], capture_output=True, text=True, check=False)
+    assert "ATLAS_RESULT_IDENTITY_OK" in out.stdout, out.stdout + "\n" + out.stderr
 
 
 # ---------------------------------------------------------------------------
@@ -485,7 +504,9 @@ from visionsim.simulate.heatsim.names import ATLAS_COVERAGE_PROP, ATLAS_IMAGE_NA
 service = BlenderService()
 service.exposed_initialize(blend_path, root_path)
 
-service.exposed_prepare_thermal(
+from dataclasses import asdict
+from visionsim.simulate.config import ThermalConfig
+service.exposed_configure_thermal(asdict(ThermalConfig(
     render_domain='TEXEL',
     atlas_texel_density=64.0,
     atlas_tile_min=16,
@@ -500,7 +521,7 @@ service.exposed_prepare_thermal(
     specific_heat_J_kgK=880.0,
     emissivity=0.9,
     irradiance_scale=100.0,
-)
+)))
 
 assert service._thermal_atlas_plan is not None
 assert 'CoarsePlane' in service._thermal_atlas_plan.texels
@@ -527,8 +548,18 @@ assert len(aov_nodes) == 1
 atlas_tex_nodes = [n for n in mat_nodes if n.bl_idname == 'ShaderNodeTexImage' and n.image is atlas_img]
 assert len(atlas_tex_nodes) == 1, [n.name for n in mat_nodes if n.bl_idname == 'ShaderNodeTexImage']
 
-service.exposed_include_thermal(render_domain='TEXEL')
 assert 'temperature' in service.render_layers.outputs
+
+frozen = r'{tmp_path}/thermal_frozen.blend'
+service.exposed_save_file(frozen)
+from pathlib import Path
+for atlas_file in Path(r'{tmp_path}').glob('texel_test.blend.heatsim/atlas_*/atlas_temperature.exr'):
+    atlas_file.unlink()
+bpy.ops.wm.open_mainfile(filepath=frozen)
+reopened = bpy.data.images.get(ATLAS_IMAGE_NAME)
+assert reopened is not None and reopened.packed_file is not None
+assert any(node.bl_idname == 'ShaderNodeTexImage' and node.image is reopened
+           for node in bpy.data.materials['plane_mat'].node_tree.nodes)
 
 print('TEXEL_E2E_OK')
 """

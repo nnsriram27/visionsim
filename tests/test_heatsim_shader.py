@@ -26,7 +26,7 @@ def test_atlas_shader_group_samples_atlas_and_mixes_by_alpha(executable):
     code = r"""
 import bpy
 from visionsim.simulate.heatsim import thermal_shader as ts
-from visionsim.simulate.heatsim.constants import ATLAS_COVERAGE_PROP, ATLAS_IMAGE_NAME, ATLAS_UV_LAYER_NAME
+from visionsim.simulate.heatsim.names import ATLAS_COVERAGE_PROP, ATLAS_IMAGE_NAME, ATLAS_UV_LAYER_NAME
 
 # Register the atlas image datablock so the Image Texture node picks it up at build time.
 img = bpy.data.images.new(ATLAS_IMAGE_NAME, width=2, height=2, alpha=True, float_buffer=True)
@@ -41,7 +41,7 @@ def _check(nodes, links, label):
     assert 'sim_temperature' in attrs and 'heatsim_default_temperature' in attrs
 
     tex_nodes = [n for n in nodes if n.bl_idname == 'ShaderNodeTexImage']
-    assert len(tex_nodes) == 1, f'{label}: expected exactly one Image Texture node'
+    assert tex_nodes, f'{label}: missing atlas Image Texture node'
     tex = tex_nodes[0]
     assert tex.image is not None and tex.image.name == ATLAS_IMAGE_NAME
     assert tex.image.colorspace_settings.name == 'Non-Color'
@@ -50,13 +50,19 @@ def _check(nodes, links, label):
     # UV attribute feeds the Image Texture's Vector input.
     uv_node = attrs[ATLAS_UV_LAYER_NAME]
     assert any(
-        link.from_node == uv_node and link.to_node == tex and link.to_socket.identifier == 'Vector'
+        link.from_node.bl_idname == 'ShaderNodeAttribute'
+        and link.from_node.attribute_name == ATLAS_UV_LAYER_NAME
+        and link.to_node in tex_nodes and link.to_socket.identifier == 'Vector'
         for link in links
-    ), f'{label}: atlas UV attribute not wired into the Image Texture Vector input'
+    ), f'{label}: atlas UV attribute not wired into an Image Texture Vector input'
 
     mix_nodes = [n for n in nodes if n.bl_idname == 'ShaderNodeMix']
-    assert len(mix_nodes) == 1, f'{label}: expected exactly one Mix node'
-    mix = mix_nodes[0]
+    assert mix_nodes, f'{label}: missing atlas Mix node'
+    mix = next((n for n in mix_nodes if any(
+        link.to_socket == n.inputs['B'] and link.from_socket.name == 'Red'
+        for link in links
+    )), None)
+    assert mix is not None, f'{label}: missing temperature atlas Mix node'
     assert mix.data_type == 'FLOAT'
     assert mix.inputs['Factor'].is_linked, f'{label}: Mix Factor not wired'
     assert mix.inputs['A'].is_linked and mix.inputs['B'].is_linked, f'{label}: Mix A/B not wired'
@@ -78,14 +84,17 @@ def _check(nodes, links, label):
         return seen
 
     gate_sources = _upstream(gate_node)
-    assert tex in gate_sources, f'{label}: Mix Factor does not trace back to the atlas Alpha'
-    assert attrs[ATLAS_COVERAGE_PROP] in gate_sources, f'{label}: Mix Factor missing the object-level gate'
+    assert any(node in gate_sources for node in tex_nodes), f'{label}: Mix Factor does not trace back to atlas Alpha'
+    assert any(
+        node.bl_idname == 'ShaderNodeAttribute' and node.attribute_name == ATLAS_COVERAGE_PROP
+        for node in gate_sources
+    ), f'{label}: Mix Factor missing the object-level gate'
 
     # Mix B traces back to a channel split of the Image Texture's Color output (the R channel).
     b_link = next(link for link in links if link.to_socket == mix.inputs['B'])
     sep = b_link.from_node
     assert sep.bl_idname == 'ShaderNodeSeparateColor'
-    assert any(link.from_node == tex and link.to_node == sep for link in links)
+    assert any(link.from_node in tex_nodes and link.to_node == sep for link in links)
 
 # -- Gray-body radiance material --------------------------------------------
 mat = ts._build_gray_body_material(1.0)
@@ -93,7 +102,10 @@ _check(mat.node_tree.nodes, mat.node_tree.links, 'gray-body')
 # The Mix Result must feed the POWER(4) chain (T_eff -> sigma*T^4), not a stale
 # pre-atlas temp_effective node.
 pow4 = next(n for n in mat.node_tree.nodes if n.bl_idname == 'ShaderNodeMath' and n.operation == 'POWER')
-mix = next(n for n in mat.node_tree.nodes if n.bl_idname == 'ShaderNodeMix')
+mix = next(n for n in mat.node_tree.nodes if n.bl_idname == 'ShaderNodeMix' and any(
+    link.to_socket == n.inputs['B'] and link.from_socket.name == 'Red'
+    for link in mat.node_tree.links
+))
 assert any(
     link.from_node == mix and link.to_node == pow4 for link in mat.node_tree.links
 ), 'gray-body: Mix result not wired into the T^4 chain'

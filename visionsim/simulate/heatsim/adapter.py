@@ -17,12 +17,12 @@ from typing import Any
 import numpy as np
 
 from visionsim.simulate.heatsim import atlas, cache, materials
-from visionsim.simulate.heatsim.physics import CYCLES_LOUT_TO_IRRADIANCE
 from visionsim.simulate.heatsim.names import (
     ATLAS_COVERAGE_PROP,
     ATLAS_UV_LAYER_NAME,
     BAKE_UV_LAYER_NAME,
 )
+from visionsim.simulate.heatsim.physics import CYCLES_LOUT_TO_IRRADIANCE
 
 try:
     import bpy  # type: ignore
@@ -62,6 +62,9 @@ def gather_meshes(scene: Any) -> list:
         if getattr(obj, "type", None) != "MESH":
             continue
         if not obj.visible_get() or obj.hide_render:
+            continue
+        mesh = getattr(obj, "data", None)
+        if mesh is None or not len(mesh.vertices) or not len(mesh.polygons):
             continue
         if not bool(getattr(obj, "heat_simulation_enabled", True)):
             continue
@@ -120,7 +123,7 @@ def _is_set(mat: Any, attr: str) -> bool:
         return False
     try:
         return bool(checker(attr))
-    except Exception:  # pragma: no cover - defensive
+    except Exception:   # noqa: BLE001
         return False
 
 
@@ -158,25 +161,6 @@ def resolve_material(obj: Any, defaults: dict) -> dict:
         "thermal_role": role,
         "dirichlet_temperature_K": dirichlet_T,
     }
-
-
-def read_authored_irradiance_scale(scene: Any) -> float | None:
-    """Return the heat-sim addon's authored scene-level ``irradiance_scale``.
-
-    The addon stores it under ``scene.heat_sim_settings.irradiance_scale``.
-    VisionSim does not register that scene-level PropertyGroup, so the value is
-    read from the raw ID-property (``scene.get("heat_sim_settings")`` returns an
-    ``IDPropertyGroup``). Returns ``None`` when the blend has no authored
-    heat-sim scene settings, so the caller keeps its own default.
-    """
-    try:
-        raw = scene.get("heat_sim_settings")
-        if raw is None:
-            return None
-        val = raw.get("irradiance_scale")
-        return None if val is None else float(val)
-    except Exception:
-        return None
 
 
 # Robust percentile bounds for the preview colormap. Raw min/max lets a handful
@@ -286,7 +270,7 @@ def _vertex_writeback_matches(obj: Any, evaluated_mm: np.ndarray) -> bool:
         return False
     if not hasattr(vertices, "foreach_get"):
         return True  # Simple test meshes do not expose Blender's bulk API.
-    local = np.empty((len(vertices), 3), dtype=np.float64)
+    local: np.ndarray = np.empty((len(vertices), 3), dtype=np.float64)
     vertices.foreach_get("co", local.reshape(-1))
     world = np.asarray(obj.matrix_world, dtype=np.float64)
     base_mm = ((local @ world[:3, :3].T) + world[:3, 3]) * _M_TO_MM
@@ -308,10 +292,10 @@ class AtlasPlan:
     ``texels`` maps object name -> ``{"position_mm" (K,3), "normal" (K,3), "uv" (K,2),
     "xy" (K,2) int64, "face" (K,) int64, "face_material_index" (M,) int32}``. ``"xy"`` is
     the tile-LOCAL integer texel coordinate (before the tile's ``AtlasLayout`` offset is
-    added) - :func:`write_atlas` (Task 3) uses it together with ``layout.tiles[name].offset``
+    added) - :func:`write_atlas` uses it together with ``layout.tiles[name].offset``
     to scatter this object's solved texel temperatures into the shared atlas image. Only
     objects that made it all the way through selection, UV prep and rasterization appear
-    here; every other sim object (excluded by :func:`atlas.select_for_atlas`, or demoted
+    here; every other sim object (excluded by :func:`atlas.select_for_atlas`, or rejected
     after a UV/vertex-count failure) is simply absent and keeps the per-vertex path in
     ``_combine``.
     """
@@ -494,7 +478,7 @@ def _write_atlas_uv_layer(obj: Any, tile: atlas.TileSpec, atlas_size: tuple, src
         # sees it instead of a stale cached evaluation from before this write.
         if bpy is not None:
             bpy.context.view_layer.update()
-    except Exception as exc:  # pragma: no cover - defensive, mirrors irradiance.py's style
+    except Exception as exc:   # noqa: BLE001
         _log.warning("[heatsim.adapter] '%s': failed to write %s: %s", obj.name, ATLAS_UV_LAYER_NAME, exc)
 
 
@@ -720,7 +704,7 @@ def write_atlas(
     emissivity_history: dict[str, np.ndarray] = {}
     for name, tex in atlas_plan.texels.items():
         count = len(tex["xy"])
-        eps = np.full(count, 0.9, dtype=np.float64)
+        eps: np.ndarray = np.full(count, 0.9, dtype=np.float64)
         if defaults is not None:
             obj = next((o for o in bpy.context.scene.objects if o.name == name), None)
             if obj is None:
@@ -765,13 +749,9 @@ def write_atlas(
     image.pixels.foreach_set(rgba.ravel())
     image.filepath_raw = str(out_path)
     image.file_format = "OPEN_EXR"
-    image_settings = bpy.context.scene.render.image_settings
-    original_codec = image_settings.exr_codec
     try:
-        image_settings.exr_codec = "ZIP"
         image.save()
     finally:
-        image_settings.exr_codec = original_codec
         bpy.data.images.remove(image)
 
     _log.debug(
@@ -1315,7 +1295,7 @@ def _write_point_float_attr(mesh: Any, name: str, values: np.ndarray) -> None:
         try:
             mesh.attributes.remove(mesh.attributes[name])
         except Exception:
-            pass
+            logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
     attr = mesh.attributes.new(name=name, type="FLOAT", domain="POINT")
     attr.data.foreach_set("value", np.asarray(values, dtype=np.float32))
 
@@ -1426,8 +1406,7 @@ def write_frame_attributes(
         if mesh is None:
             continue
 
-        if atlas_plan is not None:
-            obj[ATLAS_COVERAGE_PROP] = 1.0 if obj.name in atlas_names else 0.0
+        obj[ATLAS_COVERAGE_PROP] = 1.0 if obj.name in atlas_names else 0.0
 
         if obj.name in atlas_names:
             # TEXEL: this object's field lives in the atlas image, not on its mesh --

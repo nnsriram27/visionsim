@@ -78,8 +78,7 @@ def render_job(
     if config.include_points:
         client.include_points(**asdict(config.points))
     if config.include_thermal:
-        client.prepare_thermal(**asdict(config.thermal))
-        client.include_thermal(**asdict(config.thermal))
+        client.configure_thermal(asdict(config.thermal))
 
     if config.unbind_camera:
         client.unbind_camera()
