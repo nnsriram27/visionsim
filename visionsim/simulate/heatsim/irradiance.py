@@ -552,6 +552,30 @@ def _mesh_to_sample(obj):
     return obj.data
 
 
+def bake_vertex_albedo(scene, obj, texture_size: int) -> np.ndarray:
+    """Bake albedo and sample it on the evaluated mesh used by the heat solve."""
+    from visionsim.simulate.heatsim.constants import BAKE_UV_LAYER_NAME
+
+    baked = bake_albedo_map(scene, obj, texture_size)
+    if baked is None or baked.pixels is None:
+        raise RuntimeError(f"Albedo bake failed for {obj.name!r}")
+    mesh = _mesh_to_sample(obj)
+    uv_layer = mesh.uv_layers.get(BAKE_UV_LAYER_NAME) or mesh.uv_layers.active
+    if uv_layer is None:
+        raise RuntimeError(f"No bake UV layer is available for {obj.name!r}")
+    loop_count = len(mesh.loops)
+    uv = np.empty((loop_count, 2), dtype=np.float64)
+    uv_layer.data.foreach_get("uv", uv.reshape(-1))
+    vertex_indices = np.empty(loop_count, dtype=np.int32)
+    mesh.loops.foreach_get("vertex_index", vertex_indices)
+    values = _image_to_vertex_irradiance(
+        vertex_indices, uv, baked.pixels, baked.width, baked.height, 1.0, len(mesh.vertices)
+    )
+    if not np.all(np.isfinite(values)):
+        raise RuntimeError(f"Albedo bake contains non-finite values for {obj.name!r}")
+    return np.clip(values, 0.0, 1.0)
+
+
 def bake_albedo_map(scene, obj, texture_size: int) -> BakedFluxMap | None:
     """
     Bake visible diffuse albedo (COLOR pass) for a single object.

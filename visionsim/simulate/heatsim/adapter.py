@@ -893,21 +893,8 @@ def _texel_irradiance_cycles(
 
 
 def _compute_irradiance_cycles(scene: Any, sim_objects: list, solver_cfg: dict, defaults: dict) -> dict:
-    """Per-vertex irradiance from a Cycles bake -> ``{obj: (N,) float64 W/m^2 absorbed}``.
-
-    Drop-in alternative to :func:`_compute_irradiance` (the analytic Direct Kernel),
-    selected by ``solver_cfg["irradiance_source"] == "CYCLES_BAKE"``.
-
-    The Direct Kernel counts only ``LIGHT`` objects plus an unshadowed SH9 sky and
-    models no indirect bounce, so a scene lit by emissive geometry gets no flux at all
-    (visionsim50/classroom: 6.17 m^2 of emissive windows contributing exactly zero).
-    Cycles resolves emissive meshes, bounce and portals because it is a path tracer.
-
-    The bake yields *incident* irradiance, so (1 - albedo) is applied here to match the
-    Direct Kernel's absorbed-flux contract. Albedo comes from the bake that already runs
-    for the kernel path, so no extra Cycles work is introduced by the conversion.
-    """
-    from visionsim.simulate.heatsim import irradiance, irradiance_kernel
+    """Bake incident light and albedo at vertices and return absorbed W/m²."""
+    from visionsim.simulate.heatsim import irradiance
 
     texture_size = int(solver_cfg.get("irradiance_texture_size", 512))
     bake_samples = int(solver_cfg.get("bake_samples", 1024))
@@ -915,42 +902,13 @@ def _compute_irradiance_cycles(scene: Any, sim_objects: list, solver_cfg: dict, 
     for obj in sim_objects:
         if resolve_material(obj, defaults)["thermal_role"] == "DIRICHLET_SOURCE":
             continue  # mirrors compute_per_vertex_irradiance's own Dirichlet skip
-        try:
-            baked = irradiance.bake_irradiance_map(scene, obj, texture_size, samples=bake_samples)
-        except Exception as exc:  # pragma: no cover - defensive
-            _log.warning("[heatsim.adapter] '%s': irradiance bake failed: %s", obj.name, exc)
-            baked = None
+        baked = irradiance.bake_irradiance_map(scene, obj, texture_size, samples=bake_samples)
         if baked is None or getattr(baked, "vertex_flux", None) is None:
-            continue
+            raise RuntimeError(f"Irradiance bake failed for {obj.name!r}")
         incident = np.asarray(baked.vertex_flux, dtype=np.float64).reshape(-1)
-        # `get_or_bake_vertex_albedo` takes a LIST and returns {name: (N,) array}; its
-        # `texture_size` is keyword-only. Getting either wrong raises TypeError, and a
-        # bare `except` here would turn that into albedo=0 -- i.e. full absorption, up to
-        # ~4x the correct flux on a light surface -- with no way to notice. Both
-        # degradation paths below therefore log.
-        albedo = None
-        try:
-            albedo_by_name = irradiance_kernel.get_or_bake_vertex_albedo(
-                scene, [obj], texture_size=texture_size
-            )
-            raw = albedo_by_name.get(obj.name)
-            if raw is not None:
-                albedo = np.clip(np.asarray(raw, dtype=np.float64).reshape(-1), 0.0, 1.0)
-        except Exception as exc:  # pragma: no cover - defensive
-            _log.warning(
-                "[heatsim.adapter] '%s': vertex albedo bake failed (%s); assuming full "
-                "absorption, which OVERESTIMATES absorbed flux.", obj.name, exc,
-            )
-        if albedo is None:
-            albedo = np.zeros_like(incident)
-        elif albedo.shape != incident.shape:
-            _log.warning(
-                "[heatsim.adapter] '%s': albedo has %d entries but irradiance has %d "
-                "(the two bakes disagree about which mesh they sampled); assuming full "
-                "absorption, which OVERESTIMATES absorbed flux.",
-                obj.name, albedo.shape[0], incident.shape[0],
-            )
-            albedo = np.zeros_like(incident)
+        albedo = irradiance.bake_vertex_albedo(scene, obj, texture_size)
+        if albedo.shape != incident.shape or not np.all(np.isfinite(incident)):
+            raise RuntimeError(f"Bake samples do not match the evaluated mesh for {obj.name!r}")
         out[obj] = np.maximum(incident * (1.0 - albedo), 0.0)
     return out
 
