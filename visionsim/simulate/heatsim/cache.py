@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
+import tempfile
 from typing import Any
 
 import numpy as np
 
 
-def cache_key(blend_path: Path, solver_cfg: dict) -> str:
+def cache_key(blend_path: Path, solver_cfg: dict, source_digest: str = "") -> str:
     """Stable cache key from the blend identity and solver-relevant config.
 
     Args:
@@ -19,12 +21,41 @@ def cache_key(blend_path: Path, solver_cfg: dict) -> str:
         A short hex digest used as the cache subdirectory name.
     """
     blend_path = Path(blend_path)
-    try:
-        mtime = blend_path.stat().st_mtime_ns
-    except OSError:
-        mtime = 0
-    payload = json.dumps({"p": str(blend_path), "m": mtime, "c": solver_cfg}, sort_keys=True)
+    payload = json.dumps({"p": str(blend_path), "source": source_digest, "c": solver_cfg}, sort_keys=True)
     return hashlib.sha1(payload.encode()).hexdigest()[:16]
+
+
+def file_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def source_identity(blend_data: Any) -> str | None:
+    """Identify an unmodified saved blend and its external image/library inputs.
+
+    Unsaved edits and unavailable inputs cannot be identified safely, so callers
+    must bake and solve again in those cases.
+    """
+    blend_path = Path(str(getattr(blend_data, "filepath", "")))
+    if not blend_path.is_file() or bool(getattr(blend_data, "is_dirty", True)):
+        return None
+    digest = hashlib.sha256(file_digest(blend_path).encode())
+    for collection in (getattr(blend_data, "images", ()), getattr(blend_data, "libraries", ())):
+        for item in collection:
+            if getattr(item, "packed_file", None) is not None:
+                continue
+            filepath = str(getattr(item, "filepath", ""))
+            if not filepath or filepath.startswith("//") and not blend_path.is_file():
+                continue
+            resolved = (blend_path.parent / filepath[2:]) if filepath.startswith("//") else Path(filepath)
+            if not resolved.is_file():
+                return None
+            digest.update(str(resolved.resolve()).encode())
+            digest.update(file_digest(resolved).encode())
+    return digest.hexdigest()
 
 
 def write_temperatures(cache_root: Path, key: str, per_object: dict[str, np.ndarray], meta: dict) -> Path:
@@ -42,13 +73,23 @@ def write_temperatures(cache_root: Path, key: str, per_object: dict[str, np.ndar
     out_dir = Path(cache_root) / key
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / "temperatures.npz"
+    meta = {**meta, "objects": sorted(per_object),
+            "timesteps": next(iter(per_object.values())).shape[0] if per_object else 0}
     save_data: dict[str, Any] = {"__meta__": np.frombuffer(json.dumps(meta).encode(), dtype=np.uint8)}
     save_data.update(per_object)
-    np.savez_compressed(out, **save_data)
+    with tempfile.NamedTemporaryFile(dir=out_dir, suffix=".npz", delete=False) as temp:
+        temp_path = Path(temp.name)
+    try:
+        np.savez_compressed(temp_path, **save_data)
+        os.replace(temp_path, out)
+    finally:
+        temp_path.unlink(missing_ok=True)
     return out
 
 
-def read_temperatures(cache_root: Path, key: str) -> dict[str, np.ndarray] | None:
+def read_temperatures(
+    cache_root: Path, key: str, expected_counts: dict[str, int] | None = None,
+) -> dict[str, np.ndarray] | None:
     """Read per-object temperature histories, or return ``None`` on a cache miss.
 
     Args:
@@ -61,5 +102,21 @@ def read_temperatures(cache_root: Path, key: str) -> dict[str, np.ndarray] | Non
     path = Path(cache_root) / key / "temperatures.npz"
     if not path.exists():
         return None
-    with np.load(path) as data:
-        return {k: data[k] for k in data.files if k != "__meta__"}
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            meta = json.loads(data["__meta__"].tobytes())
+            result = {k: data[k] for k in data.files if k != "__meta__"}
+            if set(result) != set(meta["objects"]):
+                return None
+            if expected_counts is not None and set(result) != set(expected_counts):
+                return None
+            for name, values in result.items():
+                if values.ndim != 2 or values.shape[0] != meta["timesteps"]:
+                    return None
+                if expected_counts is not None and values.shape[1] != expected_counts[name]:
+                    return None
+                if not np.isfinite(values).all():
+                    return None
+            return result
+    except (OSError, ValueError, KeyError, TypeError, EOFError):
+        return None

@@ -1572,7 +1572,9 @@ class BlenderService(rpyc.Service):
         atlas_texel_soft_max: int = 500_000,
     ) -> tuple[dict, Any, Path]:
         """Build the requested sampling plan and solve a fixed scene snapshot."""
-        from visionsim.simulate.heatsim import adapter
+        from visionsim.simulate.heatsim import adapter, cache
+
+        source_digest = cache.source_identity(bpy.data)
 
         defaults, solver_cfg, cache_root, assignment = self._thermal_config(
             initial_temperature_K=initial_temperature_K,
@@ -1609,6 +1611,7 @@ class BlenderService(rpyc.Service):
             cache_root=cache_root,
             assignment=assignment,
             atlas_plan=atlas_plan,
+            source_digest=source_digest,
         )
         return history, atlas_plan, cache_root
 
@@ -1620,7 +1623,7 @@ class BlenderService(rpyc.Service):
         keeps working even if the source EXR under the ``.heatsim`` cache directory later
         moves or is cleaned up.
         """
-        from visionsim.simulate.heatsim.constants import ATLAS_IMAGE_NAME
+        from visionsim.simulate.heatsim.names import ATLAS_IMAGE_NAME
 
         existing = bpy.data.images.get(ATLAS_IMAGE_NAME)
         if existing is not None:
@@ -1656,7 +1659,7 @@ class BlenderService(rpyc.Service):
         atlas_tile_max: int = 512,
         atlas_texel_soft_max: int = 500_000,
         radiance_scale: float = 1.0,
-        exr_codec: EXR_CODECS = "DWAA",
+        exr_codec: EXR_CODECS = "ZIP",
         bit_depth: Literal[16, 32] = 32,
         assignments: str | None = None,
     ) -> None:
@@ -1770,7 +1773,7 @@ class BlenderService(rpyc.Service):
         atlas_tile_max: int = 512,
         atlas_texel_soft_max: int = 500_000,
         radiance_scale: float = 1.0,
-        exr_codec: EXR_CODECS = "DWAA",
+        exr_codec: EXR_CODECS = "ZIP",
         bit_depth: Literal[16, 32] = 32,
         assignments: str | None = None,
     ) -> None:
@@ -1817,7 +1820,7 @@ class BlenderService(rpyc.Service):
         atlas_tile_max: int = 512,
         atlas_texel_soft_max: int = 500_000,
         radiance_scale: float = 1.0,
-        exr_codec: EXR_CODECS = "DWAA",
+        exr_codec: EXR_CODECS = "ZIP",
         bit_depth: Literal[16, 32] = 32,
         assignments: str | None = None,
     ) -> None:

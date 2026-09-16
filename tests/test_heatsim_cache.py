@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 
 from visionsim.simulate.heatsim import cache
@@ -21,39 +23,37 @@ def test_cache_roundtrip_and_miss(tmp_path):
     assert np.allclose(back["cup"], 295.0) and back["plate"].shape == (4, 7)
 
 
-def test_animated_roundtrip_and_miss(tmp_path):
-    cache_dir = tmp_path / "some_animated_key"
-    assert cache.read_animated(cache_dir) is None  # miss: dir doesn't exist yet
-
-    cache_dir.mkdir()
-    assert cache.read_animated(cache_dir) is None  # miss: dir exists but empty
-
-    history = {"cup": np.full((5, 100), 300.0), "plate": np.full((5, 40), 295.0)}
-    frames = [1, 2, 3, 4, 5]
-    out = cache.write_animated(cache_dir, history, frames, {"substeps": 4})
-    assert out.exists()
-
-    back = cache.read_animated(cache_dir)
-    assert back is not None
-    hist_back, frames_back = back
-    assert set(hist_back) == {"cup", "plate"}
-    assert hist_back["cup"].shape == (5, 100)
-    assert hist_back["plate"].shape == (5, 40)
-    assert np.allclose(hist_back["cup"], 300.0) and np.allclose(hist_back["plate"], 295.0)
-    assert frames_back == frames
-
-
-def test_animated_key_differs_from_static_key(tmp_path):
+def test_solver_settings_change_cache_key(tmp_path):
     blend = tmp_path / "scene.blend"
-    static_cfg = {"dt": 0.05, "domain": "POINTS"}
-    animated_cfg = {
-        **static_cfg,
-        "animated": True,
-        "frame_start": 1,
-        "frame_end": 5,
-        "every_n": 1,
-        "substeps": 4,
-    }
-    static_key = cache.cache_key(blend, static_cfg)
-    animated_key = cache.cache_key(blend, animated_cfg)
-    assert static_key != animated_key
+    assert cache.cache_key(blend, {"dt": 0.05}, "source") != cache.cache_key(
+        blend, {"dt": 0.1}, "source"
+    )
+    assert cache.cache_key(blend, {"dt": 0.05}, "source") != cache.cache_key(
+        blend, {"dt": 0.05}, "changed"
+    )
+
+
+def test_cache_rejects_wrong_shape_and_corruption(tmp_path):
+    key = "sample"
+    cache.write_temperatures(tmp_path, key, {"wall": np.full((3, 4), 295.0)}, {})
+    assert cache.read_temperatures(tmp_path, key, {"wall": 4}) is not None
+    assert cache.read_temperatures(tmp_path, key, {"wall": 5}) is None
+    (tmp_path / key / "temperatures.npz").write_bytes(b"incomplete")
+    assert cache.read_temperatures(tmp_path, key, {"wall": 4}) is None
+
+
+def test_source_identity_requires_clean_saved_inputs(tmp_path):
+    blend = tmp_path / "room.blend"
+    image = tmp_path / "albedo.png"
+    blend.write_bytes(b"room A")
+    image.write_bytes(b"image A")
+    data = SimpleNamespace(
+        filepath=str(blend), is_dirty=False,
+        images=[SimpleNamespace(filepath=str(image), packed_file=None)], libraries=[],
+    )
+    original = cache.source_identity(data)
+    assert original == cache.source_identity(data)
+    image.write_bytes(b"image B")
+    assert cache.source_identity(data) != original
+    data.is_dirty = True
+    assert cache.source_identity(data) is None

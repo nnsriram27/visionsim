@@ -55,7 +55,7 @@ history = {{'obj': np.array([[300.0, 300.0], [310.0, 320.0]])}}  # (T=2, K=2); f
 out_path = adapter.write_atlas(history, plan, Path(r'{tmp_path}'))
 assert out_path.exists(), out_path
 assert out_path.name == 'atlas_temperature.exr'
-assert 'rt' in str(out_path.parent.name)
+assert out_path.parent.name.startswith('atlas_')
 
 import bpy
 img = bpy.data.images.load(str(out_path))
@@ -96,7 +96,7 @@ print('WRITE_ATLAS_OK')
     # write->bpy-load round trip only proves symmetry, not that the file holds the true
     # Kelvin values). This is the assertion that catches a Non-Color tag regression: an
     # untagged write would land here as ~11.2 (sRGB-OETF-encoded 310.0), not 310.0.
-    exr_path = tmp_path / "atlas_rt" / "atlas_temperature.exr"
+    exr_path = next(tmp_path.glob("atlas_*/atlas_temperature.exr"))
     assert exr_path.exists(), exr_path
     exr = OpenEXR.InputFile(str(exr_path))
     dw = exr.header()["dataWindow"]
@@ -480,7 +480,7 @@ root_path = r'{tmp_path}'
 bpy.ops.wm.save_as_mainfile(filepath=blend_path)
 
 from visionsim.simulate.blender import BlenderService
-from visionsim.simulate.heatsim.constants import ATLAS_COVERAGE_PROP, ATLAS_IMAGE_NAME
+from visionsim.simulate.heatsim.names import ATLAS_COVERAGE_PROP, ATLAS_IMAGE_NAME
 
 service = BlenderService()
 service.exposed_initialize(blend_path, root_path)
@@ -572,7 +572,7 @@ root_path = r'{tmp_path}'
 bpy.ops.wm.save_as_mainfile(filepath=blend_path)
 
 from visionsim.simulate.blender import BlenderService
-from visionsim.simulate.heatsim.constants import ATLAS_COVERAGE_PROP
+from visionsim.simulate.heatsim.names import ATLAS_COVERAGE_PROP
 
 service = BlenderService()
 service.exposed_initialize(blend_path, root_path)

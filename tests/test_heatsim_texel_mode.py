@@ -442,9 +442,9 @@ def test_cache_key_gains_atlas_digest(tmp_path, monkeypatch):
 
     real_cache_key = cache_mod.cache_key
 
-    def spy(blend_path, key_cfg):
+    def spy(blend_path, key_cfg, source_digest=""):
         captured.append(key_cfg)
-        return real_cache_key(blend_path, key_cfg)
+        return real_cache_key(blend_path, key_cfg, source_digest)
 
     monkeypatch.setattr(adapter, "gather_meshes", lambda scene: [])
     monkeypatch.setattr(adapter.cache, "cache_key", spy)
@@ -472,7 +472,7 @@ def test_cache_key_is_byte_identical_to_pre_atlas_baseline(tmp_path, monkeypatch
     exactly, so an existing .heatsim cache from before the atlas feature is not busted."""
     captured = []
     monkeypatch.setattr(adapter, "gather_meshes", lambda scene: [])
-    monkeypatch.setattr(adapter.cache, "cache_key", lambda blend_path, key_cfg: captured.append(key_cfg) or "k")
+    monkeypatch.setattr(adapter.cache, "cache_key", lambda blend_path, key_cfg, source_digest="": captured.append(key_cfg) or "k")
 
     scene = _FakeScene()
     adapter.solve_scene(scene, defaults=_DEFAULTS, solver_cfg=_SOLVER_CFG, cache_root=tmp_path)

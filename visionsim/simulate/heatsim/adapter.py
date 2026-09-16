@@ -17,11 +17,11 @@ from typing import Any
 import numpy as np
 
 from visionsim.simulate.heatsim import atlas, cache, materials
-from visionsim.simulate.heatsim.constants import (
+from visionsim.simulate.heatsim.physics import CYCLES_LOUT_TO_IRRADIANCE
+from visionsim.simulate.heatsim.names import (
     ATLAS_COVERAGE_PROP,
     ATLAS_UV_LAYER_NAME,
     BAKE_UV_LAYER_NAME,
-    CYCLES_LOUT_TO_IRRADIANCE,
 )
 
 try:
@@ -705,10 +705,10 @@ def write_atlas(
         Path to the written EXR file.
     """
     cache_root = Path(cache_root)
-    out_dir = cache_root / f"atlas_{atlas_plan.digest or 'noatlas'}"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / "atlas_temperature.exr"
-
+    result_hash = hashlib.sha256((atlas_plan.digest or "noatlas").encode())
+    for name in sorted(atlas_plan.texels):
+        result_hash.update(name.encode())
+        result_hash.update(np.asarray(history[name][-1], dtype="<f8").tobytes())
     width, height = atlas_plan.layout.atlas_size
     width, height = max(int(width), 1), max(int(height), 1)
     if atlas_plan.layout.atlas_size == (0, 0) or not atlas_plan.texels:
@@ -745,6 +745,11 @@ def write_atlas(
     rgba[..., 2] = temp_dilated
     rgba[..., 3] = alpha
 
+    result_hash.update(rgba.tobytes())
+    out_dir = cache_root / f"atlas_{result_hash.hexdigest()[:20]}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "atlas_temperature.exr"
+
     write_image_name = "HeatSim_Temperature_Atlas_Write"
     existing = bpy.data.images.get(write_image_name)
     if existing is not None:
@@ -756,15 +761,18 @@ def write_atlas(
     # the raw Kelvin values as scene-linear color and re-encode them, corrupting the
     # written EXR's absolute values (295.0 K -> ~11.23 in the file). Tag Non-Color so
     # save()/load() are the identity transform and the file holds the literal float value.
-    try:
-        image.colorspace_settings.name = "Non-Color"
-    except Exception:  # pragma: no cover - defensive, mirrors irradiance.py's style
-        pass
+    image.colorspace_settings.name = "Non-Color"
     image.pixels.foreach_set(rgba.ravel())
     image.filepath_raw = str(out_path)
     image.file_format = "OPEN_EXR"
-    image.save()
-    bpy.data.images.remove(image)
+    image_settings = bpy.context.scene.render.image_settings
+    original_codec = image_settings.exr_codec
+    try:
+        image_settings.exr_codec = "ZIP"
+        image.save()
+    finally:
+        image_settings.exr_codec = original_codec
+        bpy.data.images.remove(image)
 
     _log.debug(
         "[heatsim.adapter] write_atlas: wrote %s (%dx%d, %d object(s))",
@@ -1212,6 +1220,8 @@ def solve_scene(
     cache_root: Path,
     assignment: Any | None = None,
     atlas_plan: AtlasPlan | None = None,
+    source_digest: str | None = None,
+    recompute: bool = False,
 ) -> dict:
     """Cache-aware FEM heat solve for ``scene``.
 
@@ -1252,15 +1262,25 @@ def solve_scene(
             "soft_max": atlas_plan.soft_max,
             "layout_digest": atlas_plan.digest,
         }
-    key = cache.cache_key(blend_path, key_cfg)
+    key = cache.cache_key(blend_path, key_cfg, source_digest or "")
 
-    cached = cache.read_temperatures(cache_root, key)
+    expected_counts = {
+        obj.name: len(atlas_plan.texels[obj.name]["xy"])
+        if atlas_plan is not None and obj.name in atlas_plan.texels
+        else len(obj.evaluated_get(bpy.context.evaluated_depsgraph_get()).data.vertices)
+        for obj in sim_objects
+    } if source_digest is not None else None
+    cached = (
+        cache.read_temperatures(cache_root, key, expected_counts)
+        if source_digest is not None and not recompute else None
+    )
     if cached is not None:
         _log.debug("[heatsim.adapter] cache hit: %s", key)
         return cached
 
     if not sim_objects:
-        cache.write_temperatures(cache_root, key, {}, {"objects": []})
+        if source_digest is not None:
+            cache.write_temperatures(cache_root, key, {}, {"objects": [], "timesteps": 0})
         return {}
 
     atlas_names = set(atlas_plan.texels) if atlas_plan is not None else set()
@@ -1270,7 +1290,8 @@ def solve_scene(
         flux_by_obj.update(_compute_texel_irradiance(scene, sim_objects, atlas_plan, solver_cfg, defaults))
     combined = _combine(sim_objects, flux_by_obj, defaults, solver_cfg, assignment=assignment, atlas_plan=atlas_plan)
     if combined is None:
-        cache.write_temperatures(cache_root, key, {}, {"objects": []})
+        if source_digest is not None:
+            cache.write_temperatures(cache_root, key, {}, {"objects": [], "timesteps": 0})
         return {}
 
     history = _run_solver(combined, solver_cfg, defaults)
@@ -1282,7 +1303,8 @@ def solve_scene(
         "timesteps": int(history.shape[0]) if history.ndim == 2 else 0,
         "surface_count": int(combined.surface_count),
     }
-    cache.write_temperatures(cache_root, key, per_object, meta)
+    if source_digest is not None:
+        cache.write_temperatures(cache_root, key, per_object, meta)
     _log.debug("[heatsim.adapter] solved %d object(s); history %s", len(per_object), history.shape)
     return per_object
 
