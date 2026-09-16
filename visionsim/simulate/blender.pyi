@@ -90,6 +90,8 @@ class BlenderService(rpyc.Service):
     _camera: bpy.types.Camera | None
     _thermal_radiance: dict[str, Any] | None
     _thermal_assignment: Any | None
+    _loaded_persistent_data: bool | None
+    _persistent_data_before_thermal: bool | None
     _thermal_atlas_plan: Any | None
 
     def __init__(self) -> None:

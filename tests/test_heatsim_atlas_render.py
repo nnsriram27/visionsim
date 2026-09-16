@@ -496,6 +496,7 @@ bg.inputs['Strength'].default_value = 1.0
 
 blend_path = r'{tmp_path}/texel_test.blend'
 root_path = r'{tmp_path}'
+saved_persistent = bpy.context.scene.render.use_persistent_data
 bpy.ops.wm.save_as_mainfile(filepath=blend_path)
 
 from visionsim.simulate.blender import BlenderService
@@ -556,6 +557,7 @@ from pathlib import Path
 for atlas_file in Path(r'{tmp_path}').glob('texel_test.blend.heatsim/atlas_*/atlas_temperature.exr'):
     atlas_file.unlink()
 bpy.ops.wm.open_mainfile(filepath=frozen)
+assert bpy.context.scene.render.use_persistent_data == saved_persistent
 reopened = bpy.data.images.get(ATLAS_IMAGE_NAME)
 assert reopened is not None and reopened.packed_file is not None
 assert any(node.bl_idname == 'ShaderNodeTexImage' and node.image is reopened

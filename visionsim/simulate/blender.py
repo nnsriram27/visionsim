@@ -462,6 +462,7 @@ class BlenderService(rpyc.Service):
         self._camera: bpy.types.Camera | None = None
         self._thermal_radiance: dict[str, Any] | None = None
         self._thermal_assignment: Any | None = None
+        self._loaded_persistent_data: bool | None = None
         self._persistent_data_before_thermal: bool | None = None
         # TEXEL render domain: the AtlasPlan from the most recent exposed_prepare_thermal
         # call (None in VERTEX mode, or if TEXEL mode found nothing atlas-eligible).
@@ -510,6 +511,7 @@ class BlenderService(rpyc.Service):
         self._camera = None
         self._thermal_radiance = None
         self._thermal_assignment = None
+        self._loaded_persistent_data = None
         self._persistent_data_before_thermal = None
         self._thermal_atlas_plan = None
 
@@ -775,6 +777,7 @@ class BlenderService(rpyc.Service):
         # Init various variables to track state
         self._use_animation: bool = True
         self._initialized = True
+        self._loaded_persistent_data = bool(self.scene.render.use_persistent_data)
 
         # Ensure we are using the compositor, and node tree.
         if bpy.app.version >= (5, 0, 0):
@@ -1678,7 +1681,7 @@ class BlenderService(rpyc.Service):
         # (background only) and makes the sequence deterministic.
         if self.scene.render.use_persistent_data:
             self.log.info("thermal: disabling Cycles persistent data (stale AOV state between frames)")
-            self._persistent_data_before_thermal = True
+            self._persistent_data_before_thermal = self._loaded_persistent_data
             self.scene.render.use_persistent_data = False
 
         history, atlas_plan, cache_root = self._thermal_solve(
