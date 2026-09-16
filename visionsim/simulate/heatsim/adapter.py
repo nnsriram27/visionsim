@@ -52,7 +52,7 @@ def gather_meshes(scene: Any) -> list:
     Also un-shares each returned object's mesh datablock (see
     :func:`_ensure_single_user_meshes`). This is the single choke point every
     solve/atlas entry point pulls its object list from (:func:`solve_scene`,
-    :func:`solve_scene_animated`, and the adapter's TEXEL atlas-plan caller), so doing
+    and the adapter's TEXEL atlas-plan caller), so doing
     it here guarantees it happens once, early, before any per-vertex attribute or atlas
     UV layer is ever written for these objects - regardless of which of those three
     paths runs first in a given ``prepare_thermal`` call.
@@ -226,37 +226,6 @@ def global_temperature_range(history: dict[str, Any], default_K: float) -> tuple
     if tmax - tmin < 1.0:
         tmax = tmin + 1.0
     return tmin, tmax
-
-
-def global_temperature_range_animated(history: dict[str, Any], default_K: float) -> tuple[float, float]:
-    """Global colormap range ``(tmin, tmax)`` in Kelvin spanning EVERY frame of an animated solve.
-
-    Like :func:`global_temperature_range`, but folds in the full per-frame history instead
-    of only the final timestep. The animated (M2) field keeps evolving frame to frame, so a
-    final-frame-only range would clip the preview colormap against later (typically hotter)
-    frames -- this instead gives a single, stable scale for the whole sequence.
-
-    Args:
-        history: ``{obj_name: (n_frames, n_verts) array}`` from :func:`solve_scene_animated`.
-        default_K: Default initial temperature stamped on unsolved meshes.
-
-    Returns:
-        ``(tmin, tmax)`` with ``tmax - tmin >= 1.0``.
-    """
-    arrays = [np.asarray(arr, dtype=float) for arr in history.values() if np.asarray(arr).size]
-    if not arrays:
-        return float(default_K), float(default_K) + 1.0
-    tmin = min(float(np.min(a)) for a in arrays)
-    tmax = max(float(np.max(a)) for a in arrays)
-    tmin = min(tmin, float(default_K))
-    if tmax - tmin < 1.0:
-        tmax = tmin + 1.0
-    return tmin, tmax
-
-
-# ---------------------------------------------------------------------------
-# Geometry extraction (evaluated mesh -> world mm + triangulated faces)
-# ---------------------------------------------------------------------------
 
 
 def _extract_geometry(obj: Any) -> tuple | None:
@@ -1168,8 +1137,6 @@ def _run_solver(combined: SimpleNamespace, solver_cfg: dict, defaults: dict) -> 
 
     sim_time_s = float(solver_cfg.get("sim_time_s", 1.0))
     timestep_s = float(solver_cfg.get("timestep_s", 0.05))
-    domain = str(solver_cfg.get("domain", "POINTS")).upper()
-    backend = str(solver_cfg.get("laplacian_backend", "ROBUST")).upper()
     device = str(solver_cfg.get("device", "cpu"))
 
     gen_params = SimpleNamespace(
@@ -1187,22 +1154,12 @@ def _run_solver(combined: SimpleNamespace, solver_cfg: dict, defaults: dict) -> 
         record_time=sim_time_s,  # record_attimestep == 0 => record all steps
     )
 
-    fem = HeatSimFEM(
-        gen_params,
-        sim_params,
-        laplacian_domain=domain,
-        laplacian_backend=backend,
-    )
+    fem = HeatSimFEM(gen_params, sim_params)
 
-    is_points = domain == "POINTS"
     history = fem.perform_gt_heat_simulation(
         verts_np=combined.verts.copy(),
-        faces_np=None if is_points else combined.faces.copy(),
-        boundary_faces_np=None if is_points else combined.faces.copy(),
-        # NOTE: boundary_verts_mask_override is honoured by the solver in POINTS
-        # mode only.  In MESH mode the boundary is derived from face topology and
-        # the per-vertex override is silently ignored — Dirichlet sources are not
-        # correctly excluded in MESH mode (known follow-up).
+        faces_np=None,
+        boundary_faces_np=None,
         boundary_verts_mask_override=combined.boundary_mask,
         u0=combined.t0,
         irradiance_map=combined.irradiance,
@@ -1217,17 +1174,9 @@ def _run_solver(combined: SimpleNamespace, solver_cfg: dict, defaults: dict) -> 
 def _split_history(history: np.ndarray, combined: SimpleNamespace) -> dict:
     """Trim interior points and split ``(T, N_total)`` into per-object ``(T, N)``."""
     u = history
-    # Guard: in MESH mode the solver compresses the vertex array to only
-    # face-referenced vertices, so the column count can be LESS than
-    # surface_count.  Slicing per-object offsets into a shorter array would
-    # silently return wrong temperatures.  Raise loudly instead.
-    if u.ndim == 2 and u.shape[1] < combined.surface_count:
+    if u.ndim != 2 or u.shape[1] < combined.surface_count or not np.isfinite(u).all():
         raise RuntimeError(
-            f"_split_history: solver returned {u.shape[1]} columns but combined "
-            f"geometry has {combined.surface_count} surface vertices.  This happens "
-            f"in MESH mode when the mesh contains orphan/unreferenced vertices that "
-            f"the solver drops.  Use POINTS domain (the supported M1 path) or ensure "
-            f"every vertex is referenced by at least one face."
+            "Thermal solver returned an invalid field for the scene sampling layout"
         )
     out: dict = {}
     for name, off, n, _kind in combined.layout:
@@ -1321,307 +1270,6 @@ def solve_scene(
     cache.write_temperatures(cache_root, key, per_object, meta)
     _log.debug("[heatsim.adapter] solved %d object(s); history %s", len(per_object), history.shape)
     return per_object
-
-
-def _scene_fps(scene: Any) -> float:
-    """``scene.render.fps / scene.render.fps_base``, guarded against a zero base."""
-    r = scene.render
-    fps = float(getattr(r, "fps", 24) or 24)
-    fps_base = float(getattr(r, "fps_base", 1.0) or 1.0)
-    if fps_base <= 0.0:
-        fps_base = 1.0
-    return fps / fps_base
-
-
-def _order_fem_first(sim_objects: list, defaults: dict) -> tuple[list, set]:
-    """Split ``sim_objects`` into FEM-participant-first, Dirichlet-source-last order.
-
-    A Dirichlet source's evaluated vertex count may change frame to frame (e.g. a
-    regenerated fluid mesh). Keeping it last in the combine order means its resize
-    never shifts the ``_combine`` offsets of any FEM-participant object, so the
-    FEM-participant surface prefix has a stable width across frames -- exactly the
-    property :func:`solve_scene_animated` relies on to carry ``u_prev`` forward by
-    index.
-    """
-    fem: list = []
-    dirichlet: list = []
-    dirichlet_names: set = set()
-    for obj in sim_objects:
-        role = resolve_material(obj, defaults)["thermal_role"]
-        if role == "DIRICHLET_SOURCE":
-            dirichlet.append(obj)
-            dirichlet_names.add(obj.name)
-        else:
-            fem.append(obj)
-    return fem + dirichlet, dirichlet_names
-
-
-def _slot_level_dirichlet_mismatches(sim_objects: list, assignment: Any, defaults: dict) -> list:
-    """Objects with a **slot-level** ``DIRICHLET_SOURCE`` assignment their own
-    ``heat_sim_material.thermal_role`` does not already declare.
-
-    :func:`_order_fem_first` (and the per-substep re-pin loop in
-    :func:`solve_scene_animated`) only ever look at the object-level role, so a
-    material slot the sidecar assigns ``DIRICHLET_SOURCE`` is never re-pinned
-    between substeps in animated mode even though :func:`_combine` correctly
-    zeroes its ``alpha``/``irradiance`` and clears its ``boundary_mask`` for the
-    static solve. This is a detector for that gap, used to warn the caller
-    rather than silently drifting -- see :func:`solve_scene_animated`.
-    """
-    names: list = []
-    for obj in sim_objects:
-        if resolve_material(obj, defaults)["thermal_role"] == "DIRICHLET_SOURCE":
-            continue  # already re-pinned wholesale as an object-level Dirichlet source
-        for slot in getattr(obj, "material_slots", []):
-            material = getattr(slot, "material", None)
-            if material is None:
-                continue
-            entry = assignment.entry_for(str(getattr(material, "name", "")))
-            if entry is not None and entry.role == "DIRICHLET_SOURCE":
-                names.append(obj.name)
-                break
-    return names
-
-
-def solve_scene_animated(
-    scene: Any,
-    *,
-    defaults: dict,
-    solver_cfg: dict,
-    cache_root: Path,
-    frame_start: int,
-    frame_end: int,
-    every_n: int,
-    substeps_per_frame: int,
-    assignment: Any | None = None,
-) -> tuple[dict, list]:
-    """Transient per-frame FEM solve over an animated scene (Phase 1 / M2).
-
-    ``FEM_PARTICIPANT`` objects (stable topology) evolve: ``u_prev`` carries the
-    previous frame's final state forward by vertex index. ``DIRICHLET_SOURCE``
-    objects (topology may change frame to frame, e.g. a regenerated fluid mesh)
-    are a constant-temperature reservoir -- re-extracted every frame purely for
-    *position* (so they couple heat into nearby FEM-participant vertices through
-    the POINTS kNN Laplacian; see ``solver._build_matrices``, which builds that
-    Laplacian over ALL combined points regardless of source object) and reset to
-    the reservoir temperature every frame. Their own field never evolves and is
-    not recorded.
-
-    On a vertex-count change of any Dirichlet source, the combined system is
-    rebuilt from scratch for that frame (via :func:`_combine`); the
-    FEM-participant prefix of ``u_prev`` is preserved unchanged and the Dirichlet
-    slice is refilled with its (possibly keyframed) reservoir temperature. A
-    vertex-count change on a FEM-participant object is NOT supported (matches
-    heat-sim-blender's ANIMATE Phase 1) and raises ``RuntimeError`` with a clear
-    message pointing at ``thermal_role``.
-
-    POINTS domain only. Per the M2 design (irradiance re-bake is a deferred
-    non-goal -- see the design spec), irradiance is not computed here: coupling
-    into the FEM participants comes from the Dirichlet reservoir's *position* via
-    the shared POINTS Laplacian, which is sufficient for a "hot pour" testbed.
-    Known v1 limitation: interior-point-volume samples (POINTS domain,
-    temperature every frame rather than carried forward (deformation-aware
-    interior continuity is an explicit M2 non-goal).
-
-    Known limitation -- **slot-level Dirichlet sources are not supported here**:
-    when *assignment* is given, a material slot the sidecar assigns
-    ``DIRICHLET_SOURCE`` is pinned correctly in the static :func:`solve_scene`
-    but is only re-pinned *once per frame* here, not after every substep (the
-    per-substep re-pin loop below only knows about object-level
-    ``thermal_role``). Across substeps the FEM/Dirichlet coupling then lets
-    those vertices drift away from their reservoir temperature. A scene
-    exhibiting this logs a warning naming the affected object(s); use the
-    static solve for such scenes until per-vertex Dirichlet is supported in
-    the animated substep loop.
-
-    Returns ``({obj_name: (n_frames, n_surface_verts) ndarray}, frames)`` for
-    FEM-participant objects only -- Dirichlet sources are not recorded, since
-    their temperature is always the constant we configured. Cache-aware: a hit
-    on ``cache.read_animated`` short-circuits the solve entirely.
-    """
-    cache_root = Path(cache_root)
-    sim_objects = gather_meshes(scene)
-
-    frame_start = int(frame_start)
-    frame_end = int(frame_end)
-    every_n = max(1, int(every_n))
-    substeps_per_frame = max(1, int(substeps_per_frame))
-    frames = list(range(frame_start, frame_end + 1, every_n))
-
-    blend_path = Path(str(getattr(getattr(bpy, "data", None), "filepath", "") or ""))
-    key_cfg = {
-        "solver": dict(solver_cfg),
-        "defaults": dict(defaults),
-        "objects": sorted(o.name for o in sim_objects),
-        "animated": True,
-        "frame_start": frame_start,
-        "frame_end": frame_end,
-        "every_n": every_n,
-        "substeps": substeps_per_frame,
-        "assignments": None if assignment is None else assignment.digest,
-    }
-    key = cache.cache_key(blend_path, key_cfg)
-    cache_dir = cache_root / key
-
-    cached = cache.read_animated(cache_dir)
-    if cached is not None:
-        _log.debug("[heatsim.adapter] animated cache hit: %s", key)
-        return cached
-
-    if not frames or not sim_objects:
-        cache.write_animated(cache_dir, {}, frames, {"objects": []})
-        return {}, frames
-
-    ordered_objects, dirichlet_names = _order_fem_first(sim_objects, defaults)
-    objects_by_name = {o.name: o for o in ordered_objects}
-
-    # M2 design: irradiance re-bake is a deferred non-goal for animated mode --
-    # ``_combine`` below is always called with an empty ``flux_by_obj``, so every
-    # object's incident flux is always zero. The only possible heat source for an
-    # animated solve is therefore a DIRICHLET_SOURCE reservoir; warn once so a
-    # scene with neither doesn't silently stay at ambient for the whole run.
-    if not dirichlet_names:
-        _log.warning(
-            "[heatsim.adapter] solve_scene_animated: no DIRICHLET_SOURCE object and "
-            "animated mode never re-bakes irradiance -- this scene has no heat "
-            "source, so the solved field will stay at ambient temperature for the "
-            "entire run."
-        )
-
-    if assignment is not None:
-        mismatched = _slot_level_dirichlet_mismatches(ordered_objects, assignment, defaults)
-        if mismatched:
-            _log.warning(
-                "[heatsim.adapter] solve_scene_animated: %s: material slot(s) assigned "
-                "DIRICHLET_SOURCE in the thermal sidecar, but the object-level "
-                "thermal_role does not declare it. Slot-level Dirichlet sources are NOT "
-                "re-pinned per substep in animated mode, so these vertices will drift "
-                "away from their reservoir temperature within a frame -- use the static "
-                "solve (solve_scene) for this scene until per-vertex Dirichlet is "
-                "supported in the animated substep loop.",
-                ", ".join(sorted(mismatched)),
-            )
-
-    from visionsim.simulate.heatsim.solver import HeatSimFEM
-
-    device = str(solver_cfg.get("device", "cpu"))
-    domain = str(solver_cfg.get("domain", "POINTS")).upper()
-    backend = str(solver_cfg.get("laplacian_backend", "ROBUST")).upper()
-
-    fps = _scene_fps(scene)
-    dt = (1.0 / fps) / float(substeps_per_frame)
-
-    gen_params = SimpleNamespace(
-        device=device,
-        RHO=float(defaults["density_kg_m3"]) / _KGM3_TO_KGMM3,
-        C=float(defaults["specific_heat_J_kgK"]),
-        K=float(defaults["thermal_diffusivity_mm2_s"]),
-        NUM_FRAME_DELTA=dt * 60.0,
-    )
-    sim_params = SimpleNamespace(
-        sim_radiation=True,
-        sim_convection=False,
-        add_tikhonov_reg=False,
-        sim_time=0.0,
-        record_time=0.0,
-    )
-    fem = HeatSimFEM(
-        gen_params,
-        sim_params,
-        laplacian_domain=domain,
-        laplacian_backend=backend,
-    )
-
-    orig_frame = int(scene.frame_current)
-    history_rows: dict = {}
-    u_prev: np.ndarray | None = None
-    n_fem_surface: int | None = None
-
-    try:
-        for f in frames:
-            scene.frame_set(int(f))
-            combined = _combine(ordered_objects, {}, defaults, solver_cfg, assignment=assignment)
-            if combined is None:
-                raise RuntimeError(
-                    f"[heatsim.adapter] solve_scene_animated: no geometry at frame {f} "
-                    "(all sim objects vanished mid-run)."
-                )
-
-            fem_entries = [
-                (name, off, n) for name, off, n, _kind in combined.layout if name not in dirichlet_names
-            ]
-            cur_n_fem_surface = sum(n for _, _, n in fem_entries)
-
-            if u_prev is None:
-                u_prev = combined.t0.copy()
-                n_fem_surface = cur_n_fem_surface
-            else:
-                if cur_n_fem_surface != n_fem_surface:
-                    raise RuntimeError(
-                        "[heatsim.adapter] solve_scene_animated: a FEM_PARTICIPANT "
-                        f"object's vertex count changed at frame {f} (expected "
-                        f"{n_fem_surface} surface vertices, got {cur_n_fem_surface}). "
-                        "Animated mode requires stable topology for FEM participants; "
-                        "set thermal_role=DIRICHLET_SOURCE for meshes with changing "
-                        "topology (e.g. fluids)."
-                    )
-                new_u_prev = combined.t0.copy()
-                new_u_prev[:n_fem_surface] = u_prev[:n_fem_surface]
-                u_prev = new_u_prev
-
-            # Dirichlet pin: resolve each reservoir vertex's target temperature
-            # fresh every frame (also covers a future keyframed
-            # dirichlet_temperature_K) and hand the indices/values to
-            # simulate_for_pose so it re-pins them internally AFTER EVERY
-            # substep's CG solve, not just once on the returned array -- the
-            # FEM/Dirichlet coupling weight in the solve would otherwise let
-            # pinned nodes drift within a frame across substeps (and drift
-            # further as substeps_per_frame grows).
-            dir_idx: list[int] = []
-            dir_val: list[float] = []
-            for name, off, n, _kind in combined.layout:
-                if name in dirichlet_names:
-                    mat = resolve_material(objects_by_name[name], defaults)
-                    t_target = mat["dirichlet_temperature_K"] or mat["initial_temperature_K"]
-                    dir_idx.extend(range(off, off + n))
-                    dir_val.extend([t_target] * n)
-
-            states = fem.simulate_for_pose(
-                combined.verts,
-                combined.faces,
-                combined.boundary_mask,
-                u_prev,
-                combined.irradiance,
-                combined.alpha,
-                combined.density,
-                combined.c,
-                combined.eps,
-                num_substeps=substeps_per_frame,
-                dt=dt,
-                dirichlet_indices=dir_idx or None,
-                dirichlet_values=dir_val or None,
-            )  # (substeps, N); Dirichlet rows already pinned every substep.
-
-            u_prev = states[-1].copy()
-            for name, off, n in fem_entries:
-                history_rows.setdefault(name, []).append(
-                    np.asarray(states[-1, off : off + n], dtype=np.float64)
-                )
-    finally:
-        scene.frame_set(orig_frame)
-
-    history = {name: np.stack(rows, axis=0) for name, rows in history_rows.items()}
-
-    meta = {
-        "objects": sorted(history),
-        "frame_start": frame_start,
-        "frame_end": frame_end,
-        "every_n": every_n,
-        "substeps": substeps_per_frame,
-    }
-    cache.write_animated(cache_dir, history, frames, meta)
-    _log.debug("[heatsim.adapter] animated solve: %d object(s), %d frame(s)", len(history), len(frames))
-    return history, frames
 
 
 def _write_point_float_attr(mesh: Any, name: str, values: np.ndarray) -> None:

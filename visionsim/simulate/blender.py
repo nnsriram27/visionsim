@@ -461,11 +461,6 @@ class BlenderService(rpyc.Service):
         self._outputs: dict[str, Any] = {}
         self._camera: bpy.types.Camera | None = None
         self._thermal_radiance: dict[str, Any] | None = None
-        # Animated thermal state, populated by exposed_prepare_thermal's animated
-        # branch and consumed by _thermal_write_frame / exposed_render_frame.
-        self._thermal_animated_history: dict[str, Any] | None = None
-        self._thermal_animated_frames: list[int] | None = None
-        self._thermal_animated_defaults: dict[str, Any] | None = None
         self._thermal_assignment: Any | None = None
         # TEXEL render domain: the AtlasPlan from the most recent exposed_prepare_thermal
         # call (None in VERTEX mode, or if TEXEL mode found nothing atlas-eligible).
@@ -513,9 +508,6 @@ class BlenderService(rpyc.Service):
         self._outputs = {}
         self._camera = None
         self._thermal_radiance = None
-        self._thermal_animated_history = None
-        self._thermal_animated_frames = None
-        self._thermal_animated_defaults = None
         self._thermal_assignment = None
         self._thermal_atlas_plan = None
 
@@ -1511,25 +1503,12 @@ class BlenderService(rpyc.Service):
         irradiance_scale: float,
         sim_time_s: float,
         timestep_s: float,
-        domain: Literal["POINTS", "MESH"],
-        laplacian_backend: Literal["ROBUST", "IGL"],
         bake_samples: int = 1024,
         irradiance_texture_size: int = 512,
         device: Literal["cuda", "cpu"],
         assignments: str | None = None,
     ) -> tuple[dict, dict, Path, Any]:
-        """Shared ``defaults``/``solver_cfg``/``cache_root`` builder for every thermal-solve
-        entry point.
-
-        Factored out of :meth:`_thermal_solve` so the static solve
-        (``adapter.solve_scene``) and the animated solve (``adapter.solve_scene_animated``,
-        called from :meth:`exposed_prepare_thermal`'s animated branch) compute byte-identical
-        ``defaults``/``solver_cfg`` -- including the blend-authored ``irradiance_scale``
-        override -- and therefore share the same cache-key convention.
-
-        Returns:
-            tuple[dict, dict, Path, Any]: ``(defaults, solver_cfg, cache_root, assignment)``.
-        """
+        """Resolve thermal material defaults, solver settings, cache root and sidecar."""
         from visionsim.simulate.heatsim import adapter
 
         defaults = {
@@ -1554,8 +1533,6 @@ class BlenderService(rpyc.Service):
         solver_cfg = {
             "sim_time_s": sim_time_s,
             "timestep_s": timestep_s,
-            "domain": domain,
-            "laplacian_backend": laplacian_backend,
             "device": device,
             "bake_samples": bake_samples,
             "irradiance_texture_size": irradiance_texture_size,
@@ -1584,8 +1561,6 @@ class BlenderService(rpyc.Service):
         irradiance_scale: float,
         sim_time_s: float,
         timestep_s: float,
-        domain: Literal["POINTS", "MESH"],
-        laplacian_backend: Literal["ROBUST", "IGL"],
         bake_samples: int = 1024,
         irradiance_texture_size: int = 512,
         device: Literal["cuda", "cpu"],
@@ -1596,27 +1571,7 @@ class BlenderService(rpyc.Service):
         atlas_tile_max: int = 512,
         atlas_texel_soft_max: int = 500_000,
     ) -> tuple[dict, Any, Path]:
-        """Shared FEM-solve core used by :meth:`exposed_prepare_thermal` and
-        :meth:`exposed_heatsim_solve`.
-
-        Builds the ``defaults`` and ``solver_cfg`` dicts (via :meth:`_thermal_config`),
-        derives ``cache_root`` from the always-set :attr:`blend_file` path (avoids
-        ``bpy.data.filepath`` which is empty for an unsaved scene), and delegates to
-        ``adapter.solve_scene``.  Both callers produce identical cache keys
-        because they share this single code path.
-
-        When ``render_domain="TEXEL"``, builds an ``adapter.AtlasPlan`` (``adapter.
-        build_atlas_plan``) from the 4 ``atlas_*`` knobs BEFORE solving and threads it
-        through to ``adapter.solve_scene``, which folds the plan's effective density/tile
-        bounds/layout digest into the solve cache key (Task 2's existing ``"atlas"`` key
-        field). ``render_domain="VERTEX"`` (the default) never builds a plan, so the solve
-        cache key and ``adapter.solve_scene``/``adapter._combine`` code path are exactly
-        what they were before the atlas existed.
-
-        Returns:
-            tuple[dict, Any, Path]: ``(history, atlas_plan, cache_root)`` -- ``atlas_plan``
-            is ``None`` in VERTEX mode (or when TEXEL mode found nothing eligible).
-        """
+        """Build the requested sampling plan and solve a fixed scene snapshot."""
         from visionsim.simulate.heatsim import adapter
 
         defaults, solver_cfg, cache_root, assignment = self._thermal_config(
@@ -1628,8 +1583,6 @@ class BlenderService(rpyc.Service):
             irradiance_scale=irradiance_scale,
             sim_time_s=sim_time_s,
             timestep_s=timestep_s,
-            domain=domain,
-            laplacian_backend=laplacian_backend,
             bake_samples=bake_samples,
             irradiance_texture_size=irradiance_texture_size,
             device=device,
@@ -1693,8 +1646,6 @@ class BlenderService(rpyc.Service):
         irradiance_scale: float = 100.0,
         sim_time_s: float = 1.0,
         timestep_s: float = 0.05,
-        domain: Literal["POINTS", "MESH"] = "POINTS",
-        laplacian_backend: Literal["ROBUST", "IGL"] = "ROBUST",
         bake_samples: int = 1024,
         irradiance_texture_size: int = 512,
         device: Literal["cuda", "cpu"] = "cuda",
@@ -1706,100 +1657,11 @@ class BlenderService(rpyc.Service):
         radiance_scale: float = 1.0,
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[16, 32] = 32,
-        animated: bool = False,
-        substeps_per_frame: int = 4,
-        frame_start: int | None = None,
-        frame_end: int | None = None,
-        every_n_frames: int = 1,
         assignments: str | None = None,
     ) -> None:
-        """Solve the scene's heat-transfer simulation and prepare it for thermal rendering.
-
-        Runs the (cache-aware) FEM solve, writes the solved per-vertex ``sim_temperature``
-        attribute onto every mesh, stamps a default temperature on any unsolved mesh, and
-        registers the ``temperature`` value AOV on the original materials.
-
-        Note:
-            This must be called before :meth:`include_thermal <visionsim.simulate.blender.BlenderService.exposed_include_thermal>`,
-            since the AOV is registered on the original materials and exposes the ``temperature`` render-layer
-            output socket that ``include_thermal`` wires into the compositor. The static solve produces one field, so the final
-            timestep (``timestep=-1``) is written to every frame. When ``animated`` is true (``domain="POINTS"``
-            only), a per-frame transient solve is run instead (``adapter.solve_scene_animated``): the per-object
-            frame history is stashed on the service and the first solved frame's field is written immediately so the
-            initial render is correct; subsequent frames are written by :meth:`exposed_render_frame`'s per-frame
-            hook. Requesting ``animated`` with ``domain="MESH"`` logs a warning and falls back to the static solve.
-            The full ``ThermalConfig`` field set is accepted so a single ``**asdict(config.thermal)`` dispatch can
-            drive this method; the output-only fields are ignored. When ``render_domain="TEXEL"``, atlas-eligible
-            objects (see ``atlas_texel_density``) are additionally solved at texel resolution and their final
-            temperatures are written to an EXR atlas image (``adapter.write_atlas``), loaded/packed as the
-            ``HeatSim_Temperature_Atlas`` Blender image before the AOV is registered so the shader can sample it;
-            those objects get only the OBJECT-level fallback temperature written to their mesh (their per-pixel
-            signal comes from the atlas at render time), not a per-vertex ``sim_temperature`` attribute. Requesting
-            ``animated`` with ``render_domain="TEXEL"`` logs a warning and falls back to ``render_domain="VERTEX"``
-            for that solve (the atlas is a static-solve-only feature; animated + TEXEL is out of scope).
-
-        Args:
-            radiance (bool, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
-                by ``include_thermal`` / the radiance render). Defaults to True.
-            preview (bool, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
-                by ``include_thermal`` / the radiance render). Defaults to True.
-            initial_temperature_K (float, optional): Default initial temperature, in Kelvin, for meshes without a
-                per-object value. Defaults to 295.0.
-            thermal_diffusivity_mm2_s (float, optional): Default thermal diffusivity in ``mm^2/s``. Defaults to 0.17.
-            density_kg_m3 (float, optional): Default material density in ``kg/m^3``. Defaults to 1330.0.
-            specific_heat_J_kgK (float, optional): Default specific heat in ``J/kg*K``. Defaults to 880.0.
-            emissivity (float, optional): Default surface emissivity in ``[0, 1]``. Defaults to 0.9.
-            irradiance_scale (float, optional): Scale factor applied to the computed irradiance (heating input).
-                Defaults to 100.0.
-            sim_time_s (float, optional): Total simulated time, in seconds, for the static scene solve. Defaults to 1.0.
-            timestep_s (float, optional): Solver timestep in seconds. Defaults to 0.05.
-            domain (str, optional): FEM domain, either ``"POINTS"`` (surface point cloud, recommended) or ``"MESH"``.
-                Defaults to ``"POINTS"``.
-            laplacian_backend (str, optional): Laplacian backend, either ``"ROBUST"`` or ``"IGL"``. Defaults to ``"ROBUST"``.
-            irradiance_source (str, optional): Where absorbed flux comes from. ``"DIRECT_KERNEL"`` is the
-                analytic path (lamp objects plus an SH sky, no indirect bounce); ``"CYCLES_BAKE"`` bakes
-                DIFFUSE DIRECT+INDIRECT per object, so emissive geometry and bounce contribute.
-                Defaults to ``"DIRECT_KERNEL"``.
-            bake_samples (int, optional): Cycles samples for the irradiance bake (``CYCLES_BAKE`` only), with
-                adaptive sampling disabled so this is a true per-texel count. Defaults to 1024.
-            irradiance_texture_size (int, optional): Resolution of the Cycles bakes, in pixels per side. Governs
-                the albedo bake and, under ``CYCLES_BAKE``, the irradiance bake. This is the bake's spatial
-                detail, as distinct from ``bake_samples``, which is its noise. Defaults to 512.
-            device (str, optional): Torch device for the solve, either ``"cuda"`` or ``"cpu"``; falls back to ``"cpu"``
-                if cuda is unavailable. Defaults to ``"cuda"``.
-            render_domain (str, optional): Where solved temperatures live for rendering: ``"VERTEX"`` (per-vertex,
-                byte-identical to before the atlas existed) or ``"TEXEL"`` (a shared texture atlas, sampled per-pixel
-                by the shader). Defaults to ``"VERTEX"``.
-            atlas_texel_density (float, optional): Target texels/m^2 for atlas-eligible objects (TEXEL mode only).
-                Defaults to 1500.0.
-            atlas_tile_min (int, optional): Minimum atlas tile side, in texels (TEXEL mode only). Defaults to 16.
-            atlas_tile_max (int, optional): Maximum atlas tile side, in texels (TEXEL mode only). Defaults to 512.
-            atlas_texel_soft_max (int, optional): Soft ceiling on total atlas texels + retained vertices (TEXEL mode
-                only); exceeding it rescales the effective density down uniformly and warns. Defaults to 500000.
-            radiance_scale (float, optional): Accepted for uniform thermal-config dispatch; not used by this method
-                (consumed by ``include_thermal`` / the radiance render). Defaults to 1.0.
-            exr_codec (str, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
-                by ``include_thermal`` / the radiance render). Defaults to ``"DWAA"``.
-            bit_depth (int, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
-                by ``include_thermal`` / the radiance render). Defaults to 32.
-            animated (bool, optional): Solve heat transfer per-frame as geometry animates (transient), instead of the
-                static solve. Requires ``domain="POINTS"``. Defaults to False.
-            substeps_per_frame (int, optional): Solver substeps per Blender frame in animated mode. Defaults to 4.
-            frame_start (int | None, optional): First frame of the animated solve; defaults to the scene's
-                ``frame_start`` when None. Defaults to None.
-            frame_end (int | None, optional): Last frame of the animated solve; defaults to the scene's
-                ``frame_end`` when None. Defaults to None.
-            every_n_frames (int, optional): Solve every Nth frame in animated mode (cost control); skipped frames
-                hold the last solved field. Defaults to 1.
-            assignments (str | None, optional): Path to a thermal material assignment sidecar
-                (``<scene>.thermal.json``). When set, thermal properties are resolved per material
-                slot; when unset the global defaults are used everywhere. Defaults to None.
-        """
+        """Solve a fixed thermal field, write attributes or atlas, and set up the AOV."""
         from visionsim.simulate.heatsim import adapter, thermal_shader
 
-        self._thermal_animated_history = None
-        self._thermal_animated_frames = None
-        self._thermal_animated_defaults = None
         self._thermal_atlas_plan = None
 
         # Cycles' persistent data keeps the device-side scene alive between frames, but
@@ -1813,72 +1675,6 @@ class BlenderService(rpyc.Service):
             self.log.info("thermal: disabling Cycles persistent data (stale AOV state between frames)")
             self.scene.render.use_persistent_data = False
 
-        if animated and domain == "MESH":
-            self.log.warning(
-                "thermal: animated mode requires domain='POINTS' (got 'MESH'); falling back "
-                "to the static solve for this scene."
-            )
-            animated = False
-
-        if animated and render_domain == "TEXEL":
-            self.log.warning(
-                "thermal: the texel atlas is a static-solve-only feature (animated + TEXEL "
-                "is out of scope); falling back to render_domain='VERTEX' for this solve."
-            )
-            render_domain = "VERTEX"
-
-        if animated:
-            defaults, solver_cfg, cache_root, assignment = self._thermal_config(
-                initial_temperature_K=initial_temperature_K,
-                thermal_diffusivity_mm2_s=thermal_diffusivity_mm2_s,
-                density_kg_m3=density_kg_m3,
-                specific_heat_J_kgK=specific_heat_J_kgK,
-                emissivity=emissivity,
-                irradiance_scale=irradiance_scale,
-                sim_time_s=sim_time_s,
-                timestep_s=timestep_s,
-                domain=domain,
-                laplacian_backend=laplacian_backend,
-                    bake_samples=bake_samples,
-                irradiance_texture_size=irradiance_texture_size,
-                device=device,
-                assignments=assignments,
-            )
-            self._thermal_assignment = assignment
-            resolved_frame_start = self.scene.frame_start if frame_start is None else frame_start
-            resolved_frame_end = self.scene.frame_end if frame_end is None else frame_end
-            history, frames = adapter.solve_scene_animated(
-                self.scene,
-                defaults=defaults,
-                solver_cfg=solver_cfg,
-                cache_root=cache_root,
-                frame_start=resolved_frame_start,
-                frame_end=resolved_frame_end,
-                every_n=every_n_frames,
-                substeps_per_frame=substeps_per_frame,
-                assignment=assignment,
-            )
-            self._thermal_animated_history = history
-            self._thermal_animated_frames = frames
-            self._thermal_animated_defaults = defaults
-            # Colormap range spans EVERY solved frame (not just the last), since the
-            # animated field keeps evolving -- a final-frame-only range would clip the
-            # preview against later, hotter frames.
-            self._thermal_temp_range = adapter.global_temperature_range_animated(history, initial_temperature_K)
-            # Stamp/register BEFORE writing frame 0: stamp_default_temperatures blindly
-            # sets heatsim_default_temperature = ambient on every mesh, which would
-            # clobber the correct per-object Dirichlet-reservoir fallback that
-            # _thermal_write_frame -> write_frame_attributes just set for any
-            # DIRICHLET_SOURCE absent from the animated history (e.g. a topology-
-            # changing fluid). Running it first means frame 0's write wins.
-            thermal_shader.stamp_default_temperatures(self.scene, default_K=initial_temperature_K)
-            thermal_shader.setup_temperature_aov(self.scene, self.view_layer)
-            # Write the first solved frame immediately so a render taken before
-            # exposed_render_frame's per-frame hook runs still sees a correct field.
-            if frames:
-                self._thermal_write_frame(frames[0])
-            return
-
         history, atlas_plan, cache_root = self._thermal_solve(
             initial_temperature_K=initial_temperature_K,
             thermal_diffusivity_mm2_s=thermal_diffusivity_mm2_s,
@@ -1888,8 +1684,6 @@ class BlenderService(rpyc.Service):
             irradiance_scale=irradiance_scale,
             sim_time_s=sim_time_s,
             timestep_s=timestep_s,
-            domain=domain,
-            laplacian_backend=laplacian_backend,
             bake_samples=bake_samples,
             irradiance_texture_size=irradiance_texture_size,
             device=device,
@@ -1942,33 +1736,6 @@ class BlenderService(rpyc.Service):
 
         thermal_shader.setup_temperature_aov(self.scene, self.view_layer)
 
-    def _thermal_write_frame(self, frame_number: int) -> None:
-        """Write the animated thermal field for the render frame nearest a solved timestep.
-
-        Called once from :meth:`exposed_prepare_thermal`'s animated branch (frame 0, right
-        after the animated solve) and per-frame from :meth:`exposed_render_frame`. Looks up
-        the latest solved frame at or before ``frame_number`` (``every_n_frames`` may hold the
-        field across skipped frames), builds a single-row ``{obj: (1, n_verts)}`` history
-        slice for that frame, and delegates to ``adapter.write_frame_attributes``. Objects
-        absent from the animated history (e.g. ``DIRICHLET_SOURCE`` fluids with changing
-        topology) fall through to the reservoir-temperature fallback there.
-
-        Args:
-            frame_number (int): The (Blender) frame currently being written/rendered.
-        """
-        frames = self._thermal_animated_frames
-        history = self._thermal_animated_history
-        defaults = self._thermal_animated_defaults
-        if not frames or history is None or defaults is None:
-            return
-
-        from visionsim.simulate.heatsim import adapter
-
-        solved = max((f for f in frames if f <= frame_number), default=frames[0])
-        idx = frames.index(solved)
-        frame_history = {name: hist[idx][None, :] for name, hist in history.items()}
-        adapter.write_frame_attributes(self.scene, frame_history, 0, defaults, assignment=self._thermal_assignment)
-
     @require_initialized_service
     def exposed_heatsim_solve(
         self,
@@ -1982,8 +1749,6 @@ class BlenderService(rpyc.Service):
         irradiance_scale: float = 100.0,
         sim_time_s: float = 1.0,
         timestep_s: float = 0.05,
-        domain: Literal["POINTS", "MESH"] = "POINTS",
-        laplacian_backend: Literal["ROBUST", "IGL"] = "ROBUST",
         bake_samples: int = 1024,
         irradiance_texture_size: int = 512,
         device: Literal["cuda", "cpu"] = "cuda",
@@ -1995,88 +1760,9 @@ class BlenderService(rpyc.Service):
         radiance_scale: float = 1.0,
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[16, 32] = 32,
-        animated: bool = False,
-        substeps_per_frame: int = 4,
-        frame_start: int | None = None,
-        frame_end: int | None = None,
-        every_n_frames: int = 1,
         assignments: str | None = None,
     ) -> None:
-        """Solve and cache the scene's heat-transfer simulation without preparing it for rendering.
-
-        This is the solve-and-cache half of
-        :meth:`prepare_thermal <visionsim.simulate.blender.BlenderService.exposed_prepare_thermal>`: it runs the
-        cache-aware FEM solve so the result is written to disk, but does not write the ``sim_temperature`` attribute,
-        stamp default temperatures, or register the ``temperature`` AOV. It exists for the optional standalone
-        solve command, letting an expensive solve be primed ahead of rendering. The full ``ThermalConfig`` field set
-        is accepted so a single ``**asdict(config.thermal)`` dispatch can drive this method; the output-only fields
-        are ignored. When ``render_domain="TEXEL"``, this also primes the atlas-eligible objects' texel solve (via
-        the same cache key ``prepare_thermal`` would use), but does NOT write the atlas EXR image -- that happens
-        in ``prepare_thermal``, which needs the loaded/packed image to wire the shader.
-
-        Note:
-            The ``animated``/``substeps_per_frame``/``frame_start``/``frame_end``/``every_n_frames`` fields are
-            accepted only to mirror ``ThermalConfig``; this standalone cache-priming path always runs the static
-            solve regardless of ``animated``.
-
-        Args:
-            radiance (bool, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
-                by ``include_thermal`` / the radiance render). Defaults to True.
-            preview (bool, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
-                by ``include_thermal`` / the radiance render). Defaults to True.
-            initial_temperature_K (float, optional): Default initial temperature, in Kelvin, for meshes without a
-                per-object value. Defaults to 295.0.
-            thermal_diffusivity_mm2_s (float, optional): Default thermal diffusivity in ``mm^2/s``. Defaults to 0.17.
-            density_kg_m3 (float, optional): Default material density in ``kg/m^3``. Defaults to 1330.0.
-            specific_heat_J_kgK (float, optional): Default specific heat in ``J/kg*K``. Defaults to 880.0.
-            emissivity (float, optional): Default surface emissivity in ``[0, 1]``. Defaults to 0.9.
-            irradiance_scale (float, optional): Scale factor applied to the computed irradiance (heating input).
-                Defaults to 100.0.
-            sim_time_s (float, optional): Total simulated time, in seconds, for the static scene solve. Defaults to 1.0.
-            timestep_s (float, optional): Solver timestep in seconds. Defaults to 0.05.
-            domain (str, optional): FEM domain, either ``"POINTS"`` (surface point cloud, recommended) or ``"MESH"``.
-                Defaults to ``"POINTS"``.
-            laplacian_backend (str, optional): Laplacian backend, either ``"ROBUST"`` or ``"IGL"``. Defaults to ``"ROBUST"``.
-            irradiance_source (str, optional): Where absorbed flux comes from. ``"DIRECT_KERNEL"`` is the
-                analytic path (lamp objects plus an SH sky, no indirect bounce); ``"CYCLES_BAKE"`` bakes
-                DIFFUSE DIRECT+INDIRECT per object, so emissive geometry and bounce contribute.
-                Defaults to ``"DIRECT_KERNEL"``.
-            bake_samples (int, optional): Cycles samples for the irradiance bake (``CYCLES_BAKE`` only), with
-                adaptive sampling disabled so this is a true per-texel count. Defaults to 1024.
-            irradiance_texture_size (int, optional): Resolution of the Cycles bakes, in pixels per side. Governs
-                the albedo bake and, under ``CYCLES_BAKE``, the irradiance bake. This is the bake's spatial
-                detail, as distinct from ``bake_samples``, which is its noise. Defaults to 512.
-            device (str, optional): Torch device for the solve, either ``"cuda"`` or ``"cpu"``; falls back to ``"cpu"``
-                if cuda is unavailable. Defaults to ``"cuda"``.
-            render_domain (str, optional): Where solved temperatures live for rendering: ``"VERTEX"`` (per-vertex,
-                byte-identical to before the atlas existed) or ``"TEXEL"`` (a shared texture atlas, sampled per-pixel
-                by the shader). Defaults to ``"VERTEX"``.
-            atlas_texel_density (float, optional): Target texels/m^2 for atlas-eligible objects (TEXEL mode only).
-                Defaults to 1500.0.
-            atlas_tile_min (int, optional): Minimum atlas tile side, in texels (TEXEL mode only). Defaults to 16.
-            atlas_tile_max (int, optional): Maximum atlas tile side, in texels (TEXEL mode only). Defaults to 512.
-            atlas_texel_soft_max (int, optional): Soft ceiling on total atlas texels + retained vertices (TEXEL mode
-                only); exceeding it rescales the effective density down uniformly and warns. Defaults to 500000.
-            radiance_scale (float, optional): Accepted for uniform thermal-config dispatch; not used by this method
-                (consumed by ``include_thermal`` / the radiance render). Defaults to 1.0.
-            exr_codec (str, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
-                by ``include_thermal`` / the radiance render). Defaults to ``"DWAA"``.
-            bit_depth (int, optional): Accepted for uniform thermal-config dispatch; not used by this method (consumed
-                by ``include_thermal`` / the radiance render). Defaults to 32.
-            animated (bool, optional): Accepted for uniform thermal-config dispatch; not used by this method (see
-                Note above). Defaults to False.
-            substeps_per_frame (int, optional): Accepted for uniform thermal-config dispatch; not used by this method.
-                Defaults to 4.
-            frame_start (int | None, optional): Accepted for uniform thermal-config dispatch; not used by this method.
-                Defaults to None.
-            frame_end (int | None, optional): Accepted for uniform thermal-config dispatch; not used by this method.
-                Defaults to None.
-            every_n_frames (int, optional): Accepted for uniform thermal-config dispatch; not used by this method.
-                Defaults to 1.
-            assignments (str | None, optional): Path to a thermal material assignment sidecar
-                (``<scene>.thermal.json``). When set, thermal properties are resolved per material
-                slot; when unset the global defaults are used everywhere. Defaults to None.
-        """
+        """Solve and cache a fixed thermal field without adding render outputs."""
         self._thermal_solve(
             initial_temperature_K=initial_temperature_K,
             thermal_diffusivity_mm2_s=thermal_diffusivity_mm2_s,
@@ -2086,8 +1772,6 @@ class BlenderService(rpyc.Service):
             irradiance_scale=irradiance_scale,
             sim_time_s=sim_time_s,
             timestep_s=timestep_s,
-            domain=domain,
-            laplacian_backend=laplacian_backend,
             bake_samples=bake_samples,
             irradiance_texture_size=irradiance_texture_size,
             device=device,
@@ -2112,8 +1796,6 @@ class BlenderService(rpyc.Service):
         irradiance_scale: float = 100.0,
         sim_time_s: float = 1.0,
         timestep_s: float = 0.05,
-        domain: Literal["POINTS", "MESH"] = "POINTS",
-        laplacian_backend: Literal["ROBUST", "IGL"] = "ROBUST",
         bake_samples: int = 1024,
         irradiance_texture_size: int = 512,
         device: Literal["cuda", "cpu"] = "cuda",
@@ -2125,98 +1807,9 @@ class BlenderService(rpyc.Service):
         radiance_scale: float = 1.0,
         exr_codec: EXR_CODECS = "DWAA",
         bit_depth: Literal[16, 32] = 32,
-        animated: bool = False,
-        substeps_per_frame: int = 4,
-        frame_start: int | None = None,
-        frame_end: int | None = None,
-        every_n_frames: int = 1,
         assignments: str | None = None,
     ) -> None:
-        """Sets up Blender compositor to include thermal outputs for rendered images.
-
-        Wires the per-vertex temperature map (in Kelvin) from the ``temperature`` AOV registered by
-        :meth:`prepare_thermal <visionsim.simulate.blender.BlenderService.exposed_prepare_thermal>` into the
-        compositor, optionally adds an inferno-colormap preview, and optionally arms a second gray-body render pass
-        that produces a thermal-camera radiance image (emitted at render time by
-        :meth:`render_current_frame <visionsim.simulate.blender.BlenderService.exposed_render_current_frame>`).
-
-        Note:
-            This must be called after ``prepare_thermal``, which registers the ``temperature`` AOV (and, in TEXEL
-            mode, loads/packs the ``HeatSim_Temperature_Atlas`` image the shader samples) and exposes the matching
-            render-layer output socket. The solver and material parameters (``initial_temperature_K`` through
-            ``device``, the ``render_domain``/``atlas_*`` fields, ``assignments``, and the ``animated``/
-            ``substeps_per_frame``/``frame_start``/``frame_end``/``every_n_frames`` animated fields) are accepted only to
-            mirror ``ThermalConfig`` and are consumed by ``prepare_thermal``; ``include_thermal`` itself ignores them.
-            For animated scenes, the per-frame field update happens later, in
-            :meth:`render_frame <visionsim.simulate.blender.BlenderService.exposed_render_frame>`.
-
-        Args:
-            radiance (bool, optional): If true, arm the gray-body thermal-camera radiance image as a second render
-                pass and register its per-frame output. Defaults to True.
-            preview (bool, optional): If true, also save an inferno-colormap PNG preview of the temperature map.
-                Defaults to True.
-            initial_temperature_K (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
-                ignored here. Default initial temperature, in Kelvin, for meshes without a per-object value.
-                Defaults to 295.0.
-            thermal_diffusivity_mm2_s (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal``
-                and ignored here. Default thermal diffusivity in ``mm^2/s``. Defaults to 0.17.
-            density_kg_m3 (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
-                here. Default material density in ``kg/m^3``. Defaults to 1330.0.
-            specific_heat_J_kgK (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
-                ignored here. Default specific heat in ``J/kg*K``. Defaults to 880.0.
-            emissivity (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
-                here. Default surface emissivity in ``[0, 1]``. Defaults to 0.9.
-            irradiance_scale (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
-                ignored here. Scale factor applied to the computed irradiance. Defaults to 100.0.
-            sim_time_s (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
-                here. Total simulated time in seconds. Defaults to 1.0.
-            timestep_s (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
-                here. Solver timestep in seconds. Defaults to 0.05.
-            domain (str, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored here.
-                FEM domain, either ``"POINTS"`` or ``"MESH"``. Defaults to ``"POINTS"``.
-            laplacian_backend (str, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
-                ignored here. Laplacian backend, either ``"ROBUST"`` or ``"IGL"``. Defaults to ``"ROBUST"``.
-            irradiance_source (str, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
-                ignored here. Where absorbed flux comes from, either ``"DIRECT_KERNEL"`` or ``"CYCLES_BAKE"``.
-                Defaults to ``"DIRECT_KERNEL"``.
-            bake_samples (int, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
-                here. Cycles samples for the irradiance bake, adaptive sampling disabled. Defaults to 1024.
-            irradiance_texture_size (int, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal``
-                and ignored here. Resolution of the Cycles bakes in pixels per side. Defaults to 512.
-            device (str, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored here.
-                Torch device, either ``"cuda"`` or ``"cpu"``. Defaults to ``"cuda"``.
-            render_domain (str, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
-                here. Where solved temperatures live for rendering, ``"VERTEX"`` or ``"TEXEL"``. Defaults to
-                ``"VERTEX"``.
-            atlas_texel_density (float, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
-                ignored here. Target texels/m^2 for atlas-eligible objects. Defaults to 1500.0.
-            atlas_tile_min (int, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
-                here. Minimum atlas tile side, in texels. Defaults to 16.
-            atlas_tile_max (int, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
-                here. Maximum atlas tile side, in texels. Defaults to 512.
-            atlas_texel_soft_max (int, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
-                ignored here. Soft ceiling on total atlas texels + retained vertices. Defaults to 500000.
-            radiance_scale (float, optional): Gray-body emission magnitude knob for the ``thermal_radiance`` render.
-                Defaults to 1.0.
-            exr_codec (str, optional): Codec used to compress the temperature and radiance EXR files. Options vary
-                depending on the version of Blender, with the following being broadly available:
-                ('NONE', 'PXR24', 'ZIP', 'PIZ', 'RLE', 'ZIPS', 'DWAA', 'DWAB'). Defaults to ``"DWAA"``.
-            bit_depth (int, optional): Bit depth per channel for the temperature and radiance EXRs, either 16 or 32.
-                Defaults to 32.
-            animated (bool, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and ignored
-                here. Defaults to False.
-            substeps_per_frame (int, optional): Mirrors ``ThermalConfig`` ; consumed by ``prepare_thermal`` and
-                ignored here. Defaults to 4.
-            frame_start (int | None, optional): Mirrors ``ThermalConfig`` ; consumed by ``prepare_thermal`` and
-                ignored here. Defaults to None.
-            frame_end (int | None, optional): Mirrors ``ThermalConfig`` ; consumed by ``prepare_thermal`` and
-                ignored here. Defaults to None.
-            every_n_frames (int, optional): Mirrors ``ThermalConfig`` ; consumed by ``prepare_thermal`` and
-                ignored here. Defaults to 1.
-            assignments (str | None, optional): Mirrors ``ThermalConfig``; consumed by ``prepare_thermal`` and
-                ignored here. Path to a thermal material assignment sidecar (``<scene>.thermal.json``). Defaults
-                to None.
-        """
+        """Add the temperature AOV and optional preview and radiance outputs."""
         # Temperature ground-truth output (Kelvin), driven by the "temperature" AOV
         # registered by prepare_thermal via setup_temperature_aov.
         self._include_output(
@@ -2784,27 +2377,8 @@ class BlenderService(rpyc.Service):
 
     @require_initialized_service
     def exposed_render_frame(self, frame_number: int, allow_skips=True, dry_run=False) -> None:
-        """Same as first setting current frame then rendering it.
-
-        Warning:
-            Calling this has the side-effect of changing the current frame.
-
-        Note:
-            If :meth:`prepare_thermal <exposed_prepare_thermal>` ran an animated  solve,
-            this writes that frame's solved thermal field (via ``_thermal_write_frame``)
-            before rendering, so both the temperature AOV and the gray-body radiance pass
-            reflect the current frame -- Cycles reads ``sim_temperature`` live, so no
-            compositor changes are needed.
-
-        Args:
-            frame_number (int): frame to render
-            allow_skips (bool, optional): if true, blender will not re-render and overwrite existing frames.
-                This does not however apply to depth/normals/etc, which cannot be skipped. Defaults to True.
-            dry_run (bool, optional): if true, nothing will be rendered at all. Defaults to False.
-        """
+        """Render one camera frame using the current scene state."""
         self.exposed_set_current_frame(frame_number)
-        if getattr(self, "_thermal_animated_history", None) is not None:
-            self._thermal_write_frame(frame_number)
         self.exposed_render_current_frame(allow_skips=allow_skips, dry_run=dry_run)
 
     @require_initialized_service
