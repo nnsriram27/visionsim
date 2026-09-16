@@ -221,6 +221,9 @@ def events(
                 luma = gaussian_filter(luma, sigma=blur_sigma)
             events = emulator.generate_events(luma, idx / int(fps))
 
+            if preview_step is not None and preview_step > 0 and viz is None:
+                viz = np.ones_like(frame) * 255
+
             if events is not None:
                 events[:, 0] *= 1e6
                 rate = len(events) * int(fps) / 1e3
@@ -229,23 +232,20 @@ def events(
                     np.savetxt(out, events.astype(int), fmt="%d", delimiter=",")
 
                 if preview_step is not None and preview_step > 0:
-                    if viz is None:
-                        viz = np.ones_like(frame) * 255
-
                     _, px, py, _ = events[events[:, -1] == 1].T.astype(int)
                     _, nx, ny, _ = events[events[:, -1] == -1].T.astype(int)
                     viz[ny, nx, :3] = [255, 0, 0]
                     viz[py, px, :3] = [0, 0, 255]
-
-                    if (idx + 1) % preview_step == 0:
-                        folder_index = f"{idx // ITEMS_PER_SUBFOLDER:04}"
-                        frame_index = f"{idx % ITEMS_PER_SUBFOLDER:0{INDEX_PADDING}}.png"
-                        outpath = output_dir / "preview" / folder_index / frame_index
-                        outpath.parent.mkdir(parents=True, exist_ok=True)
-                        iio.imwrite(outpath, viz)
-                        viz = None
             else:
                 rate = 0
+
+            if preview_step is not None and preview_step > 0 and (idx + 1) % preview_step == 0:
+                folder_index = f"{idx // ITEMS_PER_SUBFOLDER:04}"
+                frame_index = f"{idx % ITEMS_PER_SUBFOLDER:0{INDEX_PADDING}}.png"
+                outpath = output_dir / "preview" / folder_index / frame_index
+                outpath.parent.mkdir(parents=True, exist_ok=True)
+                iio.imwrite(outpath, viz)
+                viz = None
 
             progress.update(task, description=f"Writing DVS data ({rate:.1f} KEV/s)", advance=1)
 

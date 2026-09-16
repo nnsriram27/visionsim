@@ -729,6 +729,31 @@ class BlenderService(rpyc.Service):
         return self._camera
 
     @require_initialized_service
+    def exposed_select_camera(self, name: str) -> None:
+        """Select a scene camera by name and make it active.
+
+        This is useful for blend files containing multiple camera rigs, especially
+        when the camera saved as active is not the one intended for dataset output.
+
+        Args:
+            name: Exact Blender object name of the camera to select.
+
+        Raises:
+            ValueError: If no object with ``name`` exists or the named object is not
+                a camera in the active scene.
+        """
+        obj = self.scene.objects.get(name)
+        if obj is None:
+            raise ValueError(f"Camera '{name}' was not found in scene '{self.scene.name}'.")
+        if obj.type != "CAMERA":
+            raise ValueError(f"Object '{name}' is not a camera (got type '{obj.type}').")
+
+        self.scene.camera = obj
+        self._camera = obj
+        self.view_layer.update()
+        self.log.info(f"Selected active camera: '{name}'.")
+
+    @require_initialized_service
     def get_parents(self, obj: bpy.types.Object) -> list[bpy.types.Object]:
         """Recursively retrieves parent objects of a given object in Blender
 
@@ -2514,9 +2539,9 @@ class BlenderService(rpyc.Service):
         Returns:
             dict[str, Any]: dictionary containing camera parameters.
         """
-        if self.camera.data.type != "PERSP":
+        if self.camera.data.type not in {"PERSP", "PANO"}:
             raise RuntimeError(
-                f"Only perspective cameras are currently supported, got '{self.camera.data.type}' instead."
+                f"Only perspective and panoramic cameras are currently supported, got '{self.camera.data.type}' instead."
             )
 
         info = {
@@ -2538,13 +2563,27 @@ class BlenderService(rpyc.Service):
             ]
         }
 
-        # Note: This might be a blender bug, but when height==width,
-        #   angle_x != angle_y, so here we just use angle.
         scale = self.scene.render.resolution_percentage / 100.0
         info["w"] = int(self.scene.render.resolution_x * scale)
         info["h"] = int(self.scene.render.resolution_y * scale)
-        info["fl_x"] = float(1 / 2 * self.scene.render.resolution_x / np.tan(1 / 2 * self.camera.data.angle))
-        info["fl_y"] = float(1 / 2 * self.scene.render.resolution_y / np.tan(1 / 2 * self.camera.data.angle))
+        if self.camera.data.type == "PERSP":
+            # Note: This might be a blender bug, but when height==width,
+            # angle_x != angle_y, so here we just use angle.
+            info["fl_x"] = float(1 / 2 * self.scene.render.resolution_x / np.tan(1 / 2 * self.camera.data.angle))
+            info["fl_y"] = float(1 / 2 * self.scene.render.resolution_y / np.tan(1 / 2 * self.camera.data.angle))
+        else:
+            # Store the radial focal scale for panoramic cameras. For Blender's
+            # fisheye models this is not a pinhole focal length: downstream code
+            # must inspect ``type`` before applying a perspective projection.
+            fisheye_lens = float(self.camera.data.fisheye_lens)
+            focal_pixels = fisheye_lens / float(self.camera.data.sensor_width) * self.scene.render.resolution_x
+            info["fl_x"] = focal_pixels
+            info["fl_y"] = focal_pixels
+            info["angle"] = float(self.camera.data.fisheye_fov)
+            info["angle_x"] = float(self.camera.data.fisheye_fov)
+            info["angle_y"] = float(self.camera.data.fisheye_fov)
+            info["lens"] = fisheye_lens
+            info["type"] = f"PANO:{self.camera.data.panorama_type}"
         info["shift_x"] *= self.scene.render.resolution_x * scale
         info["shift_y"] *= self.scene.render.resolution_y * scale
         info["cx"] = 1 / 2 * self.scene.render.resolution_x * scale + info["shift_x"]
@@ -3097,7 +3136,12 @@ class BlenderClient:
     def wait(self) -> None:
         """Block and await any async results."""
         if self.awaitable:
-            self.awaitable.wait()
+            awaitable = self.awaitable
+            awaitable.wait()
+            # Accessing ``value`` propagates exceptions raised by the remote
+            # Blender service instead of silently treating a failed job as done.
+            _ = awaitable.value
+            self.awaitable = None
 
     def __enter__(self) -> Self:
         """Connect to the render server via a context manager.
@@ -3456,7 +3500,10 @@ class BlenderClients(tuple):
 
         # Equivalent to more-itertools' distribute (round-robin)
         children = itertools.tee(frame_numbers, len(self))
-        frame_chunks = [itertools.islice(it, index, None, len(self)) for index, it in enumerate(children)]
+        # Materialize each chunk before crossing the RPyC boundary. Passing an
+        # ``islice`` netref can truncate a long sequence after its first value
+        # when the remote service consumes it asynchronously.
+        frame_chunks = [list(itertools.islice(it, index, None, len(self))) for index, it in enumerate(children)]
 
         for client, frames in zip(self, frame_chunks):
             client.render_frames_async(frames, allow_skips=allow_skips, dry_run=dry_run, update_fn=ignore_total)
@@ -3519,17 +3566,12 @@ class BlenderClients(tuple):
 
     def wait(self) -> None:
         """Wait for all clients at once."""
-        awaitables = [client.awaitable for client in self]
-
-        while awaitables:
-            awaitables = [a for a in awaitables if a._waiting()]
-
-            for awaitable in awaitables:
-                # Here we query the property `awaitable.ready` which enables
-                # the underlying connection to poll and serve any incoming events.
-                # Roughly equivalent to the following (but does not rely on private API):
-                #     awaitable._conn.serve(awaitable._ttl, waiting=awaitable._waiting)
-                _ = awaitable.ready
+        # Every asynchronous request has already been dispatched, so waiting on
+        # the clients in sequence still lets all Blender processes work in
+        # parallel. Unlike polling ``_waiting()``, this cannot exit in the small
+        # interval before an AsyncResult enters its waiting state.
+        for client in self:
+            client.wait()
 
 
 if __name__ == "__main__":

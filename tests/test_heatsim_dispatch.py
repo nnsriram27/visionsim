@@ -29,6 +29,8 @@ class _RecordingClient:
     def __getattr__(self, name: str):
         def _record(*args, **kwargs):
             self.calls.append((name, args, kwargs))
+            if name == "common_animation_range":
+                return range(1, 11)
 
         return _record
 
@@ -64,3 +66,41 @@ def test_render_job_skips_thermal_when_disabled():
     names = [name for name, _, _ in client.calls]
     assert "prepare_thermal" not in names, names
     assert "include_thermal" not in names, names
+
+
+def test_render_job_selects_named_camera_after_initialize():
+    client = _RecordingClient()
+    config = RenderConfig(camera_name="Stereo Rig")
+
+    render_job(client, "scene.blend", "out", config=config, dry_run=True)
+
+    names = [name for name, _, _ in client.calls]
+    assert names[:2] == ["initialize", "select_camera"]
+    assert client.calls[1][1] == ("Stereo Rig",)
+
+
+def test_render_job_preserves_blend_active_camera_by_default():
+    client = _RecordingClient()
+
+    render_job(client, "scene.blend", "out", config=RenderConfig(), dry_run=True)
+
+    assert "select_camera" not in [name for name, _, _ in client.calls]
+
+
+def test_camera_offset_only_bakes_requested_render_frames():
+    client = _RecordingClient()
+    config = RenderConfig(camera_offset=(-0.0325, 0.0, 0.0))
+
+    render_job(
+        client,
+        "scene.blend",
+        "out",
+        config=config,
+        frame_start=2,
+        frame_end=8,
+        frame_step=3,
+        dry_run=True,
+    )
+
+    current_frames = [args[0] for name, args, _ in client.calls if name == "set_current_frame"]
+    assert current_frames == [2, 5, 8, 2, 5, 8]

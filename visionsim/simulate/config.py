@@ -269,6 +269,8 @@ class ThermalConfig:
 class RenderConfig:
     executable: Path | None = None
     """Path to blender executable"""
+    camera_name: str | None = None
+    """Name of the scene camera to make active before rendering. Defaults to the blend file's active camera."""
     height: int | None = None
     """Height of rendered frames in pixels"""
     width: int | None = None

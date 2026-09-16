@@ -45,6 +45,8 @@ def render_job(
             API <https://rich.readthedocs.io/en/stable/reference/progress.html#rich.progress.Progress.update>`_.
     """
     client.initialize(blend_file, root)
+    if config.camera_name is not None:
+        client.select_camera(config.camera_name)
     client.set_resolution(height=config.height, width=config.width, resolution_percentage=config.resolution_percentage)
     client.use_animations(config.use_animations)
     client.load_addons(*(config.addons or []))
@@ -86,10 +88,15 @@ def render_job(
     if config.use_motion_blur is not None:
         client.use_motion_blur(config.use_motion_blur)
     if config.camera_offset is not None:
-        for frame_number in client.common_animation_range():
+        animation_frames = client.common_animation_range()
+        offset_start = frame_start if frame_start is not None else animation_frames.start
+        offset_end = frame_end if frame_end is not None else animation_frames.stop - 1
+        offset_step = frame_step if frame_step is not None else animation_frames.step
+        offset_frames = range(offset_start, offset_end + 1, offset_step)
+        for frame_number in offset_frames:
             client.set_current_frame(frame_number)
             client.set_camera_keyframe(frame_number)
-        for frame_number in client.common_animation_range():
+        for frame_number in offset_frames:
             client.set_current_frame(frame_number)
             client.offset_camera(config.camera_offset)
             client.set_camera_keyframe(frame_number)

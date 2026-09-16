@@ -358,6 +358,10 @@ class BlenderService(rpyc.Service):
         """Get active camera, detect when it changes."""
 
     @require_initialized_service
+    def exposed_select_camera(self, name: str) -> None:
+        """Select a scene camera by name and make it active."""
+
+    @require_initialized_service
     def get_parents(self, obj: bpy.types.Object) -> list[bpy.types.Object]:
         """Recursively retrieves parent objects of a given object in Blender
 
@@ -2364,6 +2368,10 @@ class BlenderClient:
         """
 
     @type_check_only
+    def select_camera(self, name: str) -> None:
+        """Select a scene camera by name and make it active."""
+
+    @type_check_only
     def set_camera_keyframe(self, frame_num: int, matrix: npt.ArrayLike | None = None) -> None:
         """Set camera keyframe at given frame number.
         If camera matrix is not supplied, currently set camera position/rotation/scale will be used,
@@ -3516,6 +3524,10 @@ class BlenderClients(tuple):
         Args:
             offset (npt.ArrayLike): Amount to offset by (x, y, z) in local coordinates.
         """
+
+    @type_check_only
+    def select_camera(self, name: str) -> None:
+        """Select a scene camera by name and make it active."""
 
     @type_check_only
     def set_camera_keyframe(self, frame_num: int, matrix: npt.ArrayLike | None = None) -> None:
