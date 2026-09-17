@@ -129,4 +129,5 @@ uv.lock
 # Local planning / working docs — preserved on the heatsim-devdocs branch, kept out of heatsim
 docs/superpowers/
 docs/thermal_integration/
+docs/notes/
 .superpowers/
