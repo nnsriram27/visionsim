@@ -518,9 +518,20 @@ def build_atlas_plan(scene: Any, sim_objects: list, cfg: dict) -> AtlasPlan:
         # UVs + material indices back from the EVALUATED mesh - the same mesh
         # `verts`/`faces` above came from - so face indices line up 1:1 regardless of
         # whether the base and evaluated vertex counts agree.
-        _prepare_bake_uv(obj)
-        _write_atlas_uv_layer(obj, tile, layout.atlas_size, BAKE_UV_LAYER_NAME)
-        uv_result = _extract_evaluated_face_uv_and_slots(obj, ATLAS_UV_LAYER_NAME)
+        # Atlas UVs are read by name; making the bake UV render-active is only
+        # temporary. Preserve the authored RGB UVs before any layer is created,
+        # including failures during unwrap, atlas write or evaluated-mesh read.
+        if bpy is not None:
+            from visionsim.simulate.heatsim.uv_utils import restore_uv_states, snapshot_uv_states
+
+            uv_snapshot = snapshot_uv_states([obj])
+        try:
+            _prepare_bake_uv(obj)
+            _write_atlas_uv_layer(obj, tile, layout.atlas_size, BAKE_UV_LAYER_NAME)
+            uv_result = _extract_evaluated_face_uv_and_slots(obj, ATLAS_UV_LAYER_NAME)
+        finally:
+            if bpy is not None:
+                restore_uv_states(uv_snapshot)
         if uv_result is None:
             raise RuntimeError(f"{name!r}: evaluated mesh has no usable {ATLAS_UV_LAYER_NAME} layer")
         atlas_loop_uv, face_material_index = uv_result
