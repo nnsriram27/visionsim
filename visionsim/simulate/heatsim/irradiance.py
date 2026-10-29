@@ -274,22 +274,43 @@ def _copy_bake_node_groups(mat: bpy.types.Material, state: _BakeMaterialUVOverri
 
 
 def _apply_uv_override_to_material(mat: bpy.types.Material, uv_name: str) -> None:
-    """Pin top-level implicit image UVs in a private material.
+    """Pin implicit source UVs and tangent bases throughout a private shader.
 
-    This retains the existing UV behavior. Linked coordinate paths, nested
-    implicit UVs and tangent-space normal bases are handled in a separate change.
+    The bake UV is temporarily render-active. Explicit source UVs keep image
+    sampling, linked Mapping paths and tangent normals independent of that
+    target. Named UVs, other coordinate outputs and instancer UVs stay authored.
+    Node groups have already been copied by ``_copy_bake_node_groups``.
     """
-    nodes, links = mat.node_tree.nodes, mat.node_tree.links
-    uv_node = nodes.new("ShaderNodeUVMap")
-    uv_node.name = f"HeatSim_OrigUV__{uv_name}"
-    uv_node.label = "HeatSim Orig UV (Bake Override)"
-    uv_node.uv_map = uv_name
-    for node in nodes:
-        if node.type != "TEX_IMAGE":
-            continue
-        vector = node.inputs.get("Vector")
-        if vector is not None and not vector.is_linked:
-            links.new(uv_node.outputs["UV"], vector)
+    visited = set()
+
+    def patch(tree):
+        if tree.as_pointer() in visited:
+            return
+        visited.add(tree.as_pointer())
+        nodes, links = tree.nodes, tree.links
+        uv_node = nodes.new("ShaderNodeUVMap")
+        uv_node.name = f"HeatSim_OrigUV__{uv_name}"
+        uv_node.label = "HeatSim Orig UV (Bake Override)"
+        uv_node.uv_map = uv_name
+        for node in list(nodes):
+            if node.type == "GROUP" and node.node_tree is not None:
+                patch(node.node_tree)
+            elif node.type == "TEX_COORD" and not node.from_instancer:
+                # Rewire the UV output, retaining any downstream Mapping chain.
+                for link in list(node.outputs["UV"].links):
+                    links.new(uv_node.outputs["UV"], link.to_socket)
+            elif node.type == "TEX_IMAGE":
+                vector = node.inputs.get("Vector")
+                if vector is not None and not vector.is_linked:
+                    links.new(uv_node.outputs["UV"], vector)
+            elif (
+                (node.type == "UVMAP" and node != uv_node and not node.from_instancer)
+                or (node.type == "NORMAL_MAP" and node.space == "TANGENT")
+                or (node.type == "TANGENT" and node.direction_type == "UV_MAP")
+            ) and not node.uv_map:
+                node.uv_map = uv_name
+
+    patch(mat.node_tree)
 
 
 def _install_bake_uv_material_overrides(objects: list[bpy.types.Object], uv_snapshot) -> _BakeMaterialUVOverride:
