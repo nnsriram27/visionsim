@@ -166,22 +166,69 @@ def prepare_object_bake_uv(obj: bpy.types.Object) -> None:
                 logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
 
 
+BAKE_IMAGE_OWNER_KEY = "heatsim_bake_owner"
+BAKE_IMAGE_KEY = "heatsim_bake_key"
+BAKE_IMAGE_OWNER = "visionsim.bake.v1"
+
+
+def is_bake_image(image, base_name: str, name_suffix: str) -> bool:
+    """Recognize a local, explicitly owned output rather than trusting its name."""
+    return bool(
+        image is not None
+        and image.library is None
+        and image.override_library is None
+        and image.is_float
+        and (
+            image.source == "GENERATED"
+            or (image.source == "FILE" and image.packed_file is not None and not image.filepath_raw)
+        )
+        and image.get(BAKE_IMAGE_OWNER_KEY) == BAKE_IMAGE_OWNER
+        and image.get(BAKE_IMAGE_KEY) == f"{base_name}:{name_suffix}"
+    )
+
+
+def resolve_bake_image(base_name: str, name_suffix: str, preferred_name: str | None = None):
+    """Read an owned image by its recorded alias or logical key, without editing it."""
+    for name in (preferred_name, f"{base_name}_{name_suffix}"):
+        image = bpy.data.images.get(name) if name else None
+        if is_bake_image(image, base_name, name_suffix):
+            return image
+    return next((image for image in bpy.data.images if is_bake_image(image, base_name, name_suffix)), None)
+
+
 def _ensure_bake_image(base_name: str, name_suffix: str, size: int):
-    """Create or reuse a float image that receives baked data."""
+    """Reuse only owned scratch buffers; shader inputs and authored images stay intact."""
     size = max(16, int(size))
-    img_name = f"{base_name}_{name_suffix}"
-    image = bpy.data.images.get(img_name)
+    candidates = [image for image in bpy.data.images if is_bake_image(image, base_name, name_suffix)]
+    # A previous output may now be an RGB texture. Ownership alone must not let
+    # a new bake overwrite a referenced image or introduce a circular input.
+    image = next((image for image in candidates if image.users == int(image.use_fake_user)), None)
     if image is None:
-        image = bpy.data.images.new(img_name, width=size, height=size, alpha=False, float_buffer=True)
-    else:
-        if image.size[0] != size or image.size[1] != size:
-            image.scale(size, size)
+        # Blender chooses a unique suffix if an authored image has this name.
+        image = bpy.data.images.new(
+            f"{base_name}_{name_suffix}", width=size, height=size, alpha=False, float_buffer=True
+        )
+        image[BAKE_IMAGE_OWNER_KEY] = BAKE_IMAGE_OWNER
+        image[BAKE_IMAGE_KEY] = f"{base_name}:{name_suffix}"
+    elif image.source == "FILE":
+        # This is an unused, owned packed output. Rebuild its scratch buffer
+        # instead of letting a later reload restore the old packed dimensions.
+        image.unpack(method="REMOVE")
+        image.source = "GENERATED"
+    # Object metadata stores image names, which do not count as Blender ID users.
+    image.use_fake_user = True
+    image.use_generated_float = True
+    image.generated_width = size
+    image.generated_height = size
     # Prefer linear/non-color spaces; we treat all bake outputs numerically.
     preferred = ("Linear", "Linear Rec.709", "Non-Color")
     for name in preferred:
         if name in image.colorspace_settings.bl_rna.properties["name"].enum_items:
-            image.colorspace_settings.name = name
+            if image.colorspace_settings.name != name:
+                image.colorspace_settings.name = name
             break
+    if tuple(image.size) != (size, size):
+        image.scale(size, size)
     # Clear previous contents
     if image.pixels:
         image.pixels.foreach_set([0.0] * (len(image.pixels)))

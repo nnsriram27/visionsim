@@ -1744,6 +1744,37 @@ class BlenderService(rpyc.Service):
         )
         return history, atlas_plan, cache_root
 
+    @staticmethod
+    def _thermal_atlas_reader_is_managed(material: Any, node: Any) -> bool:
+        """Allow replacement only for thermal readers, never ordinary RGB paths."""
+        scale = material.get("heatsim_thermal_radiance_scale")
+        if (
+            isinstance(scale, (int, float))
+            and material.name == f"HeatSim_ThermalShader_vs_{scale:.6g}"
+            and "heatsim_thermal_default_emissivity" in material
+        ):
+            return True
+        visited = set()
+        pending = [node]
+        temperature_aov = False
+        while pending:
+            current = pending.pop()
+            if current.as_pointer() in visited:
+                continue
+            visited.add(current.as_pointer())
+            for output in current.outputs:
+                for link in output.links:
+                    target = link.to_node
+                    if target.type == "OUTPUT_MATERIAL":
+                        return False
+                    if target.type == "OUTPUT_AOV":
+                        temperature_aov |= (
+                            getattr(target, "aov_name", None) == "temperature" or target.name == "temperature"
+                        )
+                    else:
+                        pending.append(target)
+        return temperature_aov
+
     def _thermal_load_pack_atlas_image(self, atlas_path: Path) -> None:
         """Load the EXR :func:`adapter.write_atlas` wrote and (re)register it as the
         ``HeatSim_Temperature_Atlas`` Blender image, packed so the shader (built right
@@ -1759,7 +1790,7 @@ class BlenderService(rpyc.Service):
             raise RuntimeError(f"Image {ATLAS_IMAGE_NAME!r} is user-owned; cannot replace it with a thermal atlas")
         bound_nodes = (
             [
-                node
+                (mat, node)
                 for mat in bpy.data.materials
                 if mat.use_nodes and mat.node_tree is not None
                 for node in mat.node_tree.nodes
@@ -1769,13 +1800,18 @@ class BlenderService(rpyc.Service):
             else []
         )
         if existing is not None:
+            # A generated atlas can later become an authored RGB texture. Only
+            # replace it when every reference is an identified thermal reader.
+            unknown_users = existing.users - int(existing.use_fake_user) > len(bound_nodes)
+            if unknown_users or any(not self._thermal_atlas_reader_is_managed(mat, node) for mat, node in bound_nodes):
+                raise RuntimeError(f"Image {ATLAS_IMAGE_NAME!r} has RGB or unrecognized users; cannot replace it safely")
             bpy.data.images.remove(existing)
         image = bpy.data.images.load(str(atlas_path))
         image.name = ATLAS_IMAGE_NAME
         image["heatsim_generated"] = True
         image.colorspace_settings.name = "Non-Color"
         image.pack()
-        for node in bound_nodes:
+        for _, node in bound_nodes:
             node.image = image
 
     @require_initialized_service
