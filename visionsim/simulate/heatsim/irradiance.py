@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import bpy  # type: ignore[import-not-found]
 import numpy as np
 
+from .material_slots import MaterialSlotState, restore_material_slots, set_material_override, snapshot_material_slots
 from .names import ALBEDO_LAYER_NAME, BAKE_UV_LAYER_NAME, IRRADIANCE_LAYER_NAME
 from .physics import CYCLES_LOUT_TO_IRRADIANCE
 from .uv_utils import restore_uv_states, snapshot_uv_states
@@ -196,46 +197,32 @@ def _ensure_irradiance_image(name_suffix: str, size: int):
 
 
 def _prepare_image_nodes_for_bake(obj, image, node_name: str, node_label: str):
-    """Ensure each material has an image texture node set active for baking."""
-    if not obj.material_slots:
-        mat = bpy.data.materials.new(name="HeatSim_Irradiance_Bake")
-        mat.use_nodes = True
-        obj.data.materials.append(mat)
-
+    """Add a fresh target to each private material, preserving copied source nodes."""
+    seen = set()
     for slot in obj.material_slots:
         mat = slot.material
-        if mat is None:
+        if mat is None or mat.as_pointer() in seen:
             continue
-        # For shared bake, we might reuse materials if they are shared, but we need to ensure
-        # the node exists in all of them.
-        if not mat.use_nodes:
-            mat.use_nodes = True
+        seen.add(mat.as_pointer())
         nodes = mat.node_tree.nodes
-        img_node = nodes.get(node_name)
-        if img_node is None:
-            img_node = nodes.new("ShaderNodeTexImage")
-            img_node.name = node_name
-            img_node.label = node_label
+        # An authored texture can already use this name. Reusing it would change
+        # the bake's source image, even though the material itself is private.
+        img_node = nodes.new("ShaderNodeTexImage")
+        img_node.name = node_name
+        img_node.label = node_label
         img_node.image = image
         nodes.active = img_node
-        for n in nodes:
-            n.select = False
-        img_node.select = True
+        for node in nodes:
+            node.select = node == img_node
 
 
 @dataclass
 class _BakeMaterialUVOverride:
-    """
-    Temporary material edits to ensure textures are sampled using the *original* UV map,
-    even while the bake target UV is switched to `BAKE_UV_LAYER_NAME`.
-    """
+    """Private bake resources and the original assignments they replace."""
 
-    # (obj, slot_index, original_material) entries for slots we temporarily replaced with a copy
-    replaced_slots: list[tuple[bpy.types.Object, int, bpy.types.Material | None]]
-    # (material, uv_node_name) for UVMap nodes we created
-    created_uv_nodes: list[tuple[bpy.types.Material, str]]
-    # (material, tex_node_name) for TexImage nodes we connected
-    patched_tex_nodes: list[tuple[bpy.types.Material, str]]
+    objects: list[tuple[bpy.types.Object, MaterialSlotState]]
+    materials: list[bpy.types.Material]
+    node_groups: list[bpy.types.ShaderNodeTree]
 
 
 def _pick_source_uv_for_object(
@@ -264,164 +251,124 @@ def _pick_source_uv_for_object(
     return None
 
 
-def _apply_uv_override_to_material(mat: bpy.types.Material, uv_name: str) -> tuple[str | None, list[str]]:
-    """
-    Ensure every unlinked Image Texture node samples using a specific UV map.
-    Returns (created_uv_node_name, patched_tex_node_names).
-    """
-    if mat is None or not mat.use_nodes or mat.node_tree is None:
-        return None, []
-    nt = mat.node_tree
-    nodes = nt.nodes
-    links = nt.links
+def _copy_bake_node_groups(mat: bpy.types.Material, state: _BakeMaterialUVOverride) -> None:
+    """Copy nested groups while retaining sharing inside this private material."""
+    copies = {}
 
-    # Create a deterministic UVMap node for this bake override
-    uv_node_name = f"HeatSim_OrigUV__{uv_name}"
-    uv_node = nodes.get(uv_node_name)
-    created = False
-    if uv_node is None:
-        uv_node = nodes.new("ShaderNodeUVMap")
-        uv_node.name = uv_node_name
-        uv_node.label = "HeatSim Orig UV (Bake Override)"
-        created = True
-    try:
-        uv_node.uv_map = uv_name
-    except Exception:
-        logging.getLogger(__name__).debug("Cannot set bake UV map", exc_info=True)
+    def copy_groups(tree):
+        for node in tree.nodes:
+            if node.type != "GROUP" or node.node_tree is None:
+                continue
+            source = node.node_tree
+            key = source.as_pointer()
+            if key not in copies:
+                private = source.copy()
+                private.use_fake_user = False
+                # Register before recursion so partial-copy failures also unwind.
+                state.node_groups.append(private)
+                copies[key] = private
+                copy_groups(private)
+            node.node_tree = copies[key]
 
-    patched = []
+    copy_groups(mat.node_tree)
+
+
+def _apply_uv_override_to_material(mat: bpy.types.Material, uv_name: str) -> None:
+    """Pin top-level implicit image UVs in a private material.
+
+    This retains the existing UV behavior. Linked coordinate paths, nested
+    implicit UVs and tangent-space normal bases are handled in a separate change.
+    """
+    nodes, links = mat.node_tree.nodes, mat.node_tree.links
+    uv_node = nodes.new("ShaderNodeUVMap")
+    uv_node.name = f"HeatSim_OrigUV__{uv_name}"
+    uv_node.label = "HeatSim Orig UV (Bake Override)"
+    uv_node.uv_map = uv_name
     for node in nodes:
         if node.type != "TEX_IMAGE":
             continue
-        vec_in = node.inputs.get("Vector")
-        if vec_in is None or vec_in.is_linked:
-            continue
-        # Wire UVMap -> Vector
-        try:
-            links.new(uv_node.outputs.get("UV"), vec_in)
-            patched.append(node.name)
-        except Exception:
-            logging.getLogger(__name__).debug("Cannot wire bake UV node", exc_info=True)
-
-    if created:
-        return uv_node_name, patched
-    # Even if node existed, we still might have patched tex nodes
-    return uv_node_name, patched
+        vector = node.inputs.get("Vector")
+        if vector is not None and not vector.is_linked:
+            links.new(uv_node.outputs["UV"], vector)
 
 
 def _install_bake_uv_material_overrides(objects: list[bpy.types.Object], uv_snapshot) -> _BakeMaterialUVOverride:
-    """
-    Install per-material UVMap overrides so real materials keep sampling their textures
-    with the original UV map during shared UV baking.
-
-    Handles the tricky case where multiple objects share a material but have different
-    source UV map names by temporarily copying materials per-object.
-    """
-    uv_snapshot_map: dict[int, tuple[str | None, str | None]] = {
-        obj.as_pointer(): state for obj, state in (uv_snapshot or [])
+    """Isolate every changed mesh user from authored RGB materials and groups."""
+    uv_states = {obj.as_pointer(): uv for obj, uv in (uv_snapshot or [])}
+    mesh_states = {
+        obj.data.as_pointer(): uv_states.get(obj.as_pointer(), (None, None))
+        for obj in objects
+        if obj is not None and obj.type == "MESH"
     }
-
-    # Build material usage: mat_ptr -> {uv_names}, plus occurrences to resolve per-object copies.
-    mat_uvs: dict[int, set[str]] = {}
-    occurrences: list[tuple[bpy.types.Object, int, bpy.types.Material | None, str | None]] = []
-    for obj in objects:
-        if obj is None or obj.type != "MESH":
-            continue
-        uv_name = _pick_source_uv_for_object(obj, uv_snapshot_map)
-        for slot_idx, slot in enumerate(getattr(obj, "material_slots", []) or []):
-            mat = getattr(slot, "material", None)
-            if mat is None or not getattr(mat, "use_nodes", False) or mat.node_tree is None:
-                continue
-            occurrences.append((obj, slot_idx, mat, uv_name))
-            if uv_name:
-                mat_uvs.setdefault(mat.as_pointer(), set()).add(str(uv_name))
-
-    replaced_slots: list[tuple[bpy.types.Object, int, bpy.types.Material | None]] = []
-    created_uv_nodes: list[tuple[bpy.types.Material, str]] = []
-    patched_tex_nodes: list[tuple[bpy.types.Material, str]] = []
-
-    # Apply overrides
-    for obj, slot_idx, mat, uv_name in occurrences:
-        if mat is None or not uv_name:
-            continue
-        uv_set = mat_uvs.get(mat.as_pointer(), {str(uv_name)})
-        target_mat = mat
-
-        # If the same material is used with multiple different UV map names, copy per-object.
-        if len(uv_set) > 1:
-            try:
-                mat_copy = mat.copy()
-                mat_copy.name = f"{mat.name}__HeatSimBake"
-                obj.material_slots[slot_idx].material = mat_copy
-                replaced_slots.append((obj, slot_idx, mat))
-                target_mat = mat_copy
-            except Exception:  # noqa: BLE001
-                # If copying fails, fall back to editing the shared material (may be imperfect).
-                target_mat = mat
-
-        uv_node_name, patched = _apply_uv_override_to_material(target_mat, str(uv_name))
-        if uv_node_name:
-            created_uv_nodes.append((target_mat, uv_node_name))
-        for tex_node_name in patched:
-            patched_tex_nodes.append((target_mat, tex_node_name))
-
-    return _BakeMaterialUVOverride(
-        replaced_slots=replaced_slots,
-        created_uv_nodes=created_uv_nodes,
-        patched_tex_nodes=patched_tex_nodes,
-    )
+    # Render-active UV is mesh state. Unselected users of that mesh also need
+    # private source-UV materials while the target object's bake UV is active.
+    affected = [obj for obj in bpy.data.objects if obj.type == "MESH" and obj.data.as_pointer() in mesh_states]
+    for obj in affected:
+        uv_states.setdefault(obj.as_pointer(), mesh_states[obj.data.as_pointer()])
+    state = _BakeMaterialUVOverride(objects=[], materials=[], node_groups=[])
+    copies = {}
+    try:
+        # A target slot on a bare shared mesh also appears on all its other users.
+        # Capture every original assignment before installing the first override.
+        state.objects = [(obj, snapshot_material_slots(obj)) for obj in affected]
+        for obj, slots in state.objects:
+            uv_name = _pick_source_uv_for_object(obj, uv_states)
+            for index, source in enumerate(slots.materials or [None]):
+                key = (source.as_pointer() if source is not None else None, uv_name)
+                if key not in copies:
+                    mat = source.copy() if source is not None else bpy.data.materials.new("HeatSim_Bake_Default")
+                    state.materials.append(mat)
+                    mat.use_fake_user = False
+                    mat.use_nodes = True
+                    _copy_bake_node_groups(mat, state)
+                    if uv_name:
+                        _apply_uv_override_to_material(mat, str(uv_name))
+                    copies[key] = mat
+                set_material_override(obj, index, copies[key])
+    except Exception:
+        _restore_bake_uv_material_overrides(state)
+        raise
+    return state
 
 
 def _restore_bake_uv_material_overrides(state: _BakeMaterialUVOverride | None) -> None:
     if state is None:
         return
-
-    # Remove UVMap -> TexImage links we created and delete UVMap nodes.
-    # Do this before restoring original materials so we can clean up copied ones too.
-    for mat, uv_node_name in state.created_uv_nodes:
+    errors = []
+    # Clear every new object override before removing an originally bare shared
+    # mesh's slots. Clearing the mesh first hides the other users' object arrays,
+    # leaving references to temporary materials that can no longer be reached.
+    for obj, slots in state.objects:
+        if slots.data_materials:
+            continue
         try:
-            if mat is None or not mat.use_nodes or mat.node_tree is None:
-                continue
-            nt = mat.node_tree
-            nodes = nt.nodes
-            links = nt.links
-            uv_node = nodes.get(uv_node_name)
-            if uv_node is None:
-                continue
-
-            # Remove links from this uv node into any TEX_IMAGE Vector inputs
-            for link in list(links):
-                if (
-                    link.from_node == uv_node
-                    and link.to_node
-                    and link.to_node.type == "TEX_IMAGE"
-                    and getattr(link.to_socket, "name", "") == "Vector"
-                ):
-                    try:
-                        links.remove(link)
-                    except Exception:
-                        logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
-            # Remove the uv node itself (if still present)
-            try:
-                nodes.remove(uv_node)
-            except Exception:
-                logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
-        except Exception:
-            logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
-    # Restore original materials in slots, and remove temporary copies if possible.
-    for obj, slot_idx, original_mat in state.replaced_slots:
+            for slot in obj.material_slots:
+                slot.link = "OBJECT"
+                slot.material = None
+                slot.link = "DATA"
+        except Exception as exc:
+            errors.append(exc)
+            logging.getLogger(__name__).exception("Could not clear temporary bake slots on %s", obj.name)
+    for obj, slots in state.objects:
         try:
-            slot = obj.material_slots[slot_idx]
-            tmp = getattr(slot, "material", None)
-            slot.material = original_mat
-            # Best-effort cleanup of the temp material if it's not used elsewhere
-            try:
-                if tmp is not None and tmp.users == 0:
-                    bpy.data.materials.remove(tmp)
-            except Exception:
-                logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
-        except Exception:
-            logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
+            restore_material_slots(obj, slots)
+        except Exception as exc:
+            # Attempt every object even if one assignment could not be restored.
+            errors.append(exc)
+            logging.getLogger(__name__).exception("Could not restore bake material slots on %s", obj.name)
+    for mat in state.materials:
+        if mat.users:
+            # Never unlink a still-assigned copy: doing so would clear that slot.
+            errors.append(RuntimeError(f"Private bake material {mat.name!r} is still in use"))
+        else:
+            bpy.data.materials.remove(mat)
+    for group in state.node_groups:
+        # With all material copies released, references are between private groups
+        # only. On a restore failure, keep groups that a retained copy still uses.
+        if not errors or not group.users:
+            bpy.data.node_groups.remove(group)
+    if errors:
+        raise RuntimeError("Could not completely restore private bake materials") from errors[0]
 
 
 def _image_pixels_to_rgb(image) -> np.ndarray | None:
@@ -548,7 +495,6 @@ def bake_albedo_map(scene, obj, texture_size: int) -> BakedFluxMap | None:
     except Exception:
         logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
     image = _ensure_albedo_image(obj.name, texture_size)
-    _prepare_image_nodes_for_bake(obj, image, "HeatSim_Albedo", "HeatSim Albedo")
 
     render = scene.render
     bake_settings = render.bake
@@ -578,6 +524,7 @@ def bake_albedo_map(scene, obj, texture_size: int) -> BakedFluxMap | None:
 
         # Keep textures sampling from the original UVs while baking into BAKE_UV_LAYER_NAME.
         uv_override_state = _install_bake_uv_material_overrides([obj], uv_snapshot)
+        _prepare_image_nodes_for_bake(obj, image, "HeatSim_Albedo", "HeatSim Albedo")
 
         # object.select_all.poll() fails in --background when the context is in
         # EDIT mode; make sure we are in OBJECT mode (with a valid active object)
@@ -612,7 +559,10 @@ def bake_albedo_map(scene, obj, texture_size: int) -> BakedFluxMap | None:
         if hasattr(bake_settings, "target") and prev_settings[3] is not None:
             bake_settings.target = prev_settings[3]
 
-        _restore_bake_uv_material_overrides(uv_override_state)
+        try:
+            _restore_bake_uv_material_overrides(uv_override_state)
+        finally:
+            restore_uv_states(uv_snapshot)
 
         # Guarded: this runs in a finally, so an unhandled poll() failure here
         # (context left in EDIT mode) would mask the real error and abort the
@@ -627,8 +577,6 @@ def bake_albedo_map(scene, obj, texture_size: int) -> BakedFluxMap | None:
             except Exception:
                 logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
         view_layer.objects.active = prev_active
-        # Restore original UV selections
-        restore_uv_states(uv_snapshot)
 
     rgb_pixels = _image_pixels_to_rgb(image)
     if rgb_pixels is None:
@@ -702,7 +650,6 @@ def bake_irradiance_map(scene, obj, texture_size: int, samples: int | None = Non
     except Exception:
         logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
     image = _ensure_irradiance_image(obj.name, texture_size)
-    _prepare_image_nodes_for_bake(obj, image, "HeatSim_Irradiance", "HeatSim Irradiance")
 
     render = scene.render
     bake_settings = render.bake
@@ -746,6 +693,7 @@ def bake_irradiance_map(scene, obj, texture_size: int, samples: int | None = Non
 
         # Keep textures sampling from the original UVs while baking into BAKE_UV_LAYER_NAME.
         uv_override_state = _install_bake_uv_material_overrides([obj], uv_snapshot)
+        _prepare_image_nodes_for_bake(obj, image, "HeatSim_Irradiance", "HeatSim Irradiance")
 
         # object.select_all.poll() fails in --background when the context is in
         # EDIT mode; make sure we are in OBJECT mode (with a valid active object)
@@ -789,7 +737,10 @@ def bake_irradiance_map(scene, obj, texture_size: int, samples: int | None = Non
         if hasattr(bake_settings, "target") and prev_settings[3] is not None:
             bake_settings.target = prev_settings[3]
 
-        _restore_bake_uv_material_overrides(uv_override_state)
+        try:
+            _restore_bake_uv_material_overrides(uv_override_state)
+        finally:
+            restore_uv_states(uv_snapshot)
 
         # Guarded: this runs in a finally, so an unhandled poll() failure here
         # (context left in EDIT mode) would mask the real error and abort the
@@ -804,8 +755,6 @@ def bake_irradiance_map(scene, obj, texture_size: int, samples: int | None = Non
             except Exception:
                 logging.getLogger(__name__).debug("Blender thermal operation failed", exc_info=True)
         view_layer.objects.active = prev_active
-        # Restore original UV selections
-        restore_uv_states(uv_snapshot)
 
     rgb_pixels = _image_pixels_to_rgb(image)
     if rgb_pixels is None:
