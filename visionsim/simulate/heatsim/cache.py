@@ -12,6 +12,9 @@ from typing import Any
 import numpy as np
 
 CACHE_SCHEMA_VERSION = 2
+# Bump when bake/solver semantics change, even if the archive layout is unchanged.
+# Revision 1 includes RGB-safe materials, source UVs and owned bake images.
+BAKE_PIPELINE_VERSION = 1
 _log = logging.getLogger("rich")
 
 
@@ -27,7 +30,13 @@ def cache_key(blend_path: Path, solver_cfg: dict, source_digest: str = "") -> st
     """
     blend_path = Path(blend_path)
     payload = json.dumps(
-        {"schema": CACHE_SCHEMA_VERSION, "p": str(blend_path), "source": source_digest, "c": solver_cfg},
+        {
+            "schema": CACHE_SCHEMA_VERSION,
+            "pipeline": BAKE_PIPELINE_VERSION,
+            "p": str(blend_path),
+            "source": source_digest,
+            "c": solver_cfg,
+        },
         sort_keys=True,
     )
     return hashlib.sha1(payload.encode()).hexdigest()[:16]
@@ -93,6 +102,7 @@ def write_temperatures(cache_root: Path, key: str, per_object: dict[str, np.ndar
     meta = {
         **meta,
         "schema": CACHE_SCHEMA_VERSION,
+        "pipeline": BAKE_PIPELINE_VERSION,
         "objects": sorted(per_object),
         "timesteps": next(iter(per_object.values())).shape[0] if per_object else 0,
     }
@@ -134,6 +144,9 @@ def read_temperatures(
             meta = json.loads(data["__meta__"].tobytes())
             if meta["schema"] != CACHE_SCHEMA_VERSION:
                 reject("schema mismatch")
+                return None
+            if meta.get("pipeline") != BAKE_PIPELINE_VERSION:
+                reject("bake pipeline revision mismatch")
                 return None
             result = {k: data[k] for k in data.files if k != "__meta__"}
             if set(result) != set(meta["objects"]):
