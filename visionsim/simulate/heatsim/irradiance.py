@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 import warnings
+from contextlib import ExitStack
 from dataclasses import dataclass
+from functools import wraps
 
 import bpy  # type: ignore[import-not-found]
 import numpy as np
@@ -23,6 +25,82 @@ class BakedFluxMap:
     vertex_flux: np.ndarray  # per-vertex luminance * scale
     width: int
     height: int
+
+
+def _leave_bake_edit_mode():
+    if bpy.context.mode != "OBJECT":
+        try:
+            bpy.ops.object.mode_set(mode="OBJECT")
+        except Exception:
+            logging.getLogger(__name__).exception("Could not leave edit mode after a thermal bake")
+
+
+def _restore_bake_context(view_layer, active, selected, mode, uv_snapshot, empty_meshes, outcome):
+    """Leave edit mode before restoring UVs, selection and the caller's mode."""
+
+    def attempt(operation, *args, **kwargs):
+        try:
+            operation(*args, **kwargs)
+        except Exception:
+            logging.getLogger(__name__).exception("Could not restore Blender bake context")
+
+    _leave_bake_edit_mode()
+    if not outcome["completed"]:
+        # Auto-unwrapping a previously UV-less mesh also changes its RGB inputs.
+        # A failed bake must return that mesh to having no UV layers.
+        for mesh in empty_meshes:
+            for layer in list(mesh.uv_layers):
+                attempt(mesh.uv_layers.remove, layer)
+    restore_uv_states(uv_snapshot)
+    for obj in view_layer.objects:
+        attempt(obj.select_set, obj in selected)
+    attempt(setattr, view_layer.objects, "active", active)
+    if active is not None and mode != "OBJECT":
+        attempt(bpy.ops.object.mode_set, mode=mode)
+
+
+def _preserve_bake_state(bake):
+    """Guard the whole bake, including source unwrap and image allocation.
+
+    Bake functions take a scene followed by one object or a list of objects.
+    Their inner guards own temporary materials; this outer guard always restores
+    the scene even if setup or one of those cleanup operations raises.
+    """
+
+    @wraps(bake)
+    def guarded(scene, *args, **kwargs):
+        targets = args[0] if args else kwargs.get("obj", kwargs.get("objects", []))
+        objects = [targets] if isinstance(targets, bpy.types.Object) else targets
+        uv_snapshot = snapshot_uv_states(objects)
+        empty_meshes = {obj.data for obj in objects if obj.type == "MESH" and not obj.data.uv_layers}
+        view_layer = scene.view_layers.active if hasattr(scene.view_layers, "active") else scene.view_layers[0]
+        active = view_layer.objects.active
+        selected = {obj for obj in view_layer.objects if obj.select_get()}
+        mode = active.mode if active is not None else "OBJECT"
+        outcome = {"completed": False}
+        # ExitStack attempts every restoration even if another setter fails.
+        with ExitStack() as restore:
+            restore.callback(
+                _restore_bake_context, view_layer, active, selected, mode, uv_snapshot, empty_meshes, outcome
+            )
+            settings = [
+                (scene.render, ("engine",)),
+                (scene.render.bake, ("use_pass_direct", "use_pass_indirect", "use_pass_color", "target")),
+                (view_layer, ("material_override",)),
+                (getattr(scene, "cycles", None), ("samples", "use_adaptive_sampling")),
+            ]
+            for owner, properties in settings:
+                if owner is not None:
+                    for name in properties:
+                        if hasattr(owner, name):
+                            restore.callback(setattr, owner, name, getattr(owner, name))
+            result = bake(scene, *args, **kwargs)
+            outcome["completed"] = result is not None and (
+                not isinstance(result, tuple) or all(part is not None for part in result)
+            )
+            return result
+
+    return guarded
 
 
 def _ensure_uv_layer(obj):
@@ -540,6 +618,7 @@ def bake_vertex_albedo(scene, obj, texture_size: int) -> np.ndarray:
     return np.clip(values, 0.0, 1.0)
 
 
+@_preserve_bake_state
 def bake_albedo_map(scene, obj, texture_size: int) -> BakedFluxMap | None:
     """
     Bake visible diffuse albedo (COLOR pass) for a single object.
@@ -617,6 +696,10 @@ def bake_albedo_map(scene, obj, texture_size: int) -> BakedFluxMap | None:
         warnings.warn(f"HeatSim albedo bake failed for {obj.name}: {exc}")
         return None
     finally:
+        # Flush edit-mesh data before changing UV layers or material slots.
+        _leave_bake_edit_mode()
+        # Release private shaders even if a later settings restoration raises.
+        _restore_bake_uv_material_overrides(uv_override_state)
         render.engine = prev_engine
         if hasattr(bake_settings, "use_pass_direct") and prev_settings[0] is not None:
             bake_settings.use_pass_direct = prev_settings[0]
@@ -627,10 +710,7 @@ def bake_albedo_map(scene, obj, texture_size: int) -> BakedFluxMap | None:
         if hasattr(bake_settings, "target") and prev_settings[3] is not None:
             bake_settings.target = prev_settings[3]
 
-        try:
-            _restore_bake_uv_material_overrides(uv_override_state)
-        finally:
-            restore_uv_states(uv_snapshot)
+        restore_uv_states(uv_snapshot)
 
         # Guarded: this runs in a finally, so an unhandled poll() failure here
         # (context left in EDIT mode) would mask the real error and abort the
@@ -687,6 +767,7 @@ def bake_albedo_map(scene, obj, texture_size: int) -> BakedFluxMap | None:
     )
 
 
+@_preserve_bake_state
 def bake_irradiance_map(scene, obj, texture_size: int, samples: int | None = None) -> BakedFluxMap | None:
     """Bake incident irradiance (DIFFUSE DIRECT+INDIRECT) for a single object.
 
@@ -790,6 +871,10 @@ def bake_irradiance_map(scene, obj, texture_size: int, samples: int | None = Non
         warnings.warn(f"HeatSim irradiance bake failed for {obj.name}: {exc}")
         return None
     finally:
+        # Flush edit-mesh data before changing UV layers or material slots.
+        _leave_bake_edit_mode()
+        # Release private shaders even if a later settings restoration raises.
+        _restore_bake_uv_material_overrides(uv_override_state)
         render.engine = prev_engine
         if prev_sampling is not None:
             if cycles is not None and prev_sampling[0] is not None and hasattr(cycles, "samples"):
@@ -805,10 +890,7 @@ def bake_irradiance_map(scene, obj, texture_size: int, samples: int | None = Non
         if hasattr(bake_settings, "target") and prev_settings[3] is not None:
             bake_settings.target = prev_settings[3]
 
-        try:
-            _restore_bake_uv_material_overrides(uv_override_state)
-        finally:
-            restore_uv_states(uv_snapshot)
+        restore_uv_states(uv_snapshot)
 
         # Guarded: this runs in a finally, so an unhandled poll() failure here
         # (context left in EDIT mode) would mask the real error and abort the
