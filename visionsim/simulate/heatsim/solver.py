@@ -15,6 +15,10 @@ from visionsim.simulate.heatsim.physics import AMBIENT_TEMPERATURE_K, STEFAN_BOL
 _log = logging.getLogger("rich")
 
 
+class ConjugateGradientError(RuntimeError):
+    """The thermal linear solve failed its convergence criterion."""
+
+
 def scipy_to_torch_sparse(mat, device, dtype=torch.float32):
     """
     Convert a SciPy sparse matrix to a torch.sparse_coo_tensor on a given device.
@@ -22,7 +26,7 @@ def scipy_to_torch_sparse(mat, device, dtype=torch.float32):
     mat = mat.tocoo()
     indices = np.vstack([mat.row, mat.col]).astype(np.int64)
     i = torch.from_numpy(indices).to(device)
-    v = torch.from_numpy(mat.data.astype(np.float32)).to(device)
+    v = torch.as_tensor(mat.data, device=device, dtype=dtype)
     return torch.sparse_coo_tensor(i, v, mat.shape, device=device, dtype=dtype, check_invariants=True).coalesce()
 
 
@@ -63,14 +67,22 @@ def pcg_solve(mv, b, Minv, x0=None, tol=1e-6, max_iter=200, rtol=0.0):
         Ap = mv(p)
         denom = torch.dot(p.flatten(), Ap.flatten())
         if denom.abs() < 1e-20:
-            raise RuntimeError("Thermal conjugate-gradient solve broke down before convergence")
+            raise ConjugateGradientError("Thermal conjugate-gradient solve broke down before convergence")
         alpha = rz_old / denom
 
         x = x + alpha * p
         r = r - alpha * Ap
 
         if torch.linalg.vector_norm(r) <= threshold:
-            return x
+            # Recursive residuals can drift on stiff systems. Verify against A
+            # before accepting; otherwise restart from the measured residual.
+            r = b - mv(x)
+            if torch.linalg.vector_norm(r) <= threshold:
+                return x
+            z = Minv * r
+            p = z.clone()
+            rz_old = torch.dot(r.flatten(), z.flatten())
+            continue
 
         z = Minv * r
         rz_new = torch.dot(r.flatten(), z.flatten())
@@ -78,8 +90,8 @@ def pcg_solve(mv, b, Minv, x0=None, tol=1e-6, max_iter=200, rtol=0.0):
         p = z + beta * p
         rz_old = rz_new
 
-    residual = float(torch.linalg.vector_norm(r))
-    raise RuntimeError(f"Thermal conjugate-gradient solve did not converge: residual={residual:.3g}")
+    residual = float(torch.linalg.vector_norm(b - mv(x)))
+    raise ConjugateGradientError(f"Thermal conjugate-gradient solve did not converge: residual={residual:.3g}")
 
 
 class HeatSimFEM:
@@ -91,6 +103,8 @@ class HeatSimFEM:
     def __init__(self, gen_params, sim_params, **kwargs) -> None:
         self.gen_params = gen_params
         self.sim_params = sim_params
+        self.dtype = kwargs.get("dtype", torch.float32)
+        self.cg_max_iter = int(kwargs.get("cg_max_iter", 1000))
 
         if hasattr(gen_params, "device"):
             self.device = torch.device(gen_params.device)
@@ -151,7 +165,7 @@ class HeatSimFEM:
         # Keep the ambient offset out of sparse products. Full Kelvin values
         # bury small heating increments in float32 cancellation on dense meshes.
         ambient = AMBIENT_TEMPERATURE_K
-        theta_prev = torch.from_numpy((u0_np.reshape(-1) - ambient).astype(np.float32)).to(self.device)
+        theta_prev = torch.as_tensor(u0_np.reshape(-1) - ambient, device=self.device, dtype=self.dtype)
         theta_prev = theta_prev.unsqueeze(1)  # (N,1)
 
         # ------------------------------------------------------------------
@@ -167,12 +181,12 @@ class HeatSimFEM:
             eps_np = np.full_like(boundary_mask_np, ThermalConfig.emissivity, dtype=np.float64)
         eps_np = np.clip(eps_np, 0.0, 1.0)
 
-        rho_t = torch.from_numpy(rho_np.astype(np.float32)).to(self.device)
-        c_t = torch.from_numpy(c_np.astype(np.float32)).to(self.device)
+        rho_t = torch.as_tensor(rho_np, device=self.device, dtype=self.dtype)
+        c_t = torch.as_tensor(c_np, device=self.device, dtype=self.dtype)
         rc_t = rho_t * c_t
-        eps_t = torch.from_numpy(eps_np.astype(np.float32)).to(self.device)
+        eps_t = torch.as_tensor(eps_np, device=self.device, dtype=self.dtype)
 
-        boundary_mask = torch.from_numpy(boundary_mask_np.astype(np.float32)).to(self.device)
+        boundary_mask = torch.as_tensor(boundary_mask_np, device=self.device, dtype=self.dtype)
 
         sigma = STEFAN_BOLTZMANN_MM
         Tamb = AMBIENT_TEMPERATURE_K
@@ -198,8 +212,8 @@ class HeatSimFEM:
 
         # Base irradiance term (constant over time)
         if irradiance_map_np is None:
-            irradiance_map_np = np.zeros_like(boundary_mask_np, dtype=np.float32)
-        irr_base_t = torch.from_numpy(np.asarray(irradiance_map_np, dtype=np.float32)).to(self.device)
+            irradiance_map_np = np.zeros_like(boundary_mask_np, dtype=np.float64)
+        irr_base_t = torch.as_tensor(irradiance_map_np, device=self.device, dtype=self.dtype)
         vec_light_base = (boundary_mask * dt * irr_base_t / rc_t).unsqueeze(1)
         B_light_base = torch.sparse.mm(M_boundary_t, vec_light_base)  # (N,1)
 
@@ -298,7 +312,7 @@ class HeatSimFEM:
                 rhs = rhs - torch.sparse.mm(M_boundary_t, vec_conv_A.unsqueeze(1) * theta_prev)
             if reg_value > 0.0:
                 rhs = rhs - reg_value * (theta_prev + ambient)
-            increment = pcg_solve(mv, rhs, Minv, tol=1e-6, rtol=1e-6, max_iter=1000)
+            increment = pcg_solve(mv, rhs, Minv, tol=1e-6, rtol=1e-6, max_iter=self.cg_max_iter)
             theta_next = theta_prev + increment
             if not bool(torch.isfinite(theta_next).all()):
                 raise RuntimeError(f"Thermal solve produced non-finite temperatures at step {step + 1}")
@@ -415,7 +429,7 @@ class HeatSimFEM:
             if alpha.shape != (len(points),) or not np.isfinite(alpha).all() or np.any(alpha < 0):
                 raise ValueError("Thermal diffusivity must be nonnegative and match the point count")
             L = self._apply_vertex_weighted_laplacian(L, alpha)
-        return tuple(scipy_to_torch_sparse(matrix, self.device) for matrix in (L, M, M))
+        return tuple(scipy_to_torch_sparse(matrix, self.device, self.dtype) for matrix in (L, M, M))
 
     def perform_gt_heat_simulation(
         self,
@@ -492,7 +506,7 @@ class HeatSimFEM:
         if irradiance_map is None and self.irradiance_map is not None:
             irradiance_map = self.irradiance_map
         if irradiance_map is not None:
-            irradiance_map = irradiance_map[valid_verts].astype(np.float32)
+            irradiance_map = irradiance_map[valid_verts]
 
         if record_attimestep == 0 and not store_only_final:
             # Use proper 2D array shape (1, N) for consistent concatenation

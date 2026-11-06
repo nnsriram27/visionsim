@@ -13,8 +13,8 @@ import numpy as np
 
 CACHE_SCHEMA_VERSION = 2
 # Bump when bake/solver semantics change, even if the archive layout is unchanged.
-# Revision 15 counts distinct surface positions for AUTO sample selection.
-BAKE_PIPELINE_VERSION = 15
+# Revision 16 verifies CG residuals and retries failed solves in double precision.
+BAKE_PIPELINE_VERSION = 16
 _log = logging.getLogger("rich")
 
 

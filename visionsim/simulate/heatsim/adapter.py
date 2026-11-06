@@ -1120,7 +1120,9 @@ def _run_solver(combined: SimpleNamespace, solver_cfg: dict, defaults: dict) -> 
     ``NUM_FRAME_DELTA = timestep_s * 60`` so ``dt = NUM_FRAME_DELTA / 60 == timestep_s``;
     ``record_time == sim_time`` records every step => history shape ``(sim_steps+1, N)``.
     """
-    from visionsim.simulate.heatsim.solver import HeatSimFEM
+    import torch
+
+    from visionsim.simulate.heatsim.solver import ConjugateGradientError, HeatSimFEM
 
     sim_time_s = float(solver_cfg.get("sim_time_s", 1.0))
     timestep_s = float(solver_cfg.get("timestep_s", 0.05))
@@ -1141,20 +1143,26 @@ def _run_solver(combined: SimpleNamespace, solver_cfg: dict, defaults: dict) -> 
         record_time=sim_time_s,  # record_attimestep == 0 => record all steps
     )
 
-    fem = HeatSimFEM(gen_params, sim_params)
-
-    history = fem.perform_gt_heat_simulation(
-        verts_np=combined.verts.copy(),
-        faces_np=None,
-        boundary_faces_np=None,
-        boundary_verts_mask_override=combined.boundary_mask,
-        u0=combined.t0,
-        irradiance_map=combined.irradiance,
-        thermal_diffusivity_map=combined.alpha,
-        density_map=combined.density,
-        specific_heat_map=combined.c,
-        emissivity_map=combined.eps,
-    )
+    for dtype, max_iter in ((torch.float32, 1000), (torch.float64, 5000)):
+        fem = HeatSimFEM(gen_params, sim_params, dtype=dtype, cg_max_iter=max_iter)
+        try:
+            history = fem.perform_gt_heat_simulation(
+                verts_np=combined.verts.copy(),
+                faces_np=None,
+                boundary_faces_np=None,
+                boundary_verts_mask_override=combined.boundary_mask,
+                u0=combined.t0,
+                irradiance_map=combined.irradiance,
+                thermal_diffusivity_map=combined.alpha,
+                density_map=combined.density,
+                specific_heat_map=combined.c,
+                emissivity_map=combined.eps,
+            )
+            break
+        except ConjugateGradientError:
+            if dtype == torch.float64:
+                raise
+            _log.warning("Thermal CG failed; restarting the full solve in float64 with unchanged tolerances")
     return np.asarray(history, dtype=np.float64)
 
 

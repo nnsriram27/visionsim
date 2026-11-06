@@ -5,10 +5,11 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import scipy.sparse as sp
+import torch
 
 from visionsim.simulate.heatsim import laplacian
 from visionsim.simulate.heatsim.physics import AMBIENT_TEMPERATURE_K, STEFAN_BOLTZMANN_MM
-from visionsim.simulate.heatsim.solver import HeatSimFEM, scipy_to_torch_sparse
+from visionsim.simulate.heatsim.solver import ConjugateGradientError, HeatSimFEM, pcg_solve, scipy_to_torch_sparse
 
 # Minimal surrogates for HeatSimFEM's two positional param objects: gen_params
 # (.device, .RHO, .C, .K, .NUM_FRAME_DELTA) and sim_params (.sim_radiation,
@@ -162,3 +163,24 @@ def test_ambient_without_heating_is_preserved_exactly():
         10,
     )
     assert np.all(result == AMBIENT_TEMPERATURE_K)
+
+
+def test_sparse_conversion_preserves_requested_double_precision():
+    values = np.array([1.0 + 2.0**-30, 1.0 - 2.0**-30])
+    matrix = scipy_to_torch_sparse(sp.diags(values), "cpu", torch.float64)
+    np.testing.assert_array_equal(matrix.values().numpy(), values)
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_pcg_checks_true_residual_on_stiff_system(dtype):
+    # Two strongly coupled samples: recursive CG residuals falsely converge in
+    # float32, while the actual residual still exceeds the requested tolerance.
+    matrix = torch.tensor([[100001.0, -100000.0], [-100000.0, 100001.0]], dtype=dtype)
+    rhs = torch.tensor([[1.0], [2.0]], dtype=dtype)
+    inverse_diagonal = 1.0 / matrix.diag().unsqueeze(1)
+    try:
+        solution = pcg_solve(lambda x: matrix @ x, rhs, inverse_diagonal, max_iter=1000, rtol=1e-6)
+    except ConjugateGradientError:
+        assert dtype == torch.float32
+        return
+    assert torch.linalg.vector_norm(rhs - matrix @ solution) <= 1e-6 * torch.linalg.vector_norm(rhs)
